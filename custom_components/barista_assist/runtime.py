@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from enum import StrEnum
+from enum import Enum
 import logging
 from pathlib import Path
 import time
@@ -38,8 +38,13 @@ _LOGGER = logging.getLogger(__name__)
 _STORE_VERSION = 1
 
 
-class ShotPhase(StrEnum):
-    """Visible controller states."""
+class ShotPhase(str, Enum):
+    """Visible controller states.
+
+    Plain (str, Enum) rather than enum.StrEnum for Python 3.10 compatibility
+    (StrEnum requires 3.11+); __str__ keeps str(member) == member.value like
+    StrEnum, matching the behavior the rest of this module relies on.
+    """
 
     IDLE = "idle"
     CONNECTING_SCALE = "connecting_scale"
@@ -52,6 +57,9 @@ class ShotPhase(StrEnum):
     TIMEOUT = "timeout"
     ERROR = "error"
     MANUAL_STOP_REQUIRED = "manual_stop_required"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 @dataclass(slots=True)
