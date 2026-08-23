@@ -101,14 +101,14 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         shutil.rmtree(self._temp_dir, ignore_errors=True)
 
-    async def start_shot(
+    async def create_bag(
         self,
         *,
         preinfusion_s: float = 1.0,
         target_yield_g: float = 36.0,
         stop_compensation_g: float = 1.5,
-    ) -> str:
-        """Create a bag and brew. Real wait of about preinfusion_s + 0.2s."""
+    ) -> None:
+        """Create and select a bag, without brewing."""
         self.runtime.stop_compensation_g = stop_compensation_g
         await self.runtime.async_new_bag(
             {
@@ -117,6 +117,20 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 "preinfusion_s": preinfusion_s,
                 "target_yield_g": target_yield_g,
             }
+        )
+
+    async def start_shot(
+        self,
+        *,
+        preinfusion_s: float = 1.0,
+        target_yield_g: float = 36.0,
+        stop_compensation_g: float = 1.5,
+    ) -> str:
+        """Create a bag and brew. Real wait of about preinfusion_s + 0.2s."""
+        await self.create_bag(
+            preinfusion_s=preinfusion_s,
+            target_yield_g=target_yield_g,
+            stop_compensation_g=stop_compensation_g,
         )
         return await self.runtime.async_brew()
 
@@ -247,6 +261,113 @@ class DeadlineSafetyTests(RuntimeTestCase):
 
         self.assertIsNone(self.runtime.active_shot)
         self.assertEqual(self.runtime.status, "timeout")
+
+
+class BrewValidationTests(RuntimeTestCase):
+    """async_brew's pre-flight checks - each should raise before doing any
+    real work (no scale connect, no DB shot row, no press)."""
+
+    async def test_rejects_brew_when_machine_limit_not_confirmed(self):
+        await self.create_bag()
+        self.entry.options[CONF_MACHINE_LIMIT_CONFIRMED] = False
+
+        with self.assertRaises(HomeAssistantError):
+            await self.runtime.async_brew()
+        self.assertIsNone(self.runtime.active_shot)
+
+    async def test_rejects_brew_when_preinfusion_exceeds_safe_deadline(self):
+        # Default options give safe_shot_deadline_s = 10 - 2 = 8.
+        await self.create_bag(preinfusion_s=9.0)
+
+        with self.assertRaises(HomeAssistantError):
+            await self.runtime.async_brew()
+        self.assertIsNone(self.runtime.active_shot)
+
+    async def test_rejects_brew_when_stop_compensation_too_large_for_yield(self):
+        # Bag validation requires target_yield_g > stop_compensation_g + 1.0.
+        await self.create_bag(target_yield_g=2.0, stop_compensation_g=1.5)
+
+        with self.assertRaises(HomeAssistantError):
+            await self.runtime.async_brew()
+        self.assertIsNone(self.runtime.active_shot)
+
+    async def test_rejects_second_brew_while_one_is_active(self):
+        await self.start_shot()
+
+        with self.assertRaises(HomeAssistantError):
+            await self.runtime.async_brew()
+
+
+class SwitchModeTests(RuntimeTestCase):
+    async def test_brew_refuses_when_switchbot_reports_switch_mode(self):
+        """A Bot in switch (toggle) mode rather than press mode must never
+        be brewed against - it would not behave like a momentary button."""
+        self.hass.states.set(BREW_ENTITY, {"switch_mode": True})
+        await self.create_bag()
+
+        with self.assertRaises(HomeAssistantError):
+            await self.runtime.async_brew()
+
+        self.assertIsNone(self.runtime.active_shot)
+        self.assertEqual(self.runtime.status, ShotPhase.ERROR.value)
+
+
+class EarlyAbortTests(RuntimeTestCase):
+    async def test_abort_during_preinfusion_succeeds(self):
+        """Aborting before the proactive instant-tap reprogram has even run
+        (still mid pre-infusion) must still fall back to reprogramming and
+        pressing, and finalize cleanly as aborted."""
+        await self.start_shot(preinfusion_s=2.0)
+        self.assertEqual(self.runtime.status, ShotPhase.PREINFUSION.value)
+        shot = self.runtime.active_shot
+        self.assertFalse(shot.quick_press_ready)
+
+        calls_before = len(self.hass.services.calls)
+        await self.runtime.async_abort()
+
+        self.assertGreater(len(self.hass.services.calls), calls_before)
+        self.assertTrue(shot.quick_press_ready)
+        self.assertIsNone(self.runtime.active_shot)
+        self.assertEqual(self.runtime.status, ShotPhase.ABORTED.value)
+
+
+class ShotTimeoutTests(RuntimeTestCase):
+    async def test_shot_timeout_task_triggers_abort_after_deadline(self):
+        """The background _shot_timeout task (not just async_abort called
+        directly, as the other tests do) must itself invoke the abort path
+        once the protected deadline passes."""
+        await self.start_shot()
+        timeout_task = self.hass.tasks[-1]  # _shot_timeout(), scheduled by async_brew()
+
+        # Shrink the deadline live instead of waiting out the real ~8s
+        # default - properties re-read entry.options on every access.
+        self.entry.options[CONF_MACHINE_MAX_SHOT_SECONDS] = 0.3
+        self.entry.options[CONF_SAFETY_MARGIN_SECONDS] = 0.1
+
+        await timeout_task
+
+        # asyncio.sleep never returns early, so by the time _shot_timeout's
+        # own sleep(safe_shot_deadline_s) wakes it, elapsed_s is always >=
+        # that same deadline - a naturally-firing timeout can only take the
+        # late/manual_stop_required branch (the on-time-press branch is
+        # already covered elsewhere by stops triggered well before it).
+        self.assertEqual(self.runtime.status, ShotPhase.MANUAL_STOP_REQUIRED.value)
+        self.assertIsNotNone(self.runtime.active_shot)
+
+
+class FinalizeIdempotencyTests(RuntimeTestCase):
+    async def test_finalize_is_a_noop_once_the_shot_is_already_cleared(self):
+        """Two things racing to end the same shot (e.g. a late timeout firing
+        after a settle-task already finalized it) must not double-write to
+        the database or crash - the second call is simply a no-op."""
+        await self.start_shot()
+
+        await self.runtime._async_finalize("complete")
+        self.assertIsNone(self.runtime.active_shot)
+        self.assertEqual(self.runtime.status, ShotPhase.IDLE.value)
+
+        await self.runtime._async_finalize("complete")  # must not raise
+        self.assertIsNone(self.runtime.active_shot)
 
 
 if __name__ == "__main__":
