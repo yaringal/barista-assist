@@ -42,6 +42,7 @@ class BaristaAssistExportCard extends HTMLElement {
           <div class="subtitle">Copy every stored shot and raw scale time series for diagnosis.</div>
           <button id="copy" type="button">${this._escape(this._config.button_text || "Copy all shot data")}</button>
           <div id="status" aria-live="polite"></div>
+          <textarea id="manual" readonly rows="6"></textarea>
         </div>
       </ha-card>
       <style>
@@ -60,6 +61,14 @@ class BaristaAssistExportCard extends HTMLElement {
         }
         button:disabled { opacity: 0.55; cursor: wait; }
         #status { margin-top: 8px; min-height: 1.2em; opacity: 0.8; }
+        #manual {
+          display: none;
+          width: 100%;
+          box-sizing: border-box;
+          margin-top: 8px;
+          font-family: monospace;
+          font-size: 0.85rem;
+        }
       </style>`;
     this.shadowRoot.getElementById("copy").addEventListener("click", () => this._copy());
   }
@@ -71,28 +80,29 @@ class BaristaAssistExportCard extends HTMLElement {
   async _copy() {
     const button = this.shadowRoot.getElementById("copy");
     const status = this.shadowRoot.getElementById("status");
+    const manual = this.shadowRoot.getElementById("manual");
     button.disabled = true;
+    manual.style.display = "none";
     status.textContent = "Preparing export…";
     try {
       const result = await this._hass.callWS({ type: "barista_assist/export_shots_text" });
       try {
         await navigator.clipboard.writeText(result.text);
+        status.textContent = "Copied to clipboard. You can paste it directly here.";
       } catch (_clipboardError) {
-        const area = document.createElement("textarea");
-        area.value = result.text;
-        area.style.position = "fixed";
-        area.style.opacity = "0";
-        this.shadowRoot.appendChild(area);
-        area.focus();
-        area.select();
-        if (!document.execCommand("copy")) {
-          throw new Error("Browser clipboard access is unavailable");
-        }
-        area.remove();
+        // The Clipboard API can be unavailable in the companion app's webview
+        // as well as some browser contexts. Rather than trying to script a
+        // copy across the shadow-DOM boundary (unreliable), show the text
+        // directly so the user can select and copy it themselves.
+        manual.value = result.text;
+        manual.style.display = "block";
+        manual.focus();
+        manual.select();
+        status.textContent =
+          "Clipboard access isn't available here. The text below is selected — copy it with Ctrl/Cmd+C.";
       }
-      status.textContent = "Copied to clipboard. You can paste it directly here.";
     } catch (error) {
-      status.textContent = `Copy failed: ${error?.message || error}`;
+      status.textContent = `Export failed: ${error?.message || error}`;
     } finally {
       button.disabled = false;
     }

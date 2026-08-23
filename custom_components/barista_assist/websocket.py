@@ -18,7 +18,7 @@ from .definitions import load_definitions
 
 
 @lru_cache(maxsize=1)
-def _dashboard_template() -> Any:
+def dashboard_template() -> Any:
     path = Path(__file__).parent / "frontend" / "dashboard.yaml"
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -56,7 +56,7 @@ async def ws_get_dashboard(
         return
     try:
         dashboard = _replace_tokens(
-            _dashboard_template(), _dashboard_entity_map(hass, runtime)
+            dashboard_template(), _dashboard_entity_map(hass, runtime)
         )
     except Exception as err:
         connection.send_error(msg["id"], "dashboard_failed", str(err))

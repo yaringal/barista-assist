@@ -28,6 +28,7 @@ PLATFORMS = [
 async def async_setup(hass: HomeAssistant, config) -> bool:
     """Set up integration-level actions and dashboard endpoint."""
     load_definitions()  # Fail early if package YAML is invalid.
+    websocket.dashboard_template()  # Warm the cache outside the request path.
     hass.data.setdefault(
         DOMAIN,
         {

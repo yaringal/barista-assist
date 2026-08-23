@@ -31,7 +31,6 @@
     "error": {
       "cannot_connect": "The selected scale is not reachable through a connectable Bluetooth adapter.",
       "entity_not_found": "The selected SwitchBot entity is unavailable.",
-      "machine_limit_too_short": "Machine maximum must exceed the safety margin by at least 5 seconds.",
       "machine_limit_must_be_confirmed": "Confirm the Barista Express programmed maximum shot duration before using automatic brew control.",
       "brew_address_not_found": "The selected SwitchBot device has no Bluetooth address available in Home Assistant."
     }
@@ -48,6 +47,11 @@
         },
         "description": "Set the physical shot limit programmed into the Barista Express. Barista Assist will stop before this limit and will never press the brew button after the protected window because that could start a new shot."
       }
+    },
+    "error": {
+      "entity_not_found": "The selected SwitchBot entity is unavailable.",
+      "brew_address_not_found": "The selected SwitchBot device has no Bluetooth address available in Home Assistant.",
+      "machine_limit_must_be_confirmed": "Confirm the Barista Express programmed maximum shot duration before using automatic brew control."
     }
   },
   "entity": {

@@ -86,12 +86,29 @@ def _settings_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
 def _validate_machine_settings(
     user_input: dict[str, Any], errors: dict[str, str]
 ) -> None:
-    machine_limit = float(user_input[CONF_MACHINE_MAX_SHOT_SECONDS])
-    margin = float(user_input[CONF_SAFETY_MARGIN_SECONDS])
-    if machine_limit - margin <= 5:
-        errors[CONF_MACHINE_MAX_SHOT_SECONDS] = "machine_limit_too_short"
+    # machine_limit - margin can never be <= 5 given the selector bounds below
+    # (min 20 - max 10 = 10), so that check is not duplicated here; the real
+    # enforcement (needed because options aren't bound this way after saving)
+    # lives in BaristaRuntime.async_brew's safe_shot_deadline_s check.
     if not user_input.get(CONF_MACHINE_LIMIT_CONFIRMED, False):
         errors[CONF_MACHINE_LIMIT_CONFIRMED] = "machine_limit_must_be_confirmed"
+
+
+def _validate_brew_entity(
+    hass: HomeAssistant, user_input: dict[str, Any], errors: dict[str, str]
+) -> None:
+    """Confirm the selected brew SwitchBot exists and resolves to a BLE address.
+
+    Used by every flow that can set CONF_BREW_ENTITY (initial setup and
+    options), so a stale/removed entity is caught here instead of only
+    surfacing as a runtime brew failure later.
+    """
+    if errors:
+        return
+    if hass.states.get(user_input[CONF_BREW_ENTITY]) is None:
+        errors[CONF_BREW_ENTITY] = "entity_not_found"
+    elif resolve_bluetooth_address(hass, user_input[CONF_BREW_ENTITY]) is None:
+        errors[CONF_BREW_ENTITY] = "brew_address_not_found"
 
 
 class BaristaAssistConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -140,13 +157,7 @@ class BaristaAssistConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             _validate_machine_settings(user_input, errors)
-            if not errors and self.hass.states.get(user_input[CONF_BREW_ENTITY]) is None:
-                errors[CONF_BREW_ENTITY] = "entity_not_found"
-            if (
-                not errors
-                and resolve_bluetooth_address(self.hass, user_input[CONF_BREW_ENTITY]) is None
-            ):
-                errors[CONF_BREW_ENTITY] = "brew_address_not_found"
+            _validate_brew_entity(self.hass, user_input, errors)
             if not errors:
                 return self.async_create_entry(
                     title=f"Barista Assist — {self._discovery.name}",
@@ -177,20 +188,18 @@ class BaristaAssistConfigFlow(ConfigFlow, domain=DOMAIN):
             address = user_input[CONF_SCALE_ADDRESS]
             await self.async_set_unique_id(address, raise_on_progress=False)
             self._abort_if_unique_id_configured()
-            if not errors and async_ble_device_from_address(self.hass, address, connectable=True) is None:
+            # Resolve the device directly rather than indexing self._devices,
+            # which is rebuilt from a fresh scan above on every call and may
+            # no longer contain `address` if it isn't currently advertising.
+            device = async_ble_device_from_address(self.hass, address, connectable=True)
+            if not errors and device is None:
                 errors[CONF_SCALE_ADDRESS] = "cannot_connect"
-            if not errors and self.hass.states.get(user_input[CONF_BREW_ENTITY]) is None:
-                errors[CONF_BREW_ENTITY] = "entity_not_found"
-            if (
-                not errors
-                and resolve_bluetooth_address(self.hass, user_input[CONF_BREW_ENTITY]) is None
-            ):
-                errors[CONF_BREW_ENTITY] = "brew_address_not_found"
+            _validate_brew_entity(self.hass, user_input, errors)
             if not errors:
                 settings = dict(user_input)
                 settings.pop(CONF_SCALE_ADDRESS, None)
                 return self.async_create_entry(
-                    title=f"Barista Assist — {self._devices[address].name}",
+                    title=f"Barista Assist — {device.name or address}",
                     data={CONF_SCALE_ADDRESS: address},
                     options=settings,
                 )
@@ -218,6 +227,7 @@ class BaristaAssistOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             _validate_machine_settings(user_input, errors)
+            _validate_brew_entity(self.hass, user_input, errors)
             if not errors:
                 return self.async_create_entry(title="", data=user_input)
         current = {**self.config_entry.data, **self.config_entry.options}
