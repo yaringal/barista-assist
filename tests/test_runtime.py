@@ -177,21 +177,23 @@ class StopFailureTests(RuntimeTestCase):
 
 
 class InstantTapTests(RuntimeTestCase):
-    async def test_quick_press_reprogram_precedes_the_stop_press(self):
-        """Regression test: the stop/abort press used to still hold for the
-        configured pre-infusion duration because nothing reprogrammed the
-        Bot to an instant tap before pressing to stop."""
+    async def test_ensure_quick_stop_press_reprograms_when_not_already_ready(self):
+        """Regression test for _async_ensure_quick_stop_press's own contract:
+        called directly, decoupled from whether the proactive reprogram in
+        _mark_extracting_after_preinfusion happened to run first (it hadn't,
+        here - preinfusion is still in progress). Both async_stop_at_target
+        and async_abort rely on this call actually reprogramming the Bot to
+        an instant tap; without it, the stop/abort press would still hold
+        for the configured pre-infusion duration."""
         await self.start_shot(preinfusion_s=1.0)
-        await self.wait_for_extracting()
-        await asyncio.sleep(0.05)  # let the proactive reprogram finish
+        shot = self.runtime.active_shot
+        self.assertFalse(shot.quick_press_ready)  # proactive reprogram hasn't run yet
 
-        self.assertIn(0, FakeBotConfigurator.calls)
-        self.assertTrue(self.runtime.active_shot.quick_press_ready)
+        calls_before = list(FakeBotConfigurator.calls)
+        await self.runtime._async_ensure_quick_stop_press(shot)
 
-        self.scale.push_reading(make_reading(weight_g=35.0))
-        await self.hass.tasks[-1]
-
-        self.assertEqual(self.runtime.status, ShotPhase.SETTLING.value)
+        self.assertTrue(shot.quick_press_ready)
+        self.assertEqual(FakeBotConfigurator.calls, calls_before + [0])
 
     async def test_fallback_cancels_stuck_proactive_reprogram_instead_of_racing(self):
         """Regression test: making the fallback reprogram share a lock with
