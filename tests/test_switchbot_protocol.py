@@ -19,9 +19,14 @@ class SwitchBotProtocolTests(unittest.TestCase):
     def test_press_command(self):
         self.assertEqual(protocol.build_press_command(), bytes([0x57, 0x01, 0x00]))
 
+    def test_zero_duration_is_instant_tap(self):
+        self.assertEqual(protocol.build_set_long_press_command(0), bytes([0x57, 0x0F, 0x08, 0x00]))
+
     def test_bad_duration(self):
         with self.assertRaises(ValueError):
-            protocol.build_set_long_press_command(0)
+            protocol.build_set_long_press_command(-1)
+        with self.assertRaises(ValueError):
+            protocol.build_set_long_press_command(256)
 
     def test_response_status(self):
         self.assertEqual(protocol.response_status(bytes([1, 0])), 1)

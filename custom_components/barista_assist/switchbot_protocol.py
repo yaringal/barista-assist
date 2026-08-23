@@ -27,9 +27,13 @@ def build_press_command() -> bytes:
 
 
 def build_set_long_press_command(seconds: int) -> bytes:
-    """Build the extended command that changes the Bot's stored long-press duration."""
-    if not 1 <= seconds <= 255:
-        raise ValueError("SwitchBot long-press duration must be 1-255 seconds")
+    """Build the extended command that changes the Bot's stored long-press duration.
+
+    0 means no hold at all (an instant tap); this is a real device value, not
+    just an internal default, so it must stay allowed here.
+    """
+    if not 0 <= seconds <= 255:
+        raise ValueError("SwitchBot long-press duration must be 0-255 seconds")
     return bytes([BOT_MAGIC, COMMAND_EXTENDED, COMMAND_EXT_SET_LONG_PRESS, seconds])
 
 

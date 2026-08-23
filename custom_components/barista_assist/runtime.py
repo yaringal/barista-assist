@@ -75,7 +75,9 @@ class ActiveShot:
     stop_compensation_g: float
     samples: list[ShotSample]
     stop_command_elapsed_ms: int | None = None
+    stop_scheduled: bool = False
     stop_triggered: bool = False
+    quick_press_ready: bool = False
 
 
 class BaristaRuntime:
@@ -452,18 +454,18 @@ class BaristaRuntime:
             )
             threshold = shot.target_yield_g - shot.stop_compensation_g
             if (
-                not shot.stop_triggered
+                not shot.stop_scheduled
                 and elapsed_ms > 1000
                 and reading.weight_g >= threshold
             ):
-                shot.stop_triggered = True
+                shot.stop_scheduled = True
                 self.hass.async_create_task(
                     self.async_stop_at_target(), "barista_assist_target_stop"
                 )
         self._notify()
 
-    async def _async_prepare_brew_bot(self, preinfusion_s: int) -> None:
-        """Program the Bot's stored long-press duration for this shot."""
+    async def _async_prepare_brew_bot(self, hold_seconds: int) -> None:
+        """Program the Bot's stored press-hold duration (0 = an instant tap)."""
         address = resolve_bluetooth_address(self.hass, self.brew_entity)
         if address is None:
             raise HomeAssistantError(
@@ -471,7 +473,7 @@ class BaristaRuntime:
             )
         await SwitchBotBotConfigurator(
             self.hass, address
-        ).async_set_long_press_duration(preinfusion_s)
+        ).async_set_long_press_duration(hold_seconds)
 
     async def _async_press_brew_bot(self) -> None:
         entity_id = self.brew_entity
@@ -556,10 +558,36 @@ class BaristaRuntime:
         try:
             await asyncio.sleep(preinfusion_s)
             shot = self.active_shot
-            if shot is not None and shot.id == shot_id and not shot.stop_triggered:
-                self._set_phase(ShotPhase.EXTRACTING)
+            if shot is None or shot.id != shot_id or shot.stop_scheduled:
+                return
+            self._set_phase(ShotPhase.EXTRACTING)
+            # Reprogram the Bot to an instant tap now, off the time-critical stop
+            # path, so the eventual stop/abort press doesn't also hold for
+            # preinfusion_s seconds like the start press did.
+            try:
+                await self._async_prepare_brew_bot(0)
+                shot.quick_press_ready = True
+            except Exception as err:
+                _LOGGER.warning(
+                    "Could not reprogram brew Bot for an instant stop press ahead of time: %s",
+                    err,
+                )
         except asyncio.CancelledError:
             return
+
+    async def _async_ensure_quick_stop_press(self, shot: ActiveShot) -> None:
+        """Fall back to reprogramming here if the proactive attempt hasn't landed yet."""
+        if shot.quick_press_ready:
+            return
+        try:
+            await self._async_prepare_brew_bot(0)
+            shot.quick_press_ready = True
+        except Exception as err:
+            _LOGGER.warning(
+                "Could not reprogram brew Bot for an instant stop press; "
+                "the press may hold for the configured pre-infusion duration: %s",
+                err,
+            )
 
     async def _shot_timeout(self) -> None:
         try:
@@ -590,6 +618,7 @@ class BaristaRuntime:
                 shot.stop_command_elapsed_ms = int(elapsed_s * 1000)
                 self._set_phase(ShotPhase.STOPPING)
                 try:
+                    await self._async_ensure_quick_stop_press(shot)
                     await self._async_press_brew_bot()
                 except Exception as err:
                     _LOGGER.exception("Failed to press brew Bot for target stop")
@@ -619,9 +648,12 @@ class BaristaRuntime:
             shot.stop_command_elapsed_ms = int(elapsed_s * 1000)
             if elapsed_s < self.safe_shot_deadline_s:
                 try:
+                    await self._async_ensure_quick_stop_press(shot)
                     await self._async_press_brew_bot()
                 except Exception as err:
-                    _LOGGER.warning("Brew Bot failed while aborting shot: %s", err)
+                    _LOGGER.exception("Failed to press brew Bot while aborting shot")
+                    self._set_phase(ShotPhase.STOP_ERROR)
+                    raise HomeAssistantError(f"Failed to abort shot: {err}") from err
                 await asyncio.sleep(1.0)
                 await self._async_finalize(reason)
                 return
