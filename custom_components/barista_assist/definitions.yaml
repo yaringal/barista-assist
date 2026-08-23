@@ -1,0 +1,243 @@
+# Declarative source of truth for Barista Assist user-facing controls.
+# Runtime/Bluetooth/database algorithms intentionally remain in Python.
+version: 1
+
+slots:
+  - normal
+  - decaf
+
+defaults:
+  recipe:
+    dose_g: 18.0
+    grind: 15.0
+    target_yield_g: 36.0
+    temperature_offset_c: 0
+    preinfusion_s: 7
+  controller:
+    stop_compensation_g: 1.5
+    safety_margin_s: 3
+  new_bag:
+    starting_mass_g: 250.0
+
+entities:
+  sensor:
+    status:
+      source: runtime
+      field: status
+      translation_key: status
+      token: __STATUS__
+      attributes: [scale_connected, selected_slot, stop_compensation_g]
+
+    scale_weight:
+      source: scale
+      field: weight_g
+      translation_key: scale_weight
+      token: __SCALE_WEIGHT__
+      unit: g
+      device_class: weight
+      state_class: measurement
+      precision: 1
+      requires_scale: true
+
+    scale_battery:
+      source: scale
+      field: battery_percent
+      translation_key: scale_battery
+      token: __SCALE_BATTERY__
+      unit: "%"
+      device_class: battery
+      state_class: measurement
+
+    active_bag:
+      source: bag
+      field: coffee_name
+      translation_key: active_bag
+      token: __ACTIVE_BAG__
+      attributes:
+        - slot
+        - bag_id
+        - roaster
+        - roast_date
+        - opened_at
+        - dose_g
+        - grind
+        - target_yield_g
+        - temperature_offset_c
+        - preinfusion_s
+        - remaining_g
+
+    last_yield:
+      source: last_shot
+      field: actual_yield_g
+      translation_key: last_yield
+      token: __LAST_YIELD__
+      unit: g
+      device_class: weight
+      precision: 1
+
+    flow_rate:
+      source: scale
+      field: flow_g_s
+      translation_key: flow_rate
+      token: __FLOW_RATE__
+      unit: g/s
+      state_class: measurement
+      precision: 2
+      requires_scale: true
+
+    beans_remaining:
+      source: bag
+      field: remaining_g
+      translation_key: beans_remaining
+      token: __BEANS_REMAINING__
+      unit: g
+      device_class: weight
+      precision: 0
+      requires_bag: true
+
+  number:
+    dose:
+      source: bag
+      field: dose_g
+      translation_key: dose
+      token: __DOSE__
+      min: 15.0
+      max: 22.0
+      step: 0.1
+      unit: g
+      mode: box
+      requires_bag: true
+
+    grind:
+      source: bag
+      field: grind
+      translation_key: grind
+      token: __GRIND__
+      min: 0.0
+      max: 100.0
+      step: 0.5
+      mode: box
+      requires_bag: true
+
+    target_yield:
+      source: bag
+      field: target_yield_g
+      translation_key: target_yield
+      token: __TARGET_YIELD__
+      min: 15.0
+      max: 80.0
+      step: 0.5
+      unit: g
+      mode: box
+      requires_bag: true
+
+    preinfusion:
+      source: bag
+      field: preinfusion_s
+      translation_key: preinfusion
+      token: __PREINFUSION__
+      min: 1
+      max: 20
+      step: 1
+      unit: s
+      mode: box
+      requires_bag: true
+
+    stop_compensation:
+      source: controller
+      field: stop_compensation_g
+      translation_key: stop_compensation
+      token: __STOP_COMPENSATION__
+      min: 0.0
+      max: 8.0
+      step: 0.1
+      unit: g
+      mode: box
+
+    new_bag_starting_mass:
+      source: draft
+      field: starting_mass_g
+      translation_key: new_bag_starting_mass
+      token: __NEW_BAG_STARTING_MASS__
+      min: 50.0
+      max: 2000.0
+      step: 10.0
+      unit: g
+      mode: box
+
+  select:
+    bean_slot:
+      source: controller
+      field: selected_slot
+      translation_key: bean_slot
+      token: __BEAN_SLOT__
+      options:
+        - label: normal
+          value: normal
+        - label: decaf
+          value: decaf
+
+    temperature_offset:
+      source: bag
+      field: temperature_offset_c
+      translation_key: temperature_offset
+      token: __TEMPERATURE__
+      requires_bag: true
+      options:
+        - label: "-2 °C"
+          value: -2
+        - label: "-1 °C"
+          value: -1
+        - label: "0 °C"
+          value: 0
+        - label: "+1 °C"
+          value: 1
+        - label: "+2 °C"
+          value: 2
+
+  text:
+    new_bag_coffee:
+      source: draft
+      field: coffee
+      translation_key: new_bag_coffee
+      token: __NEW_BAG_COFFEE__
+      min: 0
+      max: 120
+      mode: text
+
+    new_bag_roaster:
+      source: draft
+      field: roaster
+      translation_key: new_bag_roaster
+      token: __NEW_BAG_ROASTER__
+      min: 0
+      max: 120
+      mode: text
+
+  date:
+    new_bag_roast_date:
+      source: draft
+      field: roast_date
+      translation_key: new_bag_roast_date
+      token: __NEW_BAG_ROAST_DATE__
+
+  button:
+    brew:
+      action: brew
+      translation_key: brew
+      token: __BREW__
+
+    abort:
+      action: abort
+      translation_key: abort
+      token: __ABORT__
+
+    tare:
+      action: tare
+      translation_key: tare
+      token: __TARE__
+
+    create_bag:
+      action: create_bag
+      translation_key: create_bag
+      token: __CREATE_BAG__

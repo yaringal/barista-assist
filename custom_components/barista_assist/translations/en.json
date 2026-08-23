@@ -1,0 +1,157 @@
+{
+  "title": "Barista Assist",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Barista Assist",
+        "description": "Turn on the BOOKOO Themis Ultra, then choose the scale and the SwitchBot attached to the brew button. Recipe and brew-by-weight settings are edited from the Barista Assist dashboard after setup.",
+        "data": {
+          "scale_address": "BOOKOO Themis Ultra",
+          "brew_entity": "Brew SwitchBot",
+          "machine_max_shot_seconds": "Barista Express programmed maximum shot duration (seconds)",
+          "safety_margin_seconds": "Stop safety margin (seconds)",
+          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Set up discovered BOOKOO scale",
+        "description": "BOOKOO scale {name} was discovered. Choose the SwitchBot attached to the brew button.",
+        "data": {
+          "brew_entity": "Brew SwitchBot",
+          "machine_max_shot_seconds": "Barista Express programmed maximum shot duration (seconds)",
+          "safety_margin_seconds": "Stop safety margin (seconds)",
+          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express"
+        }
+      }
+    },
+    "abort": {
+      "no_devices_found": "No powered-on BOOKOO Themis Ultra was found. Turn the scale on and try again.",
+      "not_supported": "This Bluetooth device is not a supported BOOKOO Themis Ultra."
+    },
+    "error": {
+      "cannot_connect": "The selected scale is not reachable through a connectable Bluetooth adapter.",
+      "entity_not_found": "The selected SwitchBot entity is unavailable.",
+      "machine_limit_too_short": "Machine maximum must exceed the safety margin by at least 5 seconds.",
+      "machine_limit_must_be_confirmed": "Confirm the Barista Express programmed maximum shot duration before using automatic brew control.",
+      "brew_address_not_found": "The selected SwitchBot device has no Bluetooth address available in Home Assistant."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Barista Assist settings",
+        "data": {
+          "brew_entity": "Brew SwitchBot",
+          "machine_max_shot_seconds": "Barista Express programmed maximum shot duration (seconds)",
+          "safety_margin_seconds": "Stop safety margin (seconds)",
+          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express"
+        },
+        "description": "Set the physical shot limit programmed into the Barista Express. Barista Assist will stop before this limit and will never press the brew button after the protected window because that could start a new shot."
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status"
+      },
+      "scale_weight": {
+        "name": "Scale weight"
+      },
+      "scale_battery": {
+        "name": "Scale battery"
+      },
+      "active_bag": {
+        "name": "Active bag"
+      },
+      "last_yield": {
+        "name": "Last yield"
+      },
+      "flow_rate": {
+        "name": "Flow rate"
+      },
+      "beans_remaining": {
+        "name": "Estimated beans remaining"
+      }
+    },
+    "number": {
+      "dose": {
+        "name": "Dose"
+      },
+      "grind": {
+        "name": "DF54 grind"
+      },
+      "target_yield": {
+        "name": "Target yield"
+      },
+      "preinfusion": {
+        "name": "Pre-infusion"
+      },
+      "stop_compensation": {
+        "name": "Stop compensation"
+      },
+      "new_bag_starting_mass": {
+        "name": "New bag starting mass"
+      }
+    },
+    "select": {
+      "bean_slot": {
+        "name": "Bean slot"
+      },
+      "temperature_offset": {
+        "name": "Brew temperature offset"
+      }
+    },
+    "text": {
+      "new_bag_coffee": {
+        "name": "New bag coffee"
+      },
+      "new_bag_roaster": {
+        "name": "New bag roaster"
+      }
+    },
+    "date": {
+      "new_bag_roast_date": {
+        "name": "New bag roast date"
+      }
+    },
+    "button": {
+      "brew": {
+        "name": "Brew"
+      },
+      "abort": {
+        "name": "Abort shot"
+      },
+      "tare": {
+        "name": "Tare scale"
+      },
+      "create_bag": {
+        "name": "Create or replace selected bag"
+      }
+    }
+  },
+  "services": {
+    "brew": {
+      "name": "Brew",
+      "description": "Start the selected bag's shot using the configured brew SwitchBot."
+    },
+    "abort": {
+      "name": "Abort shot",
+      "description": "Stop and abort the active shot. If the protected stop window has passed, Barista Assist will not press the brew button and will require manual intervention instead."
+    },
+    "tare": {
+      "name": "Tare scale",
+      "description": "Tare the connected BOOKOO Themis Ultra."
+    },
+    "select_slot": {
+      "name": "Select bean slot",
+      "description": "Select the active normal or decaf bag slot.",
+      "fields": {
+        "slot": {
+          "name": "Slot",
+          "description": "Bean slot to make active."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "entity": {
+    "sensor": {
+      "status": {"default": "mdi:coffee-outline"},
+      "active_bag": {"default": "mdi:coffee-beans"},
+      "flow_rate": {"default": "mdi:waves-arrow-right"},
+      "beans_remaining": {"default": "mdi:coffee-beans"}
+    },
+    "number": {
+      "dose": {"default": "mdi:scale"},
+      "grind": {"default": "mdi:grain"},
+      "target_yield": {"default": "mdi:cup"},
+      "preinfusion": {"default": "mdi:timer-sand"},
+      "stop_compensation": {"default": "mdi:target"},
+      "new_bag_starting_mass": {"default": "mdi:weight-gram"}
+    },
+    "select": {
+      "bean_slot": {"default": "mdi:coffee-beans"},
+      "temperature_offset": {"default": "mdi:thermometer"}
+    },
+    "text": {
+      "new_bag_coffee": {"default": "mdi:coffee-beans"},
+      "new_bag_roaster": {"default": "mdi:store"}
+    },
+    "date": {
+      "new_bag_roast_date": {"default": "mdi:calendar"}
+    },
+    "button": {
+      "brew": {"default": "mdi:coffee-maker"},
+      "abort": {"default": "mdi:stop-circle-outline"},
+      "tare": {"default": "mdi:scale-balance"},
+      "create_bag": {"default": "mdi:package-variant-plus"}
+    }
+  },
+  "services": {
+    "brew": {"service": "mdi:coffee-maker"},
+    "abort": {"service": "mdi:stop-circle-outline"},
+    "tare": {"service": "mdi:scale-balance"},
+    "select_slot": {"service": "mdi:coffee-beans"}
+  }
+}

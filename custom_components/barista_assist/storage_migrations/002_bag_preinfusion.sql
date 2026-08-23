@@ -1,0 +1,1 @@
+ALTER TABLE bags ADD COLUMN preinfusion_s REAL NOT NULL DEFAULT 7.0;

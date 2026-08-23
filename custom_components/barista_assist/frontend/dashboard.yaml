@@ -1,0 +1,239 @@
+title: Barista Assist
+views:
+  - title: Brew
+    path: brew
+    icon: mdi:coffee-maker
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Ready to brew
+            heading_style: title
+            icon: mdi:coffee-maker
+
+          - type: tile
+            entity: __STATUS__
+            color: green
+            vertical: true
+
+          - type: tile
+            entity: __BEAN_SLOT__
+            color: brown
+            features:
+              - type: select-options
+            features_position: bottom
+
+          - type: tile
+            entity: __ACTIVE_BAG__
+            color: brown
+            state_content:
+              - state
+              - roaster
+              - roast_date
+              - remaining_g
+
+          - type: tile
+            entity: __BEANS_REMAINING__
+            color: brown
+            vertical: true
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Recipe
+            heading_style: title
+            icon: mdi:tune-variant
+
+          - type: tile
+            entity: __DOSE__
+            color: amber
+            features: &number_buttons
+              - type: numeric-input
+                style: buttons
+            features_position: bottom
+
+          - type: tile
+            entity: __GRIND__
+            color: amber
+            features: *number_buttons
+            features_position: bottom
+
+          - type: tile
+            entity: __TARGET_YIELD__
+            color: amber
+            features: *number_buttons
+            features_position: bottom
+
+          - type: tile
+            entity: __TEMPERATURE__
+            color: orange
+            features:
+              - type: select-options
+            features_position: bottom
+
+          - type: tile
+            entity: __PREINFUSION__
+            color: blue
+            features: *number_buttons
+            features_position: bottom
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Live shot
+            heading_style: title
+            icon: mdi:chart-line
+
+          - type: tile
+            entity: __SCALE_WEIGHT__
+            color: blue
+            vertical: true
+
+          - type: tile
+            entity: __FLOW_RATE__
+            color: cyan
+            vertical: true
+
+          - type: tile
+            entity: __LAST_YIELD__
+            color: green
+            vertical: true
+
+          - type: tile
+            entity: __STOP_COMPENSATION__
+            color: purple
+            features: *number_buttons
+            features_position: bottom
+
+          - type: heading
+            heading: Controls
+            heading_style: title
+            icon: mdi:gesture-tap-button
+
+          - type: tile
+            entity: __BREW__
+            color: green
+            vertical: true
+            features:
+              - type: button
+                action_name: Start shot
+
+          - type: tile
+            entity: __TARE__
+            color: blue
+            vertical: true
+            features:
+              - type: button
+                action_name: Tare scale
+
+          - type: tile
+            entity: __ABORT__
+            color: red
+            vertical: true
+            features:
+              - type: button
+                action_name: Stop now
+
+          - type: custom:barista-assist-export-card
+            title: Shot data
+            button_text: Copy all shot data
+
+  - title: Bags
+    path: bags
+    icon: mdi:coffee-beans
+    type: sections
+    max_columns: 2
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: New physical bag
+            heading_style: title
+            icon: mdi:package-variant-plus
+
+          - type: markdown
+            content: >-
+              **Create or replace the selected Normal/Decaf bag.**
+
+              A replacement bag inherits that slot's current recipe. The first bag
+              starts at **18.0 g dose / DF54 15 / 36.0 g yield / 0 °C / 7 s PI**.
+
+          - type: tile
+            entity: __BEAN_SLOT__
+            features:
+              - type: select-options
+            features_position: bottom
+
+          - type: entities
+            title: Bag details
+            show_header_toggle: false
+            entities:
+              - __NEW_BAG_COFFEE__
+              - __NEW_BAG_ROASTER__
+              - __NEW_BAG_ROAST_DATE__
+              - __NEW_BAG_STARTING_MASS__
+
+          - type: tile
+            entity: __CREATE_BAG__
+            color: green
+            features:
+              - type: button
+                action_name: Save new bag
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Current bag
+            heading_style: title
+            icon: mdi:package-variant-closed
+
+          - type: tile
+            entity: __ACTIVE_BAG__
+            color: brown
+            state_content:
+              - state
+              - roaster
+              - roast_date
+              - opened_at
+              - remaining_g
+
+          - type: entities
+            title: Current recipe
+            show_header_toggle: false
+            entities:
+              - __DOSE__
+              - __GRIND__
+              - __TARGET_YIELD__
+              - __TEMPERATURE__
+              - __PREINFUSION__
+
+  - title: System
+    path: system
+    icon: mdi:cog-outline
+    type: sections
+    max_columns: 2
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Barista Assist
+            heading_style: title
+            icon: mdi:coffee-maker
+
+          - type: entities
+            title: Connection and control
+            show_header_toggle: false
+            entities:
+              - __STATUS__
+              - __SCALE_BATTERY__
+              - __STOP_COMPENSATION__
+
+          - type: markdown
+            content: >-
+              ### v0.2.0
+
+              Recipe/entity definitions are shipped in `definitions.yaml`; this
+              dashboard is shipped in `frontend/dashboard.yaml`. Both are replaced
+              atomically by HACS updates, so no Home Assistant YAML needs patching.

@@ -1,0 +1,12 @@
+brew: {}
+abort: {}
+tare: {}
+select_slot:
+  fields:
+    slot:
+      required: true
+      selector:
+        select:
+          options:
+            - normal
+            - decaf
