@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import StrEnum
@@ -563,7 +564,9 @@ class BaristaRuntime:
             self._set_phase(ShotPhase.EXTRACTING)
             # Reprogram the Bot to an instant tap now, off the time-critical stop
             # path, so the eventual stop/abort press doesn't also hold for
-            # preinfusion_s seconds like the start press did.
+            # preinfusion_s seconds like the start press did. If a real stop
+            # needs the Bot before this finishes, it will cancel this attempt
+            # (see _async_ensure_quick_stop_press) rather than wait for it.
             try:
                 await self._async_prepare_brew_bot(0)
                 shot.quick_press_ready = True
@@ -576,7 +579,19 @@ class BaristaRuntime:
             return
 
     async def _async_ensure_quick_stop_press(self, shot: ActiveShot) -> None:
-        """Fall back to reprogramming here if the proactive attempt hasn't landed yet."""
+        """Fall back to reprogramming here if the proactive attempt hasn't landed yet.
+
+        Pre-empts (rather than waits for) any in-flight proactive attempt, since
+        this is called from the time-critical stop/abort path and a competing
+        BLE connection to the same Bot must not be left running concurrently.
+        """
+        if shot.quick_press_ready:
+            return
+        phase_task = self._phase_task
+        if phase_task is not None and not phase_task.done():
+            phase_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await phase_task
         if shot.quick_press_ready:
             return
         try:
