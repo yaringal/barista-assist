@@ -284,8 +284,10 @@ class BrewValidationTests(RuntimeTestCase):
         self.assertIsNone(self.runtime.active_shot)
 
     async def test_rejects_brew_when_stop_compensation_too_large_for_yield(self):
-        # Bag validation requires target_yield_g > stop_compensation_g + 1.0.
-        await self.create_bag(target_yield_g=2.0, stop_compensation_g=1.5)
+        # async_brew requires target_yield_g > stop_compensation_g + 1.0.
+        # target_yield_g must still be within its own valid range (15-80) so
+        # this exercises that check specifically, not bag-creation validation.
+        await self.create_bag(target_yield_g=15.0, stop_compensation_g=14.0)
 
         with self.assertRaises(HomeAssistantError):
             await self.runtime.async_brew()
@@ -296,6 +298,22 @@ class BrewValidationTests(RuntimeTestCase):
 
         with self.assertRaises(HomeAssistantError):
             await self.runtime.async_brew()
+
+
+class NewBagValidationTests(RuntimeTestCase):
+    async def test_new_bag_validates_every_recipe_field_not_just_grind(self):
+        """Regression test: async_new_bag used to validate only `grind`, so
+        an out-of-range value for any other recipe field (e.g. an invalid
+        temperature offset) would be stored unvalidated - and could later
+        crash the temperature_offset select entity's current_option."""
+        with self.assertRaises(HomeAssistantError):
+            await self.runtime.async_new_bag(
+                {
+                    "slot": self.runtime.definitions.slots[0],
+                    "coffee_name": "Test Coffee",
+                    "temperature_offset_c": 99,  # not one of {-2,-1,0,1,2}
+                }
+            )
 
 
 class SwitchModeTests(RuntimeTestCase):

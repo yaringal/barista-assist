@@ -47,6 +47,7 @@ entities:
       unit: "%"
       device_class: battery
       state_class: measurement
+      requires_scale: true
 
     active_bag:
       source: bag
@@ -226,6 +227,7 @@ entities:
       action: brew
       translation_key: brew
       token: __BREW__
+      requires_bag: true
 
     abort:
       action: abort

@@ -396,7 +396,17 @@ class BaristaRuntime:
                 return getattr(current, field)
             return defaults[field]
 
+        dose_g = self._validate_recipe_field("dose_g", recipe_value("dose_g"))
         grind = self._validate_recipe_field("grind", recipe_value("grind"))
+        target_yield_g = self._validate_recipe_field(
+            "target_yield_g", recipe_value("target_yield_g")
+        )
+        temperature_offset_c = self._validate_recipe_field(
+            "temperature_offset_c", recipe_value("temperature_offset_c")
+        )
+        preinfusion_s = self._validate_recipe_field(
+            "preinfusion_s", recipe_value("preinfusion_s")
+        )
         bag = await self.hass.async_add_executor_job(
             lambda: self.db.new_bag(
                 slot=slot,
@@ -409,11 +419,11 @@ class BaristaRuntime:
                         self.definitions.defaults["new_bag"]["starting_mass_g"],
                     )
                 ),
-                dose_g=float(recipe_value("dose_g")),
+                dose_g=float(dose_g),
                 grind=float(grind),
-                target_yield_g=float(recipe_value("target_yield_g")),
-                temperature_offset_c=int(recipe_value("temperature_offset_c")),
-                preinfusion_s=float(recipe_value("preinfusion_s")),
+                target_yield_g=float(target_yield_g),
+                temperature_offset_c=int(temperature_offset_c),
+                preinfusion_s=float(preinfusion_s),
             )
         )
         await self.async_select_slot(slot)

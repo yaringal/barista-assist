@@ -76,7 +76,10 @@ class BaristaDatabase:
                     )
                 db.executescript(matches[0].read_text(encoding="utf-8"))
                 if version == 2 and current == 1:
-                    # Preserve the old integration-wide PI value on existing bags.
+                    # Preserve the old integration-wide PI value on existing
+                    # active bags only: v0.1 never tracked PI per bag, so
+                    # there is no historical value to restore for bags that
+                    # were already archived before this migration runs.
                     db.execute(
                         "UPDATE bags SET preinfusion_s=? WHERE active=1",
                         (float(legacy_preinfusion_s),),

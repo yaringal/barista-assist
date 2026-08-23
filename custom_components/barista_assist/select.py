@@ -32,7 +32,12 @@ class BaristaSelect(BaristaAssistEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         value = self.runtime.entity_value(self.definition)
-        return self.definition.option_label(value) if value is not None else None
+        if value is None:
+            return None
+        try:
+            return self.definition.option_label(value)
+        except ValueError:
+            return None
 
     async def async_select_option(self, option: str) -> None:
         await self.runtime.async_set_entity_value(
