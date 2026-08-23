@@ -23,5 +23,10 @@
   "loggers": [
     "bleak_retry_connector"
   ],
-  "single_config_entry": true
+  "single_config_entry": true,
+  "documentation": "https://github.com/yaringal/barista-assist#readme",
+  "issue_tracker": "https://github.com/yaringal/barista-assist/issues",
+  "codeowners": [
+    "@yaringal"
+  ]
 }
