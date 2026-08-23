@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.3
+
+### Fixed
+
+- **Automatic stop-at-target-weight never actually pressed the brew button.** A flag reused for two purposes (scheduling the stop vs. confirming it happened) made the auto-stop task a no-op every time — the shot would keep pouring past its target. Also silently disabled the timeout safety net and manual abort once triggered.
+- **A failed stop/abort press could be reported as a successful one.** `abort` swallowed a failed brew-button press and finalized the shot anyway, even though the machine may still have been pouring unattended.
+- **The stop/abort press held for the full pre-infusion duration instead of an instant tap**, because nothing reprogrammed the SwitchBot Bot's stored press-hold time back down before pressing to stop. Added a proactive reprogram once extraction begins, with a race-safe fallback (cancel-and-retry, not a shared lock) so the fallback can't itself introduce a concurrent-BLE-connection race or block the urgent press behind non-urgent prep work.
+- **Config options flow accepted a stale/removed brew SwitchBot entity** without validation, unlike initial setup; it now validates the same way. Fixed a possible crash (`KeyError`) in initial setup if the BOOKOO scale stops advertising between showing and submitting the form.
+- **`scale_battery` sensor stayed "available" showing a frozen reading forever after the scale disconnected** — it now correctly goes unavailable like its sibling sensors.
+- **The Brew button never went unavailable with no bag selected.**
+- **Bag creation only validated the grind field**, so an out-of-range value for dose, target yield, temperature offset, or pre-infusion could be stored unvalidated and later crash the temperature-offset select entity. All recipe fields are now validated.
+- Removed an unreachable dead-code safety check in the config flow (the selector bounds already made it impossible to trigger) and completed missing `options.error` translations.
+- The dashboard's WebSocket endpoint no longer blocks the event loop reading/parsing its YAML template on the first request after a restart; the cache is now warmed at startup like `definitions.yaml` already was.
+- The shot-data clipboard-copy fallback (when the Clipboard API is unavailable, e.g. in the companion app) now shows the export text in a visible, selectable field instead of an unreliable scripted copy across the shadow-DOM boundary.
+- Replaced `enum.StrEnum` (Python 3.11+ only) with a Python 3.10-compatible equivalent.
+
+### Tests
+
+- Added a runtime state-machine test harness (fakes for `hass`/BLE, no real Home Assistant install required) covering the shot-control fixes above, plus a `services.yaml`/`definitions.yaml` consistency check. Suite grew from 21 to 37 tests.
+
 ## 0.2.2
 
 - Keep `PUBLISHING.md` in the source/release archive while retaining it in `.gitignore` so local publishing instructions are not committed to GitHub.
