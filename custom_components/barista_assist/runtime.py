@@ -132,6 +132,9 @@ class BaristaRuntime:
         self._shot_lock = asyncio.Lock()
         self._actuation_lock = asyncio.Lock()
 
+    # ---------------------------------------------------------------------
+    # Config & derived properties
+    # ---------------------------------------------------------------------
     @property
     def status(self) -> str:
         return self._phase.value
@@ -165,6 +168,9 @@ class BaristaRuntime:
     def selected_bag(self) -> Bag | None:
         return self._bags.get(self.selected_slot)
 
+    # ---------------------------------------------------------------------
+    # Lifecycle
+    # ---------------------------------------------------------------------
     async def async_initialize(self) -> None:
         """Load durable state, migrate the database, and start BLE."""
         legacy_pi = float(
@@ -201,10 +207,13 @@ class BaristaRuntime:
         await self.scale.async_start()
 
     async def async_close(self) -> None:
-        for task in (self._timeout_task, self._settle_task, self._phase_task, self._manual_finalize_task):
+        for task in self._background_tasks():
             if task:
                 task.cancel()
         await self.scale.async_stop()
+
+    def _background_tasks(self) -> tuple[asyncio.Task[None] | None, ...]:
+        return (self._timeout_task, self._settle_task, self._phase_task, self._manual_finalize_task)
 
     async def _async_save_state(self) -> None:
         await self.store.async_save(
@@ -249,9 +258,7 @@ class BaristaRuntime:
 
     def entity_value(self, definition: EntityDefinition) -> Any:
         source, field = definition.source, definition.field
-        if source == "runtime":
-            return getattr(self, str(field))
-        if source == "controller":
+        if source in ("runtime", "controller"):
             return getattr(self, str(field))
         if source == "draft":
             return getattr(self.draft, str(field))
@@ -396,17 +403,16 @@ class BaristaRuntime:
                 return getattr(current, field)
             return defaults[field]
 
-        dose_g = self._validate_recipe_field("dose_g", recipe_value("dose_g"))
-        grind = self._validate_recipe_field("grind", recipe_value("grind"))
-        target_yield_g = self._validate_recipe_field(
-            "target_yield_g", recipe_value("target_yield_g")
-        )
-        temperature_offset_c = self._validate_recipe_field(
-            "temperature_offset_c", recipe_value("temperature_offset_c")
-        )
-        preinfusion_s = self._validate_recipe_field(
-            "preinfusion_s", recipe_value("preinfusion_s")
-        )
+        recipe = {
+            field: self._validate_recipe_field(field, recipe_value(field))
+            for field in (
+                "dose_g",
+                "grind",
+                "target_yield_g",
+                "temperature_offset_c",
+                "preinfusion_s",
+            )
+        }
         bag = await self.hass.async_add_executor_job(
             lambda: self.db.new_bag(
                 slot=slot,
@@ -419,11 +425,11 @@ class BaristaRuntime:
                         self.definitions.defaults["new_bag"]["starting_mass_g"],
                     )
                 ),
-                dose_g=float(dose_g),
-                grind=float(grind),
-                target_yield_g=float(target_yield_g),
-                temperature_offset_c=int(temperature_offset_c),
-                preinfusion_s=float(preinfusion_s),
+                dose_g=float(recipe["dose_g"]),
+                grind=float(recipe["grind"]),
+                target_yield_g=float(recipe["target_yield_g"]),
+                temperature_offset_c=int(recipe["temperature_offset_c"]),
+                preinfusion_s=float(recipe["preinfusion_s"]),
             )
         )
         await self.async_select_slot(slot)
@@ -453,10 +459,13 @@ class BaristaRuntime:
     # ---------------------------------------------------------------------
     # Shot state machine
     # ---------------------------------------------------------------------
+
+    # -- scale callbacks --
     def _handle_scale_connection(self, connected: bool) -> None:
         self.scale_connected = connected
         self._notify(force=True)
 
+    # -- read scale and decide if to stop shot --
     def _handle_reading(self, reading: BookooReading) -> None:
         shot = self.active_shot
         if shot is not None:
@@ -483,6 +492,7 @@ class BaristaRuntime:
                 )
         self._notify()
 
+    # -- brew Bot actuation (SwitchBot) --
     async def _async_prepare_brew_bot(self, hold_seconds: int) -> None:
         """Program the Bot's stored press-hold duration (0 = an instant tap)."""
         address = resolve_bluetooth_address(self.hass, self.brew_entity)
@@ -507,6 +517,7 @@ class BaristaRuntime:
             "switch", SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True
         )
 
+    # -- brew / stop / abort / finalize --
     async def async_brew(self) -> str:
         async with self._shot_lock:
             if self.active_shot is not None:
@@ -637,6 +648,16 @@ class BaristaRuntime:
         except asyncio.CancelledError:
             return
 
+    async def _async_press_stop(self, shot: ActiveShot, verb: str) -> None:
+        """Press the brew Bot to stop/abort the shot, or set STOP_ERROR and raise."""
+        try:
+            await self._async_ensure_quick_stop_press(shot)
+            await self._async_press_brew_bot()
+        except Exception as err:
+            _LOGGER.exception("Failed to press brew Bot while trying to %s the shot", verb)
+            self._set_phase(ShotPhase.STOP_ERROR)
+            raise HomeAssistantError(f"Failed to {verb} shot: {err}") from err
+
     async def async_stop_at_target(self) -> None:
         late = False
         async with self._actuation_lock:
@@ -644,19 +665,13 @@ class BaristaRuntime:
             if shot is None or shot.stop_triggered:
                 return
             elapsed_s = time.monotonic() - shot.started_monotonic
-            if elapsed_s >= self.safe_shot_deadline_s:
+            if elapsed_s >= self.safe_shot_deadline_s:  # don't try to stop if machine auto-termination will be within safety_margin_s
                 late = True
             else:
                 shot.stop_triggered = True
                 shot.stop_command_elapsed_ms = int(elapsed_s * 1000)
                 self._set_phase(ShotPhase.STOPPING)
-                try:
-                    await self._async_ensure_quick_stop_press(shot)
-                    await self._async_press_brew_bot()
-                except Exception as err:
-                    _LOGGER.exception("Failed to press brew Bot for target stop")
-                    self._set_phase(ShotPhase.STOP_ERROR)
-                    raise HomeAssistantError(f"Failed to stop shot: {err}") from err
+                await self._async_press_stop(shot, "stop")
                 self._set_phase(ShotPhase.SETTLING)
                 self._settle_task = self.hass.async_create_background_task(
                     self._settle_then_finalize(), "barista_assist_settle"
@@ -679,15 +694,9 @@ class BaristaRuntime:
             shot.stop_triggered = True
             elapsed_s = time.monotonic() - shot.started_monotonic
             shot.stop_command_elapsed_ms = int(elapsed_s * 1000)
-            if elapsed_s < self.safe_shot_deadline_s:
-                try:
-                    await self._async_ensure_quick_stop_press(shot)
-                    await self._async_press_brew_bot()
-                except Exception as err:
-                    _LOGGER.exception("Failed to press brew Bot while aborting shot")
-                    self._set_phase(ShotPhase.STOP_ERROR)
-                    raise HomeAssistantError(f"Failed to abort shot: {err}") from err
-                await asyncio.sleep(1.0)
+            if elapsed_s < self.safe_shot_deadline_s:  # don't try to stop if machine auto-termination will be within safety_margin_s
+                await self._async_press_stop(shot, "abort")
+                await asyncio.sleep(3.0)  # settle
                 await self._async_finalize(reason)
                 return
 
@@ -703,6 +712,7 @@ class BaristaRuntime:
 
     async def _finalize_after_late_abort(self, delay_s: float, reason: str) -> None:
         try:
+            # wait for the machine's own timer to plausibly have ended the shot before closing the DB record
             await asyncio.sleep(delay_s)
             await self._async_finalize(reason)
         except asyncio.CancelledError:
@@ -712,7 +722,7 @@ class BaristaRuntime:
         shot = self.active_shot
         if shot is None:
             return
-        for task in (self._timeout_task, self._settle_task, self._phase_task, self._manual_finalize_task):
+        for task in self._background_tasks():
             if task and task is not asyncio.current_task():
                 task.cancel()
         last_weight = shot.samples[-1].weight_g if shot.samples else None
