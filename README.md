@@ -8,7 +8,47 @@ A self-contained Home Assistant custom integration for a non-invasive smart espr
 - SwitchBot Bot on the brew button
 - Home Assistant
 
-Barista Assist is installed and updated as one HACS package. Its editable application definition is package-owned YAML, so users do **not** patch Home Assistant helpers, automations, Lovelace YAML, or `configuration.yaml` between releases.
+Barista Assist is installed and updated as one HACS package. 
+
+## What this integration does
+
+- Connects directly to a BOOKOO Themis Ultra over Home Assistant Bluetooth.
+- Records timestamped raw weight/flow/battery samples.
+- Uses a SwitchBot `switch` entity as the brew actuator, with direct BLE configuration of its stored long-press duration.
+- Programs per-bag SwitchBot long-press pre-infusion and controls automatic stop at:
+
+  `target yield - stop compensation`
+
+  reprogramming the Bot back to an instant tap once extraction begins, so the stop/abort press itself is quick.
+
+- Stores physical bags, recipes, shots, and raw samples in SQLite.
+- Maintains separate **Normal** and **Decaf** active physical-bag slots.
+- Tracks estimated remaining beans from logged doses.
+- Enforces DF54 settings in `0.5`-unit increments.
+- Exposes all controls as ordinary Home Assistant entities.
+- Keeps a Home Assistant action API:
+  - `barista_assist.brew`
+  - `barista_assist.abort`
+  - `barista_assist.tare`
+  - `barista_assist.select_slot`
+- Ships a stock-Home-Assistant Community Dashboard authored in readable YAML.
+- Migrates v0.1.x databases without deleting bags or shot history.
+
+## Default starting recipe
+
+The first bag in a slot starts at:
+
+```yaml
+dose_g: 18.0
+grind: 15.0
+target_yield_g: 36.0
+temperature_offset_c: 0
+preinfusion_s: 7
+```
+
+`18 g -> 36 g` is the neutral 1:2 starting recipe. It keeps sufficient espresso concentration for a flat white while leaving yield, temperature, dose, grind and PI available for later expert-rule adjustments.
+
+Replacement bags inherit the current recipe from that slot rather than resetting to the defaults.
 
 ## Architecture
 
@@ -36,46 +76,6 @@ frontend/dashboard.yaml
 
 The principle is simple: **configuration and metadata live in YAML; control flow and safety-critical behaviour stay in Python.**
 
-## What this integration does
-
-- Connects directly to a BOOKOO Themis Ultra over Home Assistant Bluetooth.
-- Records timestamped raw weight/flow/battery samples.
-- Uses an existing SwitchBot `switch` entity as the brew actuator, with direct BLE configuration of its stored long-press duration.
-- Programs real per-bag SwitchBot long-press pre-infusion and controls automatic stop at:
-
-  `target yield - stop compensation`
-
-  reprogramming the Bot back to an instant tap once extraction begins, so the stop/abort press itself is quick rather than holding for the pre-infusion duration.
-
-- Stores physical bags, recipes, shots, and raw samples in SQLite.
-- Maintains separate **Normal** and **Decaf** active physical-bag slots.
-- Tracks estimated remaining beans from logged doses.
-- Enforces DF54 settings in `0.5`-unit increments.
-- Exposes all controls as ordinary Home Assistant entities.
-- Keeps the stable Home Assistant action API:
-  - `barista_assist.brew`
-  - `barista_assist.abort`
-  - `barista_assist.tare`
-  - `barista_assist.select_slot`
-- Ships a stock-Home-Assistant Community Dashboard authored in readable YAML.
-- Migrates v0.1.x databases without deleting bags or shot history.
-
-## Default starting recipe
-
-The first bag in a slot starts at:
-
-```yaml
-dose_g: 18.0
-grind: 15.0
-target_yield_g: 36.0
-temperature_offset_c: 0
-preinfusion_s: 7
-```
-
-`18 g -> 36 g` is the neutral 1:2 starting recipe. It keeps sufficient espresso concentration for a flat white while leaving yield, temperature, dose, grind and PI available for later expert-rule adjustments.
-
-Replacement bags inherit the current recipe from that slot rather than resetting to the defaults.
-
 ## Editable YAML
 
 ### `definitions.yaml`
@@ -101,8 +101,6 @@ grind:
   requires_bag: true
 ```
 
-Changing a range/default or adding a similarly shaped entity no longer requires a dedicated Python class and a second manually maintained dashboard mapping.
-
 The definitions file is validated on integration setup and by the unit tests.
 
 ### `frontend/dashboard.yaml`
@@ -113,7 +111,7 @@ The visible dashboard is:
 custom_components/barista_assist/frontend/dashboard.yaml
 ```
 
-It uses only stock Home Assistant cards/features. The adjacent JavaScript file is only the Community Dashboard strategy bridge; it contains no hand-built UI.
+It uses stock Home Assistant cards/features. The adjacent JavaScript file is the Community Dashboard strategy bridge.
 
 Entity names and icons are provided by:
 
@@ -121,8 +119,6 @@ Entity names and icons are provided by:
 translations/en.json
 icons.json
 ```
-
-rather than repeated throughout Python and Lovelace YAML.
 
 ## Home Assistant entities
 
@@ -185,7 +181,7 @@ Research/history data lives in:
 .storage/barista_assist_<config_entry_id>.sqlite3
 ```
 
-SQLite now contains only durable coffee data:
+SQLite contains only durable coffee data:
 
 - physical bags;
 - bag recipes;
@@ -214,9 +210,17 @@ When upgrading from v0.1.x:
 
 ### Preferred: HACS custom repository
 
-Publish the source tree to a public GitHub repository and publish a GitHub Release, then add that repository to HACS as a custom **Integration** repository.
+On your Home Assistant instance:
 
-The detailed publishing/HACS guide is distributed separately as `PUBLISHING.md`, so it can be updated independently from the code ZIP.
+1. Open **HACS**.
+2. Open the **three-dot menu** in the top-right.
+3. Choose **Custom repositories**.
+4. Paste the repository URL, for example:
+   `https://github.com/yaringal/barista-assist`
+5. For **Type**, choose **Integration**.
+6. Select **Add**.
+7. Search HACS for **Barista Assist** and open it.
+8. Select **Download** and choose the version you just released if HACS asks for one.
 
 After HACS installs Barista Assist:
 
@@ -227,7 +231,7 @@ After HACS installs Barista Assist:
 5. Select the SwitchBot attached to the brew button.
 6. Set the maximum shot safety timeout.
 
-Recipe, PI and stop compensation are deliberately **not** duplicated in the setup flow; edit them from the Barista Assist entities/dashboard.
+Recipe, PI and stop compensation are deliberately **not** set in the setup flow; edit them from the Barista Assist entities/dashboard.
 
 ### Add the dashboard once
 
@@ -275,8 +279,6 @@ Automatic stopping is convenience logic, not a substitute for supervision or the
 - dynamic SwitchBot long-press programming;
 - actual pre-grind dose measurement;
 - RH/temperature modelling.
-
-These can be added without reintroducing entity boilerplate. Future diagnostic thresholds and expert correction rules are good candidates for package-owned YAML, while feature extraction and the shot controller should remain tested Python.
 
 ## Testing
 
@@ -342,7 +344,7 @@ The brew Bot must be configured in **press / momentary mode**, not toggle/retrac
 
 ## Barista Express shot-duration safety requirement
 
-Before using automatic brew control, **program both the 1-CUP and 2-CUP buttons on the Barista Express with a maximum shot duration that you know, then confirm that duration in Barista Assist**.
+Before using automatic brew control, **program the relevant CUP button (1-CUP or 2-CUP) on the Barista Express with a maximum shot duration that you know, then confirm that duration in Barista Assist**.
 
 Barista Assist treats that value as the machine's hard physical upper bound. It applies a configurable safety margin (3 s by default) and will automatically stop before the machine's own programmed maximum.
 
@@ -353,4 +355,4 @@ Do not use automatic brew control until this machine limit has been physically p
 
 ## Shot-data export
 
-The Brew view includes **Copy all shot data**. It copies every stored shot and its raw BOOKOO time series as plain text, including recipe/context metadata, stop timing, sample count and a `post_stop` flag. The export is intended to be pasted directly into a diagnostic conversation; samples recorded after the automatic/manual stop are preserved so late scale movement or other recording artefacts can be identified.
+The Brew view includes **Copy all shot data**. It copies every stored shot and its raw BOOKOO time series as plain text, including recipe/context metadata, stop timing, sample count and a `post_stop` flag. The export is intended to be pasted directly into a diagnostics tool; samples recorded after the automatic/manual stop are preserved so late scale movement or other recording artefacts can be identified.
