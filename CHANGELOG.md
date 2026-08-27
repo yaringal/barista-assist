@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.4
+
+### Fixed
+
+- Fixed a fresh-install failure on Home Assistant 2026.8: `manifest.json` pinned `bleak-retry-connector==4.6.0`, which conflicts with HA 2026.8's own constraint of `bleak-retry-connector==4.6.3` for that shared dependency. HA's requirements installer failed with `RequirementsNotFound`, and the frontend surfaced it as "Config flow could not be loaded: 500 internal server error." The pin now matches what HA 2026.8 already requires.
+
+### Repository
+
+- Removed the redundant top-level `VERSION` file; nothing read it, and `manifest.json`'s `version` field (already read by `const.py` at runtime) is now the single place that needs bumping per release. `PUBLISHING.md`'s release commands are parametrized with an exported `$VERSION` accordingly.
+- Removed the current version number from README's section headers ("Architecture", "What this integration does", "Not implemented yet" (renamed from "Deliberately not in..."), "SwitchBot requirement") so the README doesn't need editing purely to stay in sync with a release.
+
 ## 0.2.3
 
 ### Fixed

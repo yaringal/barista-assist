@@ -1,4 +1,4 @@
-# Barista Assist v0.2.3
+# Barista Assist
 
 A self-contained Home Assistant custom integration for a non-invasive smart espresso workflow using:
 
@@ -10,9 +10,9 @@ A self-contained Home Assistant custom integration for a non-invasive smart espr
 
 Barista Assist is installed and updated as one HACS package. Its editable application definition is package-owned YAML, so users do **not** patch Home Assistant helpers, automations, Lovelace YAML, or `configuration.yaml` between releases.
 
-## v0.2.3 architecture
+## Architecture
 
-v0.2.3 is a bug-fix release on top of the v0.2.0 declarative refactor; the architecture is unchanged, built around a declarative core:
+The integration is built around a declarative core (introduced in the v0.2.0 refactor):
 
 ```text
 definitions.yaml
@@ -36,7 +36,7 @@ frontend/dashboard.yaml
 
 The principle is simple: **configuration and metadata live in YAML; control flow and safety-critical behaviour stay in Python.**
 
-## What v0.2.3 does
+## What this integration does
 
 - Connects directly to a BOOKOO Themis Ultra over Home Assistant Bluetooth.
 - Records timestamped raw weight/flow/battery samples.
@@ -263,7 +263,7 @@ Before using coffee, test with water and confirm:
 
 Automatic stopping is convenience logic, not a substitute for supervision or the machine's own safety systems.
 
-## Deliberately not in v0.2.3
+## Not implemented yet
 
 - adaptive/predictive tail compensation;
 - flow-curve diagnostics;
@@ -334,7 +334,7 @@ custom_components/barista_assist/
 
 See `docs/DESIGN.md` for the longer-term project design.
 
-## SwitchBot requirement in v0.2.3
+## SwitchBot requirement
 
 Barista Assist uses the existing Home Assistant SwitchBot entity for the actual button action, and opens a short direct BLE connection before each shot to program the Bot's stored long-press duration to the selected bag's pre-infusion time. SwitchBot documents this BLE command in its public Bot protocol. Once extraction begins, Barista Assist reprograms that same stored duration back down to an instant tap (0 s), so the later stop/abort press is quick instead of holding for the pre-infusion duration; if a stop is needed before that reprogram lands, it happens inline first rather than pressing with a stale hold time.
 
