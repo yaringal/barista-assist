@@ -38,6 +38,9 @@ from .switchbot import SwitchBotBotConfigurator, resolve_bluetooth_address
 
 _LOGGER = logging.getLogger(__name__)
 _STORE_VERSION = 1
+# How long the time-critical stop/abort path waits for an in-flight proactive
+# Bot reprogram before giving up on it (see _async_ensure_quick_stop_press).
+_QUICK_STOP_BOT_WAIT_TIMEOUT_S = 3.0
 
 
 class ShotPhase(str, Enum):
@@ -612,19 +615,37 @@ class BaristaRuntime:
     async def _async_ensure_quick_stop_press(self, shot: ActiveShot) -> None:
         """Fall back to reprogramming here if the proactive attempt hasn't landed yet.
 
-        Pre-empts (rather than waits for) any in-flight proactive attempt, since
-        this is called from the time-critical stop/abort path and a competing
-        BLE connection to the same Bot must not be left running concurrently.
+        Waits for (rather than cancels) any in-flight proactive attempt: both
+        want the exact same outcome, and cancelling a task mid-connection can
+        leak the BLE connection it was opening - bleak_retry_connector's
+        establish_connection() has no cancellation cleanup, so a client that
+        was mid-connect when cancelled is never disconnected. Starting a
+        second, fresh connection to the same Bot on top of that leaked one is
+        exactly how a single-slot/limited Bluetooth adapter runs out of
+        connection slots. The wait is bounded so a truly stuck attempt still
+        can't hang the time-critical stop/abort path forever.
         """
         if shot.quick_press_ready:
             return
         phase_task = self._phase_task
         if phase_task is not None and not phase_task.done():
-            phase_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await phase_task
-        if shot.quick_press_ready:
-            return
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.shield(phase_task), timeout=_QUICK_STOP_BOT_WAIT_TIMEOUT_S
+                )
+            if shot.quick_press_ready:
+                return
+            if not phase_task.done():
+                # Still in flight after the bounded wait: don't also open a
+                # second, concurrent connection to the same Bot on top of it
+                # (the very race this method exists to avoid) - accept the
+                # slower fallback press instead and let the proactive attempt
+                # finish (or fail) in the background on its own.
+                _LOGGER.warning(
+                    "The proactive brew Bot reprogram is still in flight; "
+                    "this press may hold for the configured pre-infusion duration"
+                )
+                return
         try:
             await self._async_prepare_brew_bot(0)
             shot.quick_press_ready = True

@@ -8,8 +8,11 @@ fixed in BaristaRuntime's shot-stop/abort logic:
 - A failed stop/abort press must not be reported as a successful one.
 - The stop/abort press must be reprogrammed to an instant tap rather than
   holding for the configured pre-infusion duration.
-- A stop/abort must never wait for, nor race, an in-flight proactive
-  reprogram attempt for the same Bot.
+- A stop/abort must wait (bounded) for an in-flight proactive reprogram
+  attempt for the same Bot instead of cancelling it, since cancelling a
+  bleak_retry_connector connection attempt mid-flight can leak the BLE
+  connection slot it was opening; it must also never start a second,
+  concurrent connection attempt to the same Bot on top of a still-stuck one.
 - The controller must never press the Bot once the protected shot deadline
   has passed.
 
@@ -25,6 +28,7 @@ import shutil
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -210,16 +214,21 @@ class InstantTapTests(RuntimeTestCase):
         self.assertTrue(shot.quick_press_ready)
         self.assertEqual(FakeBotConfigurator.calls, calls_before + [0])
 
-    async def test_fallback_cancels_stuck_proactive_reprogram_instead_of_racing(self):
-        """Regression test: making the fallback reprogram share a lock with
-        the proactive one let the urgent stop wait on non-urgent prep work;
-        it must instead cancel the stuck attempt and proceed immediately,
-        without two concurrent reprogram attempts racing each other."""
+    async def test_fallback_waits_for_stuck_proactive_reprogram_without_racing_it(self):
+        """Regression test: the fallback used to cancel a stuck in-flight
+        proactive reprogram and immediately start a fresh one. Cancelling
+        mid-connection can leak the BLE connection slot it was opening
+        (bleak_retry_connector's establish_connection() has no cancellation
+        cleanup) - starting a second connection to the same Bot on top of
+        that leak is exactly how a single-slot Bluetooth adapter runs out of
+        connection slots. It must instead wait (bounded) for the same
+        in-flight attempt and never also start a competing one."""
         await self.start_shot(preinfusion_s=1.0)
         # Arm the stuck-call event only now: the initial brew-time reprogram
         # (seconds=1) has already completed above, so this targets the next
         # call instead, which is the proactive reprogram (seconds=0).
-        FakeBotConfigurator.delay_once = asyncio.Event()
+        stuck_event = asyncio.Event()
+        FakeBotConfigurator.delay_once = stuck_event
         await self.wait_for_extracting()
         await asyncio.sleep(0.05)  # proactive reprogram call has started and is stuck
 
@@ -228,14 +237,23 @@ class InstantTapTests(RuntimeTestCase):
         phase_task = self.runtime._phase_task
         self.assertFalse(phase_task.done())
 
-        self.scale.push_reading(make_reading(weight_g=35.0))
-        await self.hass.tasks[-1]  # async_stop_at_target()
+        with mock.patch.object(runtime_module, "_QUICK_STOP_BOT_WAIT_TIMEOUT_S", 0.05):
+            self.scale.push_reading(make_reading(weight_g=35.0))
+            await self.hass.tasks[-1]  # async_stop_at_target()
 
-        self.assertTrue(phase_task.done())
+        # The stuck proactive attempt is left running (never cancelled, so
+        # its connection can't be leaked) rather than raced with a second one.
+        self.assertFalse(phase_task.done())
         self.assertEqual(self.runtime.status, ShotPhase.SETTLING.value)
-        # start press, stuck proactive attempt, fallback reprogram, then the real stop press
-        self.assertEqual(FakeBotConfigurator.calls, [1, 0, 0])
-        self.assertTrue(self.runtime.active_shot.quick_press_ready)
+        self.assertEqual(FakeBotConfigurator.calls, [1, 0])  # no third, competing attempt
+        self.assertFalse(self.runtime.active_shot.quick_press_ready)
+
+        # Letting the stuck attempt finish afterwards is harmless: it just
+        # sets quick_press_ready too late to have helped this particular
+        # stop press, which already fell back to holding for the full PI.
+        stuck_event.set()
+        await phase_task
+        self.assertTrue(phase_task.done())
 
 
 class DeadlineSafetyTests(RuntimeTestCase):

@@ -16,15 +16,15 @@ spec.loader.exec_module(protocol)
 
 class ProtocolTests(unittest.TestCase):
     def make_packet(self) -> bytes:
-        # 12,345 ms; 38.42 g; 2.16 g/s; 87% battery; 10.0 min standby.
+        # 12,345 ms; +38.42 g; +2.16 g/s; 87% battery; 10.0 min standby.
         payload = bytearray(
             [
                 0x03, 0x0B,
                 0x00, 0x30, 0x39,
                 0x01,
-                0x00,
+                0x2B,  # weight sign: ASCII '+'
                 0x00, 0x0F, 0x02,
-                0x00,
+                0x2B,  # flow sign: ASCII '+'
                 0x00, 0xD8,
                 87,
                 0x00, 0x64,
@@ -52,12 +52,27 @@ class ProtocolTests(unittest.TestCase):
 
     def test_negative_weight_and_flow(self) -> None:
         packet = bytearray(self.make_packet())
-        packet[6] = 1
-        packet[10] = 1
+        packet[6] = 0x2D  # ASCII '-'
+        packet[10] = 0x2D  # ASCII '-'
         packet[-1] = protocol.xor_checksum(packet[:-1])
         reading = protocol.parse_weight_packet(bytes(packet))
         self.assertAlmostEqual(reading.weight_g, -38.42)
         self.assertAlmostEqual(reading.flow_g_s, -2.16)
+
+    def test_unrecognized_sign_byte_is_treated_as_zero(self) -> None:
+        """Regression test: a plain 0x00 (or any byte that isn't the ASCII
+        '+'/'-' sign character) used to be treated as positive, which - since
+        every real reading's sign byte is one of those two non-zero ASCII
+        characters - meant nearly every real reading was misread as negative
+        (see _signed_magnitude). Matches aiobookoo's reference decoder, which
+        treats an unrecognized sign byte as a neutral/zero reading."""
+        packet = bytearray(self.make_packet())
+        packet[6] = 0x00
+        packet[10] = 0x00
+        packet[-1] = protocol.xor_checksum(packet[:-1])
+        reading = protocol.parse_weight_packet(bytes(packet))
+        self.assertEqual(reading.weight_g, 0.0)
+        self.assertEqual(reading.flow_g_s, 0.0)
 
     def test_bad_checksum_rejected(self) -> None:
         packet = bytearray(self.make_packet())

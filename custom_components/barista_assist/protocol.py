@@ -47,11 +47,24 @@ def _u24(data: bytes, offset: int) -> int:
     return (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2]
 
 
+_SIGN_POSITIVE = 0x2B  # ASCII '+'
+_SIGN_NEGATIVE = 0x2D  # ASCII '-'
+
+
 def _signed_magnitude(sign: int, magnitude: int) -> int:
-    # BOOKOO documents the sign in a separate byte but does not assign textual
-    # names to the sign values. 0 is treated as positive and any non-zero value
-    # as negative, matching the conventional representation used by the scale.
-    return -magnitude if sign else magnitude
+    # BOOKOO's own protocol doc doesn't name the sign byte's values, but the
+    # scale actually sends the ASCII sign character itself ('+'/'-'), not a
+    # boolean flag - confirmed against BOOKOO's reference decoder
+    # (github.com/makerwolf/aiobookoo/blob/main/aiobookoo/decode.py). Treating
+    # any non-zero byte as negative (as this used to) misreads '+' (0x2B)
+    # as negative too, since it's non-zero - inverting nearly every real
+    # reading. Any other byte is treated as neutral/zero, matching that
+    # reference implementation.
+    if sign == _SIGN_NEGATIVE:
+        return -magnitude
+    if sign == _SIGN_POSITIVE:
+        return magnitude
+    return 0
 
 
 def parse_weight_packet(data: bytes) -> BookooReading:

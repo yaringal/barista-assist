@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.9
+
+### Fixed
+
+- **`protocol.py` misread the BOOKOO weight/flow sign byte, so nearly every non-zero reading came out negated.** The scale's own protocol doc doesn't name the sign byte's values, and the previous decode treated any non-zero byte as negative - but confirmed against BOOKOO's own reference decoder (`makerwolf/aiobookoo`, the library behind Home Assistant's built-in `bookoo` integration), the sign byte is actually the ASCII character `'+'` (0x2B) or `'-'` (0x2D), both of which are non-zero. So both a genuinely positive and a genuinely negative reading were read as negative, and only an exact-zero magnitude passed through correctly. Live testing confirmed this: the physical scale showed a normal positive weight while Barista Assist's own sensor showed negative for the same moment. This is very likely the root cause of every shot in earlier testing classifying as `invalid_measurement`/`near_zero_final_weight` with `actual_yield_g=0.0` - the flow-analysis system was working correctly against weight data that never actually showed a real rising positive value.
+- **A stuck SwitchBot Bot connection attempt could leak a Bluetooth connection slot, eventually causing every future connection to the Bot to fail** (`BleakOutOfConnectionSlotsError`) even on hardware that supports several concurrent BLE connections. `_async_ensure_quick_stop_press` used to cancel an in-flight proactive Bot reprogram and immediately start a fresh one - but `bleak_retry_connector`'s `establish_connection()` has no cancellation cleanup, so cancelling it mid-connect never disconnects the partially-established client, and starting a second connection to the same device on top of that leak compounds the problem with every shot. It now waits (bounded to 3s) for the existing attempt to finish instead of cancelling it, and never starts a competing connection to the same Bot while one is still in flight - falling back to holding for the configured pre-infusion duration on that one press if the wait times out, exactly as it already did for a real failure.
+
+### Testing
+
+- Added `test_unrecognized_sign_byte_is_treated_as_zero` and corrected the two existing packet fixtures (which had been using an invalid sign byte that only worked by coincidence with the old, incorrect decode logic).
+- Rewrote `test_fallback_cancels_stuck_proactive_reprogram_instead_of_racing` as `test_fallback_waits_for_stuck_proactive_reprogram_without_racing_it`, matching the new wait-not-cancel behavior.
+- Full suite: 76 tests, all passing.
+
 ## 0.2.8
 
 ### Fixed

@@ -28,15 +28,15 @@ protocol = ha_stubs.import_barista_module("protocol")
 
 
 def _make_weight_packet() -> bytes:
-    # 12,345 ms; 38.42 g; 2.16 g/s; 87% battery; 10.0 min standby.
+    # 12,345 ms; +38.42 g; +2.16 g/s; 87% battery; 10.0 min standby.
     payload = bytearray(
         [
             0x03, 0x0B,
             0x00, 0x30, 0x39,
             0x01,
-            0x00,
+            0x2B,  # weight sign: ASCII '+'
             0x00, 0x0F, 0x02,
-            0x00,
+            0x2B,  # flow sign: ASCII '+'
             0x00, 0xD8,
             87,
             0x00, 0x64,
