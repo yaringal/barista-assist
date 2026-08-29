@@ -32,7 +32,7 @@ Barista Assist is installed and updated as one HACS package.
   - `barista_assist.abort`
   - `barista_assist.tare`
   - `barista_assist.select_slot`
-- Ships a stock-Home-Assistant Community Dashboard authored in readable YAML.
+- Writes a YAML-mode Lovelace dashboard file, regenerated on every startup/reload, so the UI stays in sync with the installed release without any browser-side registration step.
 - Migrates v0.1.x databases without deleting bags or shot history.
 
 ## Default starting recipe
@@ -112,7 +112,7 @@ The visible dashboard is:
 custom_components/barista_assist/frontend/dashboard.yaml
 ```
 
-It uses stock Home Assistant cards/features. The adjacent JavaScript file is the Community Dashboard strategy bridge.
+It uses stock Home Assistant cards/features. On every setup/reload, the integration substitutes this template's entity-ID tokens and writes the result to `barista_assist_dashboard.yaml` in your Home Assistant config directory, which a YAML-mode dashboard entry reads (see "Add the dashboard once" below). The adjacent JavaScript file only registers the shot-export card used inside that dashboard.
 
 Entity names and icons are provided by:
 
@@ -238,19 +238,28 @@ Recipe, PI and stop compensation are deliberately **not** set in the setup flow;
 
 ### Add the dashboard once
 
-1. Go to **Settings -> Dashboards**.
-2. Select **Add dashboard**.
-3. Under **Community dashboards**, select **Barista Assist**.
-4. Optionally show it in the sidebar.
+After the integration is set up, it writes its dashboard as a YAML file into your Home Assistant config directory:
 
-Do not use **Take control** if you want future HACS releases to continue replacing the packaged dashboard automatically.
+```text
+<HA config>/barista_assist_dashboard.yaml
+```
 
-The Companion app's embedded WebView can be flaky for this one-time step:
+This file is fully regenerated every time the integration (re)loads, so a future HACS update keeps the dashboard in sync automatically. Point a YAML-mode dashboard entry at it once, in `configuration.yaml`:
 
-- **If "Barista Assist" doesn't show up under Community dashboards at all**, even after a full Home Assistant restart, the app is likely holding onto a stale frontend cache from before the integration was installed. Go to **Settings (gear icon) -> Companion app -> Troubleshooting -> Reset frontend cache**, then reopen the app and try again. If that option isn't available in your app version, force-stop the app (Android: Settings -> Apps -> Home Assistant -> Force stop) and reopen it.
-- **If "Barista Assist" is listed but tapping it does nothing**, that's a Companion-app WebView tap-handling quirk, not a bug in the integration - the same action works fine in a regular browser. Since this is a one-time setup step anyway, just do it once from a desktop or mobile browser pointed at your Home Assistant instance; the resulting dashboard then shows and works normally in the Companion app afterward.
+```yaml
+lovelace:
+  dashboards:
+    barista-assist:
+      mode: yaml
+      title: Barista Assist
+      icon: mdi:coffee-maker
+      show_in_sidebar: true
+      filename: barista_assist_dashboard.yaml
+```
 
-Checking in a regular browser first is a quick way to tell which of these you're hitting.
+Then restart Home Assistant (YAML-mode dashboards are only picked up on restart, not on a reload). The **Barista Assist** dashboard then appears in the sidebar and works identically in a browser and in the Companion app.
+
+This replaces the Community Dashboard strategy used before v0.2.7 — Home Assistant's newer browser-side dashboard-strategy registration mechanism proved unreliable on some installs (a "timeout waiting for strategy element to be registered" error that a manual Lovelace-resource workaround didn't fix on mobile clients either). The YAML-mode file above uses no custom JavaScript or registration step, so it doesn't depend on that mechanism at all.
 
 ### Manual test installation
 

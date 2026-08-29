@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.7
+
+### Changed
+
+- **Replaced the Community Dashboard strategy with a YAML-mode dashboard file.** After shipping, v0.2.6's `Content-Type` fix for the "timeout waiting for strategy element ... to be registered" error turned out not to be the actual cause: further live debugging (including confirming against Home Assistant's own frontend source and community reports) traced it to a bug in Home Assistant 2026.5's own new `window.customStrategies` browser registration mechanism, affecting multiple unrelated projects that use it — not anything specific to this integration's code — and the community's suggested manual-resource workaround didn't reliably fix it on mobile clients either. Rather than depend on a mechanism outside this project's control, the integration now writes a fully token-substituted, `views:`-only dashboard file (`barista_assist_dashboard.yaml`) directly into the Home Assistant config directory on every setup/reload (`websocket.render_dashboard_yaml` / `websocket.async_write_dashboard_file`), for a plain YAML-mode Lovelace dashboard entry to read. This still auto-updates on every release with no browser-side registration step at all, at the cost of one additional one-time `configuration.yaml` edit instead of a menu click — see README's "Add the dashboard once" for the new setup. The now-irrelevant `.js`-`Content-Type` fix from v0.2.6 has been removed along with the dashboard-strategy class and the `barista_assist/get_dashboard` WebSocket command it used; the shot-export card and its WebSocket endpoint are unchanged.
+
+### Testing
+
+- Added `tests/test_dashboard_yaml.py` covering `render_dashboard_yaml`: substitutes entity tokens, emits `views:`-only YAML (no `title`), and leaves non-token strings untouched.
+- Full suite passing (see repository `tests/` for the current count).
+
 ## 0.2.6
 
 ### Fixed
@@ -7,9 +18,11 @@
 - **`bookoo.py` called `async_write_ha_state` from outside the event loop**, hundreds of times per shot, logged by Home Assistant as a thread-safety violation that "may cause Home Assistant to crash or data to corrupt." `BookooUltraClient` registered its BLE notification and disconnect handlers directly as bleak's raw callbacks, which are not guaranteed to run on the event loop — the exact thread depends on the platform's BLE backend. Both callbacks now marshal onto the event loop via `hass.loop.call_soon_threadsafe` before touching any state, regardless of which thread bleak actually calls them from. Found on a real install during v0.2.5 bring-up.
 - `mdi:coffee-beans` isn't a real Material Design Icon (the real name is singular, `mdi:coffee-bean`), so every icon using it rendered blank — including the Bags dashboard tab, `active_bag`, `beans_remaining`, `bean_slot`, and `new_bag_coffee`. Fixed everywhere.
 - `dashboard_template()` and `load_definitions()` were each cached once per process (`@lru_cache`), so a HACS update replacing `dashboard.yaml`/`definitions.yaml` had no effect until a full Home Assistant restart — contradicting the documented "takes effect after the integration/Home Assistant reloads" behavior. Both now re-parse automatically whenever the file's mtime changes, with no restart required.
+- That reparsing is real file I/O (`read_text`), which Home Assistant flags as a blocking call if it happens directly on the event loop. Every call site that can trigger it (`async_setup`, `async_setup_entry`, and the `barista_assist/get_dashboard` websocket handler) now goes through `hass.async_add_executor_job` first, so a cache-refresh triggered by a live HACS update or a config-entry reload can't block the event loop.
 - The Brew/Bags view's action-button tiles (Brew, Tare, Abort, Create bag) showed a live "time since last pressed" counter as their state text, which reads as a odd/confusing default for a momentary action button. Suppressed via `state_content: []`.
 - The shot-export card's clipboard-success message said "You can paste it directly here" even though there's nothing on the card to paste into on the success path (that text only makes sense in the Clipboard-API-unavailable fallback, where a textarea does appear). Shortened to "Copied to clipboard."
 - Removed a stale "### v0.2.0" implementation note from the System dashboard view.
+- **The dashboard strategy could fail to register at all, with "timeout waiting for strategy element ... to be registered" and no other visible error.** `barista-assist-dashboard.js` was served with whatever `Content-Type` the host's system MIME database happens to map `.js` to; on hosts where that's not a recognized JavaScript type, browsers silently refuse to execute a `<script type="module">` served with the wrong type — the script's `customElements.define(...)` call for the strategy then never runs. Explicitly registers `.js` as `text/javascript` at startup instead of depending on the host's configuration.
 
 ## 0.2.5
 

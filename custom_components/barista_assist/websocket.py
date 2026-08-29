@@ -1,4 +1,5 @@
-"""Single WebSocket endpoint used by the package-owned dashboard strategy."""
+"""The shot-export websocket endpoint, plus generating the packaged
+dashboard's YAML-mode file (see const.DASHBOARD_FILENAME)."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
-from .const import DOMAIN
+from .const import DASHBOARD_FILENAME, DOMAIN
 from .definitions import load_definitions
 
 _dashboard_cache: dict[str, Any] = {"mtime": None, "data": None}
@@ -21,7 +22,7 @@ _dashboard_cache: dict[str, Any] = {"mtime": None, "data": None}
 def dashboard_template() -> Any:
     """Parsed frontend/dashboard.yaml, re-read whenever the file changes on
     disk rather than only once per process - so a HACS update (or, during
-    development, an edit) takes effect on the next dashboard view instead of
+    development, an edit) takes effect on the next regeneration instead of
     needing a full Home Assistant restart."""
     path = Path(__file__).parent / "frontend" / "dashboard.yaml"
     mtime = path.stat().st_mtime
@@ -53,28 +54,33 @@ def _replace_tokens(value: Any, mapping: dict[str, str]) -> Any:
     return value
 
 
-@websocket_api.websocket_command({vol.Required("type"): "barista_assist/get_dashboard"})
-@websocket_api.async_response
-async def ws_get_dashboard(
-    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
-) -> None:
-    runtime = hass.data.get(DOMAIN, {}).get("runtime")
-    if runtime is None:
-        connection.send_error(msg["id"], "not_loaded", "Barista Assist is not loaded")
-        return
-    try:
-        dashboard = _replace_tokens(
-            dashboard_template(), _dashboard_entity_map(hass, runtime)
-        )
-    except Exception as err:
-        connection.send_error(msg["id"], "dashboard_failed", str(err))
-        return
-    connection.send_result(msg["id"], dashboard)
+def render_dashboard_yaml(template: Any, entity_map: dict[str, str]) -> str:
+    """Token-substituted `views:`-only YAML for a YAML-mode Lovelace
+    dashboard file. Only `views` is kept - the file's own title/icon come
+    from the user's configuration.yaml entry, per Home Assistant's YAML
+    dashboard format, not from this package's dashboard.yaml."""
+    substituted = _replace_tokens(template, entity_map)
+    return yaml.safe_dump({"views": substituted["views"]}, sort_keys=False)
+
+
+async def async_write_dashboard_file(hass: HomeAssistant, runtime) -> None:
+    """(Re)generate the dashboard file a YAML-mode Lovelace dashboard reads
+    from, so the packaged dashboard keeps auto-updating with every release
+    without depending on browser-side dashboard-strategy registration."""
+    # Both do blocking file I/O on a cache miss (e.g. dashboard.yaml or
+    # definitions.yaml changed since the last read), so both are forced
+    # through the executor rather than ever risking that on the event loop.
+    template = await hass.async_add_executor_job(dashboard_template)
+    await hass.async_add_executor_job(load_definitions)
+    # _dashboard_entity_map's own load_definitions() call is now a cache
+    # hit; its entity-registry lookups must still run on the event loop.
+    yaml_text = render_dashboard_yaml(template, _dashboard_entity_map(hass, runtime))
+    path = Path(hass.config.path(DASHBOARD_FILENAME))
+    await hass.async_add_executor_job(path.write_text, yaml_text, "utf-8")
 
 
 @callback
 def async_setup(hass: HomeAssistant) -> None:
-    websocket_api.async_register_command(hass, ws_get_dashboard)
     websocket_api.async_register_command(hass, ws_export_shots_text)
 
 

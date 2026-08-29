@@ -49,6 +49,7 @@ def install() -> None:
         pass
 
     core.HomeAssistant = HomeAssistant
+    core.callback = lambda func: func
 
     exceptions = _new_module("homeassistant.exceptions")
 
@@ -101,6 +102,33 @@ def install() -> None:
 
     bluetooth = _new_module("homeassistant.components.bluetooth")
     bluetooth.async_ble_device_from_address = lambda hass, address, connectable=True: None
+
+    websocket_api = _new_module("homeassistant.components.websocket_api")
+
+    class ActiveConnection:  # only ever used as a type hint
+        pass
+
+    websocket_api.ActiveConnection = ActiveConnection
+    websocket_api.async_register_command = lambda hass, command: None
+    websocket_api.websocket_command = lambda schema: (lambda func: func)
+    websocket_api.async_response = lambda func: func
+
+    voluptuous = _new_module("voluptuous")
+
+    class Required:
+        """Stand-in for voluptuous.Required: only ever used as a literal
+        dict key here, never for actual schema validation."""
+
+        def __init__(self, key, **kwargs) -> None:
+            self.key = key
+
+        def __hash__(self) -> int:
+            return hash(self.key)
+
+        def __eq__(self, other) -> bool:
+            return self.key == getattr(other, "key", other)
+
+    voluptuous.Required = Required
 
     bleak_retry_connector = _new_module("bleak_retry_connector")
 

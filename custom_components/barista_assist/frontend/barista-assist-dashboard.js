@@ -1,32 +1,3 @@
-class BaristaAssistDashboardStrategy extends HTMLElement {
-  static getCreateSuggestions(_hass) {
-    return {
-      title: "Barista Assist",
-      icon: "mdi:coffee-maker",
-    };
-  }
-
-  static async generate(_config, hass) {
-    return hass.callWS({ type: "barista_assist/get_dashboard" });
-  }
-}
-
-customElements.define(
-  "ll-strategy-dashboard-barista-assist",
-  BaristaAssistDashboardStrategy,
-);
-
-window.customStrategies = window.customStrategies || [];
-if (!window.customStrategies.some((item) => item.type === "barista-assist")) {
-  window.customStrategies.push({
-    type: "barista-assist",
-    strategyType: "dashboard",
-    name: "Barista Assist",
-    description: "A clean espresso workflow dashboard managed by the Barista Assist integration.",
-  });
-}
-
-
 class BaristaAssistExportCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Shot data", button_text: "Copy all shot data" };

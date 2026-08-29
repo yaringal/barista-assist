@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from homeassistant.components import frontend
@@ -15,6 +16,8 @@ from .const import DASHBOARD_RESOURCE, DOMAIN, STATIC_URL_PATH
 from .definitions import load_definitions
 from .runtime import BaristaRuntime
 
+_LOGGER = logging.getLogger(__name__)
+
 PLATFORMS = [
     Platform.BUTTON,
     Platform.DATE,
@@ -27,8 +30,11 @@ PLATFORMS = [
 
 async def async_setup(hass: HomeAssistant, config) -> bool:
     """Set up integration-level actions and dashboard endpoint."""
-    load_definitions()  # Fail early if package YAML is invalid.
-    websocket.dashboard_template()  # Warm the cache outside the request path.
+    # Both do blocking file I/O, so both must go through the executor rather
+    # than running directly on the event loop (fail early if package YAML is
+    # invalid; warm the dashboard cache outside the request path).
+    await hass.async_add_executor_job(load_definitions)
+    await hass.async_add_executor_job(websocket.dashboard_template)
     hass.data.setdefault(
         DOMAIN,
         {
@@ -60,6 +66,11 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    # Ensure load_definitions()'s cache is warm (and any reparse it needs -
+    # e.g. definitions.yaml changed since Home Assistant started - happens
+    # here, in the executor) before BaristaRuntime's synchronous __init__
+    # and the platform setups below call it directly on the event loop.
+    await hass.async_add_executor_job(load_definitions)
     runtime = BaristaRuntime(hass, entry)
     entry.runtime_data = runtime
     hass.data[DOMAIN]["runtime"] = runtime
@@ -68,6 +79,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await _async_register_frontend(hass)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+        try:
+            await websocket.async_write_dashboard_file(hass, runtime)
+        except Exception as err:
+            # A nice-to-have convenience file, not core functionality - a
+            # failure here (e.g. an unwritable config directory) shouldn't
+            # take down the whole integration.
+            _LOGGER.warning("Could not write the Barista Assist dashboard file: %s", err)
     except Exception:
         hass.data[DOMAIN]["runtime"] = None
         await runtime.async_close()

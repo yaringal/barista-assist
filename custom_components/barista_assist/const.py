@@ -35,3 +35,10 @@ def integration_version() -> str:
 DASHBOARD_RESOURCE: Final = (
     f"{STATIC_URL_PATH}/barista-assist-dashboard.js?v={integration_version()}"
 )
+
+# Written into the Home Assistant config directory as a YAML-mode Lovelace
+# dashboard file (see PUBLISHING.md/README.md for the one-time
+# configuration.yaml block that references it) - regenerated on every
+# startup/reload so it still auto-updates with each release, without
+# depending on the browser-side dashboard-strategy registration mechanism.
+DASHBOARD_FILENAME: Final = "barista_assist_dashboard.yaml"
