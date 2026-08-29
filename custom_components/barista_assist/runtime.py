@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
+import json
 import logging
 from pathlib import Path
 import time
@@ -30,6 +31,7 @@ from .const import (
     SIGNAL_UPDATE,
 )
 from .definitions import EntityDefinition, load_definitions
+from .flow_analysis import BaselineFeatures, analyze_shot
 from .protocol import BookooReading
 from .storage import Bag, BaristaDatabase, ShotSample
 from .switchbot import SwitchBotBotConfigurator, resolve_bluetooth_address
@@ -726,6 +728,23 @@ class BaristaRuntime:
             if task and task is not asyncio.current_task():
                 task.cancel()
         last_weight = shot.samples[-1].weight_g if shot.samples else None
+
+        baseline_features = await self.hass.async_add_executor_job(
+            self.db.recent_healthy_features, shot.bag.id
+        )
+        analysis = analyze_shot(
+            shot.samples,
+            target_yield_g=shot.target_yield_g,
+            preinfusion_s=shot.bag.preinfusion_s,
+            baseline=BaselineFeatures(**baseline_features) if baseline_features else None,
+        )
+        if analysis.invalid_reason is not None:
+            _LOGGER.warning(
+                "Shot %s could not be flow-classified (%s); excluded from diagnostics and future baselines",
+                shot.id,
+                analysis.invalid_reason,
+            )
+
         await self.hass.async_add_executor_job(
             lambda: self.db.finalize_shot(
                 shot.id,
@@ -734,6 +753,9 @@ class BaristaRuntime:
                 status=status,
                 stop_command_elapsed_ms=shot.stop_command_elapsed_ms,
                 samples=shot.samples,
+                classification=str(analysis.classification),
+                channeling_suspicion=analysis.channeling_suspicion,
+                analysis_json=json.dumps(asdict(analysis)),
             )
         )
         self.active_shot = None

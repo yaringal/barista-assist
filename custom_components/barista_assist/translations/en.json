@@ -71,6 +71,19 @@
       "last_yield": {
         "name": "Last yield"
       },
+      "shot_classification": {
+        "name": "Shot diagnosis",
+        "state": {
+          "healthy": "Healthy",
+          "too_fast": "Too fast",
+          "too_restrictive": "Too restrictive",
+          "puck_prep_issue": "Puck prep issue",
+          "invalid_measurement": "Invalid measurement"
+        }
+      },
+      "shot_channeling_suspicion": {
+        "name": "Channeling suspicion"
+      },
       "flow_rate": {
         "name": "Flow rate"
       },

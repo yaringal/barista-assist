@@ -131,17 +131,18 @@ def _stub_package(name: str, path: Path) -> types.ModuleType:
     return module
 
 
-def import_runtime_module() -> types.ModuleType:
-    """Import custom_components.barista_assist.runtime.
+def import_barista_module(name: str) -> types.ModuleType:
+    """Import custom_components.barista_assist.<name>.
 
     Deliberately skips executing custom_components/barista_assist/__init__.py
     (which pulls in services.py/websocket.py and a much larger HA surface:
-    frontend, http, etc.) since this test suite only needs runtime.py and the
-    modules it imports directly.
+    frontend, http, etc.) since these tests only need the target module and
+    whatever it imports directly.
     """
     install()
 
-    cached = sys.modules.get("custom_components.barista_assist.runtime")
+    full_name = f"custom_components.barista_assist.{name}"
+    cached = sys.modules.get(full_name)
     if cached is not None:
         return cached
 
@@ -152,4 +153,9 @@ def import_runtime_module() -> types.ModuleType:
     barista_assist = _stub_package("custom_components.barista_assist", PACKAGE_DIR)
     custom_components.barista_assist = barista_assist
 
-    return importlib.import_module("custom_components.barista_assist.runtime")
+    return importlib.import_module(full_name)
+
+
+def import_runtime_module() -> types.ModuleType:
+    """Import custom_components.barista_assist.runtime (see import_barista_module)."""
+    return import_barista_module("runtime")

@@ -3,6 +3,8 @@
     "sensor": {
       "status": {"default": "mdi:coffee-outline"},
       "active_bag": {"default": "mdi:coffee-beans"},
+      "shot_classification": {"default": "mdi:stethoscope"},
+      "shot_channeling_suspicion": {"default": "mdi:gauge"},
       "flow_rate": {"default": "mdi:waves-arrow-right"},
       "beans_remaining": {"default": "mdi:coffee-beans"}
     },

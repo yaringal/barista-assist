@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -106,6 +107,65 @@ class StorageTests(unittest.TestCase):
         self.assertIn('2\t30000\t30000\t36.200\t1.2000\t90\t1', text)
         self.assertIn('1\t29000\t29000\t34.000\t1.5000\t90\t1', text)
         self.assertIn('0\t0\t0\t0.000\t0.0000\t90\t0', text)
+
+    def test_export_includes_flow_analysis_fields(self) -> None:
+        bag = self.new_bag()
+        self.finalize_with_analysis(bag, classification="puck_prep_issue", late_accel=1.2, t90_ms=15000)
+        text = self.db.export_shots_text()
+        self.assertIn('classification=puck_prep_issue', text)
+        self.assertIn('channeling_suspicion=0.1', text)
+        self.assertIn('analysis_json={"late_accel": 1.2, "t90_ms": 15000}', text)
+
+    def finalize_with_analysis(
+        self, bag, *, classification: str, late_accel: float, t90_ms: int, target_yield_g: float = 36.0
+    ) -> None:
+        """Finalize a shot carrying just enough analysis_json for
+        recent_healthy_features to compute a flow rate and late_accel from."""
+        shot_id = self.db.create_shot(
+            bag=bag, started_at="2026-08-16T17:00:00+00:00", stop_compensation_g=1.5
+        )
+        samples = [storage.ShotSample(0, 0, 0, 0.0, 0.0, 90)]
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=target_yield_g,
+            status="complete",
+            stop_command_elapsed_ms=None,
+            samples=samples,
+            classification=classification,
+            channeling_suspicion=0.1,
+            analysis_json=json.dumps({"late_accel": late_accel, "t90_ms": t90_ms}),
+        )
+
+    def test_finalize_shot_persists_analysis_fields(self) -> None:
+        bag = self.new_bag()
+        self.finalize_with_analysis(bag, classification="healthy", late_accel=0.05, t90_ms=20000)
+        last = self.db.last_shot()
+        self.assertEqual(last["classification"], "healthy")
+        self.assertAlmostEqual(last["channeling_suspicion"], 0.1)
+        self.assertEqual(json.loads(last["analysis_json"]), {"late_accel": 0.05, "t90_ms": 20000})
+
+    def test_recent_healthy_features_is_none_with_no_history(self) -> None:
+        bag = self.new_bag()
+        self.assertIsNone(self.db.recent_healthy_features(bag.id))
+
+    def test_recent_healthy_features_ignores_non_healthy_shots(self) -> None:
+        bag = self.new_bag()
+        self.finalize_with_analysis(bag, classification="too_fast", late_accel=0.9, t90_ms=8000)
+        self.assertIsNone(self.db.recent_healthy_features(bag.id))
+
+    def test_recent_healthy_features_medians_recent_healthy_shots(self) -> None:
+        bag = self.new_bag()
+        # target_yield_g=36, t90_ms=20000 -> flow rate 1.8 g/s
+        self.finalize_with_analysis(bag, classification="healthy", late_accel=0.0, t90_ms=20000)
+        # target_yield_g=36, t90_ms=30000 -> flow rate 1.2 g/s
+        self.finalize_with_analysis(bag, classification="healthy", late_accel=0.2, t90_ms=30000)
+        self.finalize_with_analysis(bag, classification="puck_prep_issue", late_accel=5.0, t90_ms=9000)
+
+        features = self.db.recent_healthy_features(bag.id)
+        self.assertEqual(features["shot_count"], 2)
+        self.assertAlmostEqual(features["median_late_accel"], 0.1)
+        self.assertAlmostEqual(features["median_flow_g_s"], 1.5)
 
     def test_v1_database_migrates_preinfusion_and_legacy_slot(self) -> None:
         legacy_path = Path(self.tmp.name) / "legacy.sqlite3"

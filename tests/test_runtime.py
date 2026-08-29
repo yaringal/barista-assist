@@ -20,6 +20,7 @@ not a real Home Assistant install or real Bluetooth hardware.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import unittest
@@ -386,6 +387,65 @@ class FinalizeIdempotencyTests(RuntimeTestCase):
 
         await self.runtime._async_finalize("complete")  # must not raise
         self.assertIsNone(self.runtime.active_shot)
+
+
+class FlowAnalysisWiringTests(RuntimeTestCase):
+    """_async_finalize must actually run flow_analysis.analyze_shot on the
+    real captured samples and persist a coherent result - not silently skip
+    it, and not just write a placeholder string."""
+
+    async def test_finalized_shot_persists_flow_analysis(self):
+        await self.start_shot()
+        await self.wait_for_extracting()
+
+        # Spread over more than flow_analysis's 500ms smoothing window - too
+        # tight a span makes every sample's window cover the whole sequence,
+        # flattening the signal to a constant and looking like no flow at all.
+        for weight in (4.0, 9.0, 14.0, 19.0, 24.0, 30.0, 36.0):
+            self.scale.push_reading(make_reading(weight_g=weight))
+            await asyncio.sleep(0.09)
+
+        await self.runtime._async_finalize("complete")
+
+        last_shot = self.runtime.last_shot
+        self.assertIsNotNone(last_shot)
+        self.assertIn(
+            last_shot["classification"],
+            {"healthy", "too_fast", "too_restrictive", "puck_prep_issue", "invalid_measurement"},
+        )
+        self.assertIsInstance(last_shot["channeling_suspicion"], float)
+        analysis = json.loads(last_shot["analysis_json"])
+        self.assertIn("late_accel", analysis)
+
+    async def test_non_healthy_shot_is_excluded_from_future_baseline(self):
+        """A shot too sparse to classify must not feed the next shot's
+        baseline query - proves the real classification round-trips through
+        storage correctly, not just that some string got written."""
+        await self.start_shot()
+        await self.wait_for_extracting()
+        bag_id = self.runtime.active_shot.bag.id
+
+        self.scale.push_reading(make_reading(weight_g=36.0))  # one sample: too few to classify
+        await self.runtime._async_finalize("complete")
+
+        self.assertEqual(self.runtime.last_shot["classification"], "invalid_measurement")
+        self.assertIsNone(self.runtime.db.recent_healthy_features(bag_id))
+
+    async def test_invalid_shot_logs_its_specific_reason(self):
+        """An invalid shot must be diagnosable from the logs alone - e.g. a
+        BLE dropout (too_few_samples/near_zero_final_weight) vs. something
+        else - rather than showing up as an unexplained invalid_measurement."""
+        await self.start_shot()
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))  # one sample: too few to classify
+
+        with self.assertLogs("custom_components.barista_assist.runtime", level="WARNING") as log:
+            await self.runtime._async_finalize("complete")
+
+        self.assertTrue(
+            any("too_few_samples" in message for message in log.output),
+            log.output,
+        )
 
 
 if __name__ == "__main__":

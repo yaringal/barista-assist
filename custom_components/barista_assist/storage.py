@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import sqlite3
+import statistics
 from typing import Any, Iterable
 from uuid import uuid4
 
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 BAG_RECIPE_FIELDS = frozenset(
     {"dose_g", "grind", "target_yield_g", "temperature_offset_c", "preinfusion_s"}
 )
@@ -214,6 +216,9 @@ class BaristaDatabase:
         status: str,
         stop_command_elapsed_ms: int | None,
         samples: Iterable[ShotSample],
+        classification: str | None = None,
+        channeling_suspicion: float | None = None,
+        analysis_json: str | None = None,
     ) -> None:
         sample_list = list(samples)
         with self._connect() as db:
@@ -221,7 +226,8 @@ class BaristaDatabase:
                 """
                 UPDATE shots
                 SET ended_at=?, actual_yield_g=?, status=?,
-                    stop_command_elapsed_ms=?, sample_count=?
+                    stop_command_elapsed_ms=?, sample_count=?,
+                    classification=?, channeling_suspicion=?, analysis_json=?
                 WHERE id=?
                 """,
                 (
@@ -230,6 +236,9 @@ class BaristaDatabase:
                     status,
                     stop_command_elapsed_ms,
                     len(sample_list),
+                    classification,
+                    channeling_suspicion,
+                    analysis_json,
                     shot_id,
                 ),
             )
@@ -330,6 +339,9 @@ class BaristaDatabase:
                 f"started_at={clean(shot['started_at'])}",
                 f"ended_at={clean(shot['ended_at'])}",
                 f"status={clean(shot['status'])}",
+                f"classification={clean(shot['classification'])}",
+                f"channeling_suspicion={shot['channeling_suspicion'] if shot['channeling_suspicion'] is not None else ''}",
+                f"analysis_json={clean(shot['analysis_json'])}",
                 f"dose_g={shot['dose_g']}",
                 f"grind={shot['grind']}",
                 f"target_yield_g={shot['target_yield_g']}",
@@ -369,3 +381,34 @@ class BaristaDatabase:
                 (bag_id,),
             ).fetchone()
         return float(row["remaining"]) if row and row["remaining"] is not None else None
+
+    def recent_healthy_features(self, bag_id: str, limit: int = 5) -> dict[str, Any] | None:
+        """Median flow-analysis features from a bag's recent healthy shots.
+
+        Shaped for `flow_analysis.BaselineFeatures(**result)`; returns None
+        when the bag has no healthy shot history yet, matching analyze_shot's
+        own handling of a missing baseline.
+        """
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT target_yield_g, analysis_json
+                FROM shots
+                WHERE bag_id=? AND classification='healthy' AND analysis_json IS NOT NULL
+                ORDER BY started_at DESC LIMIT ?
+                """,
+                (bag_id, int(limit)),
+            ).fetchall()
+        if not rows:
+            return None
+        late_accels = []
+        flow_rates = []
+        for row in rows:
+            data = json.loads(row["analysis_json"])
+            late_accels.append(float(data["late_accel"]))
+            flow_rates.append(float(row["target_yield_g"]) / (float(data["t90_ms"]) / 1000.0))
+        return {
+            "shot_count": len(rows),
+            "median_late_accel": statistics.median(late_accels),
+            "median_flow_g_s": statistics.median(flow_rates),
+        }

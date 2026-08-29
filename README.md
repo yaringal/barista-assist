@@ -22,6 +22,7 @@ Barista Assist is installed and updated as one HACS package.
   reprogramming the Bot back to an instant tap once extraction begins, so the stop/abort press itself is quick.
 
 - Stores physical bags, recipes, shots, and raw samples in SQLite.
+- Classifies every finished shot's flow curve (`healthy`, `too_fast`, `too_restrictive`, `puck_prep_issue`, `invalid_measurement`) with a channeling-suspicion score, comparing against each bag's own recent healthy-shot history.
 - Maintains separate **Normal** and **Decaf** active physical-bag slots.
 - Tracks estimated remaining beans from logged doses.
 - Enforces DF54 settings in `0.5`-unit increments.
@@ -130,6 +131,8 @@ sensor.barista_assist_scale_weight
 sensor.barista_assist_flow_rate
 sensor.barista_assist_active_bag
 sensor.barista_assist_last_yield
+sensor.barista_assist_shot_classification
+sensor.barista_assist_shot_channeling_suspicion
 sensor.barista_assist_beans_remaining
 
 number.barista_assist_dose
@@ -270,13 +273,11 @@ Automatic stopping is convenience logic, not a substitute for supervision or the
 ## Not implemented yet
 
 - adaptive/predictive tail compensation;
-- flow-curve diagnostics;
-- channeling-suspicion scoring;
+- data-driven thresholds for flow-curve diagnostics, once enough shot history exists to derive them instead of using placeholder constants;
 - automatic DF54 recommendations;
 - sensory expert rules;
 - Bayesian optimisation;
 - automatic temperature-button actuation;
-- dynamic SwitchBot long-press programming;
 - actual pre-grind dose measurement;
 - RH/temperature modelling.
 

@@ -1200,7 +1200,7 @@ A future optimiser should work **inside the mechanically healthy region**, not r
 
 ## 28. Implementation phases
 
-### Phase 1 — Instrumentation
+### Phase 1 — Instrumentation ✅ Implemented
 
 Implement:
 
@@ -1217,7 +1217,7 @@ Success criterion:
 
 ---
 
-### Phase 2 — Bag tracking
+### Phase 2 — Bag tracking ✅ Implemented
 
 Implement:
 
@@ -1233,7 +1233,7 @@ Success criterion:
 
 ---
 
-### Phase 3 — Flow analysis
+### Phase 3 — Flow analysis ✅ Implemented (thresholds still placeholders, see Phase 3b)
 
 Implement:
 
@@ -1247,6 +1247,106 @@ Implement:
 Success criterion:
 
 > System can distinguish obviously fast, slow, normal, and suspicious traces.
+
+Status: `flow_analysis.py` implements the Stage 1 classifier (`healthy` /
+`too_fast` / `too_restrictive` / `puck_prep_issue` / `invalid_measurement`)
+and a channeling-suspicion score as a pure, dependency-free module (see its
+tests in `tests/test_flow_analysis.py`). `puck_prep_issue` is judged
+primarily against fixed mechanical priors (flow should not accelerate
+upward mid/late shot under roughly constant pump pressure), so it works
+from a bag's very first shot; a per-bag baseline, once enough history
+exists, can only ever raise that suspicion score, never lower it, so a
+recurring problem can't "normalize" itself out of detection. Mechanical
+validity is judged before the fast/slow hydraulic check, not after, per
+section 14's ordering ("was this mechanically a valid shot?" comes before
+"what hydraulic issue?") — a shot that both finishes fast and shows a
+channeling signature is `puck_prep_issue`, not `too_fast`. `storage.py` can
+persist a shot's classification/suspicion/full analysis (schema v3:
+`classification`, `channeling_suspicion`, `analysis_json` on `shots`) and
+`recent_healthy_features(bag_id)` returns the median late-shot acceleration
+and flow rate from a bag's recent healthy shots for `analyze_shot`'s
+`baseline` argument. `runtime.py._async_finalize` now calls both of these
+for every shot, so every shot really is classified and persisted with a
+computed baseline. Two `last_shot`-sourced sensors (`shot_classification`,
+`shot_channeling_suspicion`) expose this on the Brew view, with
+`puck_prep_issue` displaying as "Puck prep issue" via a proper
+`state`-translation block rather than the raw enum value. The shot-data
+export (`export_shots_text`) now includes `classification`,
+`channeling_suspicion`, and the full `analysis_json` in each shot's
+metadata block, per section 8's goal of allowing future re-analysis
+without repeating the shot.
+
+`analyze_shot` also detects the cup or scale being disturbed (lifted,
+bumped, moved) at any point in the trace: raw weight can only rise while
+coffee is actually being collected, so any meaningful drop below its own
+running peak so far is unambiguous interference, not flow. Everything from
+that point on is discarded before classification runs, on whatever prefix
+remains - the user never needs to be told when it's "safe" to touch the
+cup. This is a more general replacement for an earlier idea of truncating
+at the stop command's timestamp: it also catches a bump mid-pour, doesn't
+discard genuinely undisturbed settle-tail data, and needs no `runtime.py`
+signature changes. Every `invalid_measurement` shot now also carries an
+`invalid_reason` (too few samples, near-zero final weight, no detected
+flow, flow starting before pre-infusion should have ended, or a disturbance
+leaving too little trustworthy data) and `runtime.py` logs it, so an
+invalid shot can be diagnosed - e.g. a BLE dropout vs. a disturbed cup -
+instead of showing up as an unexplained `invalid_measurement`.
+
+The duration thresholds (the expected total-flow rate and the too-fast/
+too-restrictive factors) are calibrated against this section's own Example
+A (18g -> 38g in 24s, explicitly "clearly fast") rather than picked
+arbitrarily, but they're still a single anchor point, not derived data —
+see Phase 3b. The mechanical-suspicion threshold remains an unvalidated
+guess.
+
+The expected flow rate is also a Bayesian shrinkage estimate, not just a
+fixed constant: it blends the global prior with a bag's own median flow
+rate from its recent healthy shots, weighted by how many such shots exist,
+so a bag that genuinely runs faster or slower than the generic guess stops
+being called "too fast"/"too restrictive" once its own history says
+otherwise. This is deliberately different treatment from mechanical
+suspicion above: a bag's characteristic pace is a reference point with
+nothing to protect against, so it's allowed to fully self-normalize,
+whereas the channeling-suspicion boundary is not, or a bag with a
+recurring puck-prep problem would train the model to stop catching it.
+
+Section 13's "was time to first flow plausible?" is implemented
+(flow detected well before the configured pre-infusion should have ended,
+or never detected despite a real final weight, are both treated as
+`invalid_measurement`); "did the flow change smoothly?" / "is the scale
+trace noisy or otherwise unreliable?" is deliberately not implemented —
+every variance-based noise metric tried during development also fired on
+a genuine `puck_prep_issue` shot (a sustained trend deviates from a smooth
+curve just as much as random jitter does), so it's left for either a
+smarter noise metric or real recorded scale noise to calibrate against,
+rather than shipping a check that could misclassify a real mechanical
+problem as an unrelated measurement fault.
+
+---
+
+### Phase 3b — Data-driven thresholds
+
+Once enough real shot history exists (across bags/recipes), replace
+`flow_analysis.py`'s placeholder constants — the expected total-flow rate
+used for the too-fast/too-restrictive check, and the channeling-suspicion
+scaling — with values fitted to this project's own recorded shots, rather
+than hand-picked guesses. This can only start once Phase 3 has been wired
+in for long enough to accumulate a meaningful number of classified shots.
+
+Success criterion:
+
+> Fast/slow/suspicious thresholds are derived from this installation's own
+> shot history rather than fixed guesses.
+
+Also revisit then: `_baseline_deviation_suspicion` in `flow_analysis.py`
+doesn't grow more bag-dependent as a bag's healthy-shot count increases,
+unlike the flow-rate expectation (which already does, via Bayesian
+shrinkage). This is deliberate, not an oversight — see the `TODO` comment
+on that function for the full reasoning — but it's worth reconsidering once
+there's a way to check a bag's own baseline against real, independently
+verified outcomes (not just shots this same classifier already called
+"healthy"), since only then can more bag-dependence be added there without
+risking a recurring problem normalizing itself out of detection.
 
 ---
 
@@ -1438,3 +1538,5 @@ Everything else can be layered on after that works reliably.
 The brew SwitchBot must physically hold the Barista Express brew button for the bag's configured pre-infusion duration. Before each shot, Barista Assist directly programs the Bot's stored long-press duration over the published SwitchBot BLE protocol, then uses the existing Home Assistant SwitchBot entity to trigger the action.
 
 The Barista Express can be programmed to end a shot after a configured duration. Therefore the user must program both shot buttons with a known maximum duration before enabling automatic control. Barista Assist treats that value as a hard machine limit and applies a safety margin. Automatic target-stop and abort commands are permitted only inside the protected window. After the protected deadline, Barista Assist deliberately does **not** press the brew button because the machine may already have completed the shot and another press could start a new one; it enters `manual_stop_required` instead and waits for the machine's own limit before finalising the log.
+
+That wait is not the integration blocking on the user physically stopping the machine — it has no way to detect that. Scale samples keep being appended to the in-progress shot for as long as it stays active, so finalising immediately at the protected deadline would record whatever the scale happened to read at that instant rather than the shot's true final weight, understating the actual yield. Waiting out the machine's own programmed maximum (plus a short buffer) also keeps the shot marked active for that window, which prevents a new brew from starting while the machine may still be pouring the previous one.

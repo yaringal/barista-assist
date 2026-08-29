@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.5
+
+### Added
+
+- Added `flow_analysis.py`: a pure, dependency-free Stage-1 shot-flow classifier (`healthy` / `too_fast` / `too_restrictive` / `puck_prep_issue` / `invalid_measurement`) plus a channeling-suspicion score, per `docs/DESIGN.md`'s diagnostic architecture (sections 8-13). `puck_prep_issue` is judged primarily against fixed mechanical priors so it works from a bag's first shot, and takes priority over the fast/slow duration check (a shot that's both fast and shows a channeling signature is a puck-prep problem to fix first, per section 14). A per-bag baseline, once one exists, can only ever raise that suspicion score, never lower it, so a recurring problem can't normalize itself out of detection. The expected flow rate used for the fast/slow duration check, by contrast, is a genuine Bayesian shrinkage estimate that blends the global prior with a bag's own healthy-shot history and is allowed to fully self-normalize toward that bag's characteristic pace — there's no recurring-problem risk to protect against for "this bag just runs faster/slower than average." `analyze_shot` also flags a shot `invalid_measurement` when its first detected flow is implausible - either never detected despite a real final weight, or detected well before the configured pre-infusion should have ended. The too-fast/too-restrictive duration thresholds are anchored against `docs/DESIGN.md`'s own worked Example A rather than picked arbitrarily. The thresholds remain a single calibration anchor, not derived data (tracked as Phase 3b in `docs/DESIGN.md`). A flow-smoothness/noise check was deliberately not added - every variance-based approach tried also fired on a genuine `puck_prep_issue` shot, so it's left for real recorded scale noise to calibrate against.
+- `storage.py` (schema v3) can now persist a shot's flow-analysis result — `classification`, `channeling_suspicion`, and the full feature set as `analysis_json` — and `recent_healthy_features(bag_id)` computes the median late-shot acceleration and flow rate from a bag's recent healthy shots, shaped for `flow_analysis.BaselineFeatures`.
+- `runtime.py._async_finalize` now calls `flow_analysis.analyze_shot` for every finalized shot, using the bag's own recent healthy-shot history as the baseline, and persists the result.
+- Added `shot_classification` and `shot_channeling_suspicion` sensors (new tiles on the Brew view's Live shot section), so every shot's flow diagnosis is now visible. `puck_prep_issue` displays as "Puck prep issue" via a proper state-translation entry, not the raw stored value.
+- `export_shots_text` now includes `classification`, `channeling_suspicion`, and the full `analysis_json` in each shot's metadata block, so exported traces carry their diagnosis for future re-analysis.
+- `analyze_shot` now detects the cup or scale being disturbed (lifted, bumped, moved) anywhere in the trace — raw weight can only rise during a real pour, so a meaningful drop below its own running peak is unambiguous interference — and discards everything from that point on before classifying the trustworthy prefix. No timestamp-based cutoff or user awareness of "when it's safe to touch the cup" is needed.
+- Every `invalid_measurement` shot now carries an `invalid_reason` (too few samples, near-zero final weight, no detected flow, flow starting before pre-infusion should have ended, or a disturbance leaving too little trustworthy data), and `runtime.py` logs it — so an invalid shot can be diagnosed (e.g. a BLE dropout vs. a disturbed cup) instead of showing up as an unexplained `invalid_measurement`.
+
+### Changed
+
+- Reorganized `runtime.py` into clearly labeled sections and removed several duplicated code paths (background-task cancellation, the stop/abort press-and-raise handling, `entity_value`'s source dispatch, and `async_new_bag`'s per-field validation) with no behavior change.
+
+### Fixed
+
+- The README's "Not implemented yet" list still claimed dynamic SwitchBot long-press programming was missing; it shipped back in 0.2.1. Removed the stale entry.
+
+### Docs
+
+- `docs/DESIGN.md`: marked Phases 1-2 as implemented, recorded Phase 3's actual status, and added Phase 3b (deriving thresholds from real shot data) as a named follow-up. Also documented why a late abort waits for the machine's own timer before finalising the shot log instead of stopping immediately.
+
 ## 0.2.4
 
 ### Fixed

@@ -102,6 +102,16 @@ views:
             vertical: true
 
           - type: tile
+            entity: __SHOT_CLASSIFICATION__
+            color: brown
+            vertical: true
+
+          - type: tile
+            entity: __SHOT_CHANNELING_SUSPICION__
+            color: red
+            vertical: true
+
+          - type: tile
             entity: __STOP_COMPENSATION__
             color: purple
             features: *number_buttons

@@ -76,6 +76,20 @@ entities:
       device_class: weight
       precision: 1
 
+    shot_classification:
+      source: last_shot
+      field: classification
+      translation_key: shot_classification
+      token: __SHOT_CLASSIFICATION__
+
+    shot_channeling_suspicion:
+      source: last_shot
+      field: channeling_suspicion
+      translation_key: shot_channeling_suspicion
+      token: __SHOT_CHANNELING_SUSPICION__
+      state_class: measurement
+      precision: 2
+
     flow_rate:
       source: scale
       field: flow_g_s
