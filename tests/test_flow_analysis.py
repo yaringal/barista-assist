@@ -161,14 +161,70 @@ class FlowAnalysisTests(unittest.TestCase):
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
         self.assertEqual(result.t90_ms, clean_result.t90_ms)
 
+    def test_pre_infusion_settling_noise_is_not_a_disturbance(self) -> None:
+        """Regression test: a real ~53g water shot was misclassified
+        invalid_measurement/near_zero_final_weight even though it clearly
+        poured. The scale's own settling noise during pre-infusion dipped
+        from a ~0.4g peak down to -0.2g (a 0.6g drop, over
+        _MAX_PLAUSIBLE_WEIGHT_DROP_G) before any real coffee mass had
+        accumulated, and the old, unconditional disturbance check truncated
+        everything after that noise blip - discarding the entire real pour
+        that followed. Disturbance detection must not arm before the running
+        peak clears _DISTURBANCE_DETECTION_FLOOR_G."""
+        noisy_preinfusion = [
+            ShotSample(seq=0, elapsed_ms=0, scale_ms=0, weight_g=0.0, flow_g_s=0.0, battery_percent=90),
+            ShotSample(seq=1, elapsed_ms=100, scale_ms=100, weight_g=0.4, flow_g_s=0.5, battery_percent=90),
+            ShotSample(seq=2, elapsed_ms=200, scale_ms=200, weight_g=-0.2, flow_g_s=-0.6, battery_percent=90),
+            ShotSample(seq=3, elapsed_ms=300, scale_ms=300, weight_g=0.0, flow_g_s=0.2, battery_percent=90),
+        ]
+        expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
+        real_pour = _steady_flow_samples(duration_s=expected_s)
+        shifted_pour = [
+            ShotSample(
+                seq=len(noisy_preinfusion) + s.seq,
+                elapsed_ms=s.elapsed_ms + 300,
+                scale_ms=s.elapsed_ms + 300,
+                weight_g=s.weight_g,
+                flow_g_s=s.flow_g_s,
+                battery_percent=90,
+            )
+            for s in real_pour
+        ]
+        result = analyze_shot(
+            noisy_preinfusion + shifted_pour,
+            target_yield_g=TARGET_YIELD_G,
+            preinfusion_s=0.0,
+            baseline=HEALTHY_BASELINE,
+        )
+        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+
+    def test_disturbance_below_the_floor_is_ignored_but_above_it_is_still_caught(self) -> None:
+        """Direct unit test for the floor added to _first_disturbance_index:
+        a drop is ignored while the running peak is still under
+        _DISTURBANCE_DETECTION_FLOOR_G (real pre-infusion settling noise),
+        but the identical-sized drop is still flagged once the running peak
+        has cleared that floor, exactly as before this fix."""
+        below_floor = [0.0, 0.4, -0.2, 0.0]  # peak 0.4g, well under the floor
+        self.assertIsNone(flow_analysis._first_disturbance_index(below_floor))
+
+        above_floor = [0.0, 1.0, 3.0, 2.0]  # peak 3.0g; the 1.0g drop exceeds the threshold
+        self.assertEqual(flow_analysis._first_disturbance_index(above_floor), 3)
+
     def test_disturbance_leaving_too_few_samples_is_invalid_with_a_distinct_reason(self) -> None:
         """A disturbance early enough to leave under MIN_SAMPLES of trustworthy
         data must be distinguishable in logs from a shot that was simply
         always too sparse (e.g. a near-instant abort)."""
-        # 4 clean samples + 1 disturbed = 5 total, clearing the "too few
-        # samples at all" check below, but the disturbed one gets truncated
-        # away, leaving only 4 trustworthy samples - still under MIN_SAMPLES.
-        clean_prefix = _steady_flow_samples(duration_s=18.0)[:4]
+        # 4 clean samples (weight already past _DISTURBANCE_DETECTION_FLOOR_G,
+        # so the drop below counts as a real disturbance, not settling noise)
+        # + 1 disturbed = 5 total, clearing the "too few samples at all"
+        # check below, but the disturbed one gets truncated away, leaving
+        # only 4 trustworthy samples - still under MIN_SAMPLES.
+        clean_prefix = [
+            ShotSample(seq=0, elapsed_ms=0, scale_ms=0, weight_g=0.0, flow_g_s=0.0, battery_percent=90),
+            ShotSample(seq=1, elapsed_ms=100, scale_ms=100, weight_g=1.0, flow_g_s=10.0, battery_percent=90),
+            ShotSample(seq=2, elapsed_ms=200, scale_ms=200, weight_g=2.0, flow_g_s=10.0, battery_percent=90),
+            ShotSample(seq=3, elapsed_ms=300, scale_ms=300, weight_g=3.0, flow_g_s=10.0, battery_percent=90),
+        ]
         last = clean_prefix[-1]
         disturbed = clean_prefix + [
             ShotSample(

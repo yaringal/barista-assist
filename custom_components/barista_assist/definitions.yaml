@@ -242,11 +242,13 @@ entities:
       translation_key: brew
       token: __BREW__
       requires_bag: true
+      requires_no_active_shot: true
 
     abort:
       action: abort
       translation_key: abort
       token: __ABORT__
+      requires_active_shot: true
 
     tare:
       action: tare

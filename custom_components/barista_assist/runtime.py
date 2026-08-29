@@ -259,6 +259,10 @@ class BaristaRuntime:
             return False
         if definition.requires_bag and self.selected_bag is None:
             return False
+        if definition.requires_active_shot and self.active_shot is None:
+            return False
+        if definition.requires_no_active_shot and self.active_shot is not None:
+            return False
         return True
 
     def entity_value(self, definition: EntityDefinition) -> Any:

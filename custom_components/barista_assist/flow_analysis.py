@@ -99,6 +99,17 @@ _EARLY_FLOW_FRACTION_OF_PREINFUSION = 0.5
 # that point on isn't trustworthy. Everything before it still is.
 _MAX_PLAUSIBLE_WEIGHT_DROP_G = 0.5
 
+# Disturbance detection only arms once the running peak has cleared this
+# floor. Below it - typically pre-infusion, before any real coffee mass has
+# accumulated - scale settling noise alone can span several tenths of a
+# gram, comfortably exceeding _MAX_PLAUSIBLE_WEIGHT_DROP_G on its own with no
+# real disturbance involved; a real shot found this live, misclassifying a
+# genuine ~50g pour as invalid because of a sub-gram dip minutes before the
+# real pour even began. Once a shot has genuinely accumulated this much
+# weight, the same _MAX_PLAUSIBLE_WEIGHT_DROP_G drop is unambiguous
+# interference, exactly as before.
+_DISTURBANCE_DETECTION_FLOOR_G = 2.0
+
 
 class ShotClassification(str, Enum):
     """Stage-1 validation outcome for one shot (docs/DESIGN.md section 13)."""
@@ -194,10 +205,16 @@ def _first_disturbance_index(raw_weights: list[float]) -> int | None:
     peak - physically implausible during a real pour (weight only rises
     while coffee is being collected), so this reliably flags cup/scale
     interference rather than genuine flow, however and whenever it happens.
+
+    Only armed once the running peak clears _DISTURBANCE_DETECTION_FLOOR_G -
+    see that constant for why.
     """
     running_max = raw_weights[0]
     for i, weight in enumerate(raw_weights):
-        if weight < running_max - _MAX_PLAUSIBLE_WEIGHT_DROP_G:
+        if (
+            running_max >= _DISTURBANCE_DETECTION_FLOOR_G
+            and weight < running_max - _MAX_PLAUSIBLE_WEIGHT_DROP_G
+        ):
             return i
         running_max = max(running_max, weight)
     return None

@@ -26,11 +26,17 @@ switchbot_protocol = ha_stubs.import_barista_module("switchbot_protocol")
 
 
 class FakeBleClient:
-    def __init__(self) -> None:
+    def __init__(self, fail_start_notify_times: int = 0) -> None:
         self.notify_callback = None
         self.written: list[bytes] = []
+        self._fail_start_notify_times = fail_start_notify_times
 
     async def start_notify(self, _uuid, callback) -> None:
+        if self._fail_start_notify_times > 0:
+            self._fail_start_notify_times -= 1
+            raise sys.modules["bleak_retry_connector"].BleakError(
+                "[org.bluez.Error.NotConnected] Not Connected"
+            )
         self.notify_callback = callback
 
     async def write_gatt_char(self, _uuid, data, response=True) -> None:
@@ -87,6 +93,49 @@ class SwitchBotThreadSafetyTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task, timeout=5)
 
         self.assertEqual(calling_threads, [threading.main_thread()])
+
+
+class RetryOnTransientDisconnectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_notify_failure_retries_the_whole_connection(self) -> None:
+        """Regression test: a BLE peripheral is free to drop the link right
+        after connecting, before the first GATT operation lands - observed
+        live as `BleakDBusError: [org.bluez.Error.NotConnected]` from
+        start_notify immediately after establish_connection had already
+        succeeded. async_set_long_press_duration must retry the whole
+        operation (a fresh connection) via @retry_bluetooth_connection_error
+        rather than fail outright on one transient disconnect."""
+        attempted_clients: list[FakeBleClient] = []
+
+        async def fake_establish_connection(*_args, **_kwargs):
+            client = FakeBleClient(fail_start_notify_times=1 if not attempted_clients else 0)
+            attempted_clients.append(client)
+            return client
+
+        configurator = switchbot.SwitchBotBotConfigurator(
+            ha_stubs.sys.modules["homeassistant.core"].HomeAssistant(),
+            "AA:BB:CC:DD:EE:FF",
+        )
+
+        with (
+            patch.object(
+                switchbot.bluetooth,
+                "async_ble_device_from_address",
+                return_value=SimpleNamespace(name="Test Bot"),
+            ),
+            patch.object(switchbot, "establish_connection", fake_establish_connection),
+        ):
+            task = asyncio.ensure_future(configurator.async_set_long_press_duration(0))
+
+            async def _wait_for_notify_registration() -> None:
+                while not attempted_clients or attempted_clients[-1].notify_callback is None:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_wait_for_notify_registration(), timeout=5)
+            response = bytes([switchbot_protocol.STATUS_OK])
+            attempted_clients[-1].notify_callback(None, bytearray(response))
+            await asyncio.wait_for(task, timeout=5)
+
+        self.assertEqual(len(attempted_clients), 2)  # first attempt failed, second succeeded
 
 
 if __name__ == "__main__":

@@ -6,7 +6,11 @@ import asyncio
 import logging
 from typing import Any
 
-from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+from bleak_retry_connector import (
+    BleakClientWithServiceCache,
+    establish_connection,
+    retry_bluetooth_connection_error,
+)
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -50,8 +54,19 @@ class SwitchBotBotConfigurator:
         self.hass = hass
         self.address = address
 
+    @retry_bluetooth_connection_error(attempts=3)
     async def async_set_long_press_duration(self, seconds: int) -> None:
-        """Set the stored Bot long-press duration and require device confirmation."""
+        """Set the stored Bot long-press duration and require device confirmation.
+
+        A BLE peripheral is free to drop the link at any point, including
+        right after connecting but before the first GATT operation lands
+        (observed live as `BleakDBusError: [org.bluez.Error.NotConnected]`
+        from start_notify immediately after establish_connection succeeded).
+        @retry_bluetooth_connection_error re-runs this whole method - a fresh
+        connect, not just the failed step - which is the documented way
+        bleak_retry_connector expects transient mid-operation disconnects to
+        be handled.
+        """
         device = bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )

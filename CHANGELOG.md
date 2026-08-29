@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.10
+
+### Fixed
+
+- **Brewing could still eventually fail to press the SwitchBot Bot** with `BleakDBusError: [org.bluez.Error.NotConnected]`, raised from `start_notify` immediately after `establish_connection` had already reported success - a BLE peripheral is free to drop the link right after connecting, before the first GATT operation lands. `SwitchBotBotConfigurator.async_set_long_press_duration` is now wrapped in `bleak_retry_connector`'s own `retry_bluetooth_connection_error`, which retries the whole connect-use-disconnect sequence (a fresh connection, not just the failed step) - the documented way this library expects a mid-operation disconnect to be handled.
+- **A real, completed shot with a normal yield (confirmed live: ~53g from a water test) could still be classified `invalid_measurement`/`near_zero_final_weight`.** `flow_analysis.py`'s disturbance detection (see 0.2.5's changelog entry) treated any >0.5g drop below the running weight peak as the cup/scale being disturbed, with no lower bound - but scale settling noise during pre-infusion, before any real coffee mass has accumulated, can easily span several tenths of a gram on its own. A sub-gram noise dip minutes before the real pour began was truncating away the entire real pour that followed. Disturbance detection now only arms once the running peak clears 2 g, leaving its sensitivity to genuine disturbances during/after a real pour unchanged.
+
+### Added
+
+- **Brew** and **Abort** now correctly show as unavailable/disabled when they don't apply: Brew while a shot is already active, Abort when there's no active shot. Both previously stayed enabled at all times regardless of shot state; pressing them as a no-op wasn't unsafe, but looked like the button was broken. Backed by two new `EntityDefinition` flags, `requires_active_shot`/`requires_no_active_shot`, following the same pattern as the existing `requires_bag`/`requires_scale`.
+
+### Testing
+
+- Added a regression test reproducing the SwitchBot mid-connection disconnect and confirming the whole operation retries via a fresh connection.
+- Added regression tests for Brew/Abort availability across shot state transitions.
+- Added regression tests reproducing the pre-infusion-noise false positive and confirming a genuine mid/post-pour disturbance is still caught.
+- Full suite: 81 tests, all passing.
+
 ## 0.2.9
 
 ### Fixed

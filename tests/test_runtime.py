@@ -256,6 +256,29 @@ class InstantTapTests(RuntimeTestCase):
         self.assertTrue(phase_task.done())
 
 
+class ButtonAvailabilityTests(RuntimeTestCase):
+    """Brew and Abort should each only be usable in the phase they apply to,
+    rather than always showing as pressable regardless of shot state."""
+
+    def _button(self, key: str):
+        return next(d for d in self.runtime.definitions.platform("button") if d.key == key)
+
+    async def test_brew_is_unavailable_while_a_shot_is_active(self):
+        brew = self._button("brew")
+        await self.create_bag()
+        self.assertTrue(self.runtime.entity_available(brew))
+
+        await self.runtime.async_brew()
+        self.assertFalse(self.runtime.entity_available(brew))
+
+    async def test_abort_is_unavailable_with_no_active_shot(self):
+        abort = self._button("abort")
+        self.assertFalse(self.runtime.entity_available(abort))
+
+        await self.start_shot()
+        self.assertTrue(self.runtime.entity_available(abort))
+
+
 class DeadlineSafetyTests(RuntimeTestCase):
     async def test_never_presses_after_protected_deadline(self):
         """Safety invariant: once the protected shot deadline has passed,

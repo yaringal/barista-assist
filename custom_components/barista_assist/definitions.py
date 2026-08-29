@@ -32,6 +32,8 @@ class EntityDefinition:
     attributes: tuple[str, ...] = ()
     requires_bag: bool = False
     requires_scale: bool = False
+    requires_active_shot: bool = False
+    requires_no_active_shot: bool = False
 
     def option_labels(self) -> list[str]:
         return [label for label, _value in self.options]
@@ -115,6 +117,8 @@ def _parse_entity(platform: str, key: str, raw: dict[str, Any]) -> EntityDefinit
         attributes=tuple(raw.get("attributes", ())),
         requires_bag=bool(raw.get("requires_bag", False)),
         requires_scale=bool(raw.get("requires_scale", False)),
+        requires_active_shot=bool(raw.get("requires_active_shot", False)),
+        requires_no_active_shot=bool(raw.get("requires_no_active_shot", False)),
     )
 
 
