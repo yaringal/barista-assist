@@ -120,7 +120,17 @@ class BookooUltraClient:
         self._on_connection(False)
 
     def _disconnected(self, client: Any) -> None:
-        """Handle an unsolicited BLE disconnect."""
+        """Handle an unsolicited BLE disconnect.
+
+        bleak's disconnected_callback (like _notification below) is not
+        guaranteed to run on the event loop - it depends on the platform's
+        BLE backend. Touching hass/asyncio state off-thread can crash Home
+        Assistant or corrupt data, so this always marshals onto the loop
+        before doing anything, regardless of which thread bleak called from.
+        """
+        self.hass.loop.call_soon_threadsafe(self._handle_disconnected_on_loop, client)
+
+    def _handle_disconnected_on_loop(self, client: Any) -> None:
         if self._client is client:
             self._client = None
         self._on_connection(False)
@@ -131,6 +141,10 @@ class BookooUltraClient:
         except BookooProtocolError as err:
             _LOGGER.debug("Ignoring invalid BOOKOO packet: %s", err)
             return
+        # See _disconnected: never assume this runs on the event loop.
+        self.hass.loop.call_soon_threadsafe(self._handle_reading_on_loop, reading)
+
+    def _handle_reading_on_loop(self, reading: BookooReading) -> None:
         self.last_reading = reading
         self._reading_event.set()
         self._on_reading(reading)

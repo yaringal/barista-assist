@@ -245,6 +245,13 @@ Recipe, PI and stop compensation are deliberately **not** set in the setup flow;
 
 Do not use **Take control** if you want future HACS releases to continue replacing the packaged dashboard automatically.
 
+The Companion app's embedded WebView can be flaky for this one-time step:
+
+- **If "Barista Assist" doesn't show up under Community dashboards at all**, even after a full Home Assistant restart, the app is likely holding onto a stale frontend cache from before the integration was installed. Go to **Settings (gear icon) -> Companion app -> Troubleshooting -> Reset frontend cache**, then reopen the app and try again. If that option isn't available in your app version, force-stop the app (Android: Settings -> Apps -> Home Assistant -> Force stop) and reopen it.
+- **If "Barista Assist" is listed but tapping it does nothing**, that's a Companion-app WebView tap-handling quirk, not a bug in the integration - the same action works fine in a regular browser. Since this is a one-time setup step anyway, just do it once from a desktop or mobile browser pointed at your Home Assistant instance; the resulting dashboard then shows and works normally in the Companion app afterward.
+
+Checking in a regular browser first is a quick way to tell which of these you're hitting.
+
 ### Manual test installation
 
 Extract the manual component ZIP and copy the contained `barista_assist` directory to:

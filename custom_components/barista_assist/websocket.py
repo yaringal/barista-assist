@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +15,20 @@ from homeassistant.helpers import entity_registry as er
 from .const import DOMAIN
 from .definitions import load_definitions
 
+_dashboard_cache: dict[str, Any] = {"mtime": None, "data": None}
 
-@lru_cache(maxsize=1)
+
 def dashboard_template() -> Any:
+    """Parsed frontend/dashboard.yaml, re-read whenever the file changes on
+    disk rather than only once per process - so a HACS update (or, during
+    development, an edit) takes effect on the next dashboard view instead of
+    needing a full Home Assistant restart."""
     path = Path(__file__).parent / "frontend" / "dashboard.yaml"
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
+    mtime = path.stat().st_mtime
+    if _dashboard_cache["mtime"] != mtime:
+        _dashboard_cache["data"] = yaml.safe_load(path.read_text(encoding="utf-8"))
+        _dashboard_cache["mtime"] = mtime
+    return _dashboard_cache["data"]
 
 
 def _dashboard_entity_map(hass: HomeAssistant, runtime) -> dict[str, str]:

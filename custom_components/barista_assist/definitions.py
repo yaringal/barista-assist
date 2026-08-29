@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -119,10 +118,7 @@ def _parse_entity(platform: str, key: str, raw: dict[str, Any]) -> EntityDefinit
     )
 
 
-@lru_cache(maxsize=1)
-def load_definitions() -> Definitions:
-    """Load package definitions once per process."""
-    path = Path(__file__).with_name("definitions.yaml")
+def _parse_definitions(path: Path) -> Definitions:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("definitions.yaml must contain a mapping")
@@ -182,3 +178,22 @@ def load_definitions() -> Definitions:
         defaults=defaults,
         entities=entities,
     )
+
+
+_definitions_cache: dict[str, Any] = {"mtime": None, "data": None}
+
+
+def load_definitions() -> Definitions:
+    """Load package definitions, re-parsing whenever definitions.yaml changes
+    on disk rather than only once per process - so a HACS update (or, during
+    development, an edit) takes effect on the next call instead of needing a
+    full Home Assistant restart."""
+    path = Path(__file__).with_name("definitions.yaml")
+    mtime = path.stat().st_mtime
+    if _definitions_cache["mtime"] != mtime:
+        _definitions_cache["data"] = _parse_definitions(path)
+        _definitions_cache["mtime"] = mtime
+    return _definitions_cache["data"]
+
+
+load_definitions.cache_clear = lambda: _definitions_cache.update(mtime=None, data=None)

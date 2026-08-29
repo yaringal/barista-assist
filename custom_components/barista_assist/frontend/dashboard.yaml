@@ -126,6 +126,7 @@ views:
             entity: __BREW__
             color: green
             vertical: true
+            state_content: []
             features:
               - type: button
                 action_name: Start shot
@@ -134,6 +135,7 @@ views:
             entity: __TARE__
             color: blue
             vertical: true
+            state_content: []
             features:
               - type: button
                 action_name: Tare scale
@@ -142,6 +144,7 @@ views:
             entity: __ABORT__
             color: red
             vertical: true
+            state_content: []
             features:
               - type: button
                 action_name: Stop now
@@ -152,7 +155,7 @@ views:
 
   - title: Bags
     path: bags
-    icon: mdi:coffee-beans
+    icon: mdi:coffee-bean
     type: sections
     max_columns: 2
     sections:
@@ -188,6 +191,7 @@ views:
           - type: tile
             entity: __CREATE_BAG__
             color: green
+            state_content: []
             features:
               - type: button
                 action_name: Save new bag
@@ -239,11 +243,3 @@ views:
               - __STATUS__
               - __SCALE_BATTERY__
               - __STOP_COMPENSATION__
-
-          - type: markdown
-            content: >-
-              ### v0.2.0
-
-              Recipe/entity definitions are shipped in `definitions.yaml`; this
-              dashboard is shipped in `frontend/dashboard.yaml`. Both are replaced
-              atomically by HACS updates, so no Home Assistant YAML needs patching.

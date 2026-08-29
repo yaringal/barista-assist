@@ -1,5 +1,6 @@
 from pathlib import Path
 import importlib.util
+import os
 import sys
 import unittest
 
@@ -31,6 +32,24 @@ class DefinitionTests(unittest.TestCase):
     def test_dashboard_tokens_are_unique(self):
         tokens = self.defs.dashboard_tokens
         self.assertEqual(len(tokens), sum(1 for p in self.defs.entities.values() for e in p if e.token))
+
+    def test_load_definitions_reparses_once_the_file_changes_on_disk(self):
+        """Regression test: definitions.yaml (and frontend/dashboard.yaml,
+        cached the same way in websocket.py) used to be parsed once and
+        cached for the life of the process via lru_cache, so a HACS update -
+        or, during development, an edit - silently had no effect until a
+        full Home Assistant restart, contradicting the documented "takes
+        effect after the integration/Home Assistant reloads" behavior."""
+        path = Path(definitions.__file__).with_name("definitions.yaml")
+        original_mtime = path.stat().st_mtime
+        self.addCleanup(os.utime, path, (original_mtime, original_mtime))
+
+        first = definitions.load_definitions()
+        self.assertIs(definitions.load_definitions(), first)  # unchanged file: cached, no reparse
+
+        os.utime(path, (original_mtime + 5, original_mtime + 5))
+        second = definitions.load_definitions()
+        self.assertIsNot(second, first)  # mtime changed: detected and reparsed
 
 
 if __name__ == "__main__":

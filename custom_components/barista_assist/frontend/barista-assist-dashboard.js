@@ -88,7 +88,7 @@ class BaristaAssistExportCard extends HTMLElement {
       const result = await this._hass.callWS({ type: "barista_assist/export_shots_text" });
       try {
         await navigator.clipboard.writeText(result.text);
-        status.textContent = "Copied to clipboard. You can paste it directly here.";
+        status.textContent = "Copied to clipboard.";
       } catch (_clipboardError) {
         // The Clipboard API can be unavailable in the companion app's webview
         // as well as some browser contexts. Rather than trying to script a

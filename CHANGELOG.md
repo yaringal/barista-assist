@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.6
+
+### Fixed
+
+- **`bookoo.py` called `async_write_ha_state` from outside the event loop**, hundreds of times per shot, logged by Home Assistant as a thread-safety violation that "may cause Home Assistant to crash or data to corrupt." `BookooUltraClient` registered its BLE notification and disconnect handlers directly as bleak's raw callbacks, which are not guaranteed to run on the event loop — the exact thread depends on the platform's BLE backend. Both callbacks now marshal onto the event loop via `hass.loop.call_soon_threadsafe` before touching any state, regardless of which thread bleak actually calls them from. Found on a real install during v0.2.5 bring-up.
+- `mdi:coffee-beans` isn't a real Material Design Icon (the real name is singular, `mdi:coffee-bean`), so every icon using it rendered blank — including the Bags dashboard tab, `active_bag`, `beans_remaining`, `bean_slot`, and `new_bag_coffee`. Fixed everywhere.
+- `dashboard_template()` and `load_definitions()` were each cached once per process (`@lru_cache`), so a HACS update replacing `dashboard.yaml`/`definitions.yaml` had no effect until a full Home Assistant restart — contradicting the documented "takes effect after the integration/Home Assistant reloads" behavior. Both now re-parse automatically whenever the file's mtime changes, with no restart required.
+- The Brew/Bags view's action-button tiles (Brew, Tare, Abort, Create bag) showed a live "time since last pressed" counter as their state text, which reads as a odd/confusing default for a momentary action button. Suppressed via `state_content: []`.
+- The shot-export card's clipboard-success message said "You can paste it directly here" even though there's nothing on the card to paste into on the success path (that text only makes sense in the Clipboard-API-unavailable fallback, where a textarea does appear). Shortened to "Copied to clipboard."
+- Removed a stale "### v0.2.0" implementation note from the System dashboard view.
+
 ## 0.2.5
 
 ### Added

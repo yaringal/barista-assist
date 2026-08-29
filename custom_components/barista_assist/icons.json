@@ -2,11 +2,11 @@
   "entity": {
     "sensor": {
       "status": {"default": "mdi:coffee-outline"},
-      "active_bag": {"default": "mdi:coffee-beans"},
+      "active_bag": {"default": "mdi:coffee-bean"},
       "shot_classification": {"default": "mdi:stethoscope"},
       "shot_channeling_suspicion": {"default": "mdi:gauge"},
       "flow_rate": {"default": "mdi:waves-arrow-right"},
-      "beans_remaining": {"default": "mdi:coffee-beans"}
+      "beans_remaining": {"default": "mdi:coffee-bean"}
     },
     "number": {
       "dose": {"default": "mdi:scale"},
@@ -17,11 +17,11 @@
       "new_bag_starting_mass": {"default": "mdi:weight-gram"}
     },
     "select": {
-      "bean_slot": {"default": "mdi:coffee-beans"},
+      "bean_slot": {"default": "mdi:coffee-bean"},
       "temperature_offset": {"default": "mdi:thermometer"}
     },
     "text": {
-      "new_bag_coffee": {"default": "mdi:coffee-beans"},
+      "new_bag_coffee": {"default": "mdi:coffee-bean"},
       "new_bag_roaster": {"default": "mdi:store"}
     },
     "date": {
@@ -38,6 +38,6 @@
     "brew": {"service": "mdi:coffee-maker"},
     "abort": {"service": "mdi:stop-circle-outline"},
     "tare": {"service": "mdi:scale-balance"},
-    "select_slot": {"service": "mdi:coffee-beans"}
+    "select_slot": {"service": "mdi:coffee-bean"}
   }
 }
