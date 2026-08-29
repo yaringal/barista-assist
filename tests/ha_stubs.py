@@ -49,7 +49,15 @@ def install() -> None:
         pass
 
     core.HomeAssistant = HomeAssistant
-    core.callback = lambda func: func
+
+    def callback(func):
+        """Match real homeassistant.core.callback: mark a function so HA's
+        job-scheduling knows it's safe to run inline on the event loop
+        instead of defensively offloading it to the executor thread pool."""
+        func._hass_callback = True
+        return func
+
+    core.callback = callback
 
     exceptions = _new_module("homeassistant.exceptions")
 
@@ -93,9 +101,19 @@ def install() -> None:
     device_registry = _new_module("homeassistant.helpers.device_registry")
     device_registry.CONNECTION_BLUETOOTH = "bluetooth"
     device_registry.async_get = lambda hass: None
+    device_registry.DeviceInfo = lambda **kwargs: kwargs
 
     entity_registry = _new_module("homeassistant.helpers.entity_registry")
     entity_registry.async_get = lambda hass: None
+
+    entity_module = _new_module("homeassistant.helpers.entity")
+
+    class Entity:  # only ever used as a base class here
+        pass
+
+    entity_module.Entity = Entity
+
+    dispatcher.async_dispatcher_connect = lambda hass, signal, target: (lambda: None)
 
     components = _new_module("homeassistant.components")
     components.__path__ = []

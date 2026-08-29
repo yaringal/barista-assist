@@ -1,19 +1,30 @@
-# Barista Assist v0.2.7
+# Barista Assist v0.2.8
 
-Replaces the Community Dashboard strategy with a plain YAML-mode dashboard file: no new features, but the dashboard setup step and its underlying mechanism have changed.
+Fixes found during v0.2.7 bring-up on a real install: no new functionality, but this closes out a cluster of bugs that were all secretly one bug.
 
-## Changed
+## Fixed
 
-- **The dashboard no longer relies on Home Assistant's Community Dashboard strategy mechanism.** Live testing after v0.2.6 shipped showed the "timeout waiting for strategy element ... to be registered" error persisting even after that release's `Content-Type` fix, on both desktop and mobile browsers. Further investigation traced it to a bug in Home Assistant 2026.5's own brand-new browser-side strategy-registration feature (`window.customStrategies`) — the same failure affects several unrelated Home Assistant dashboard-strategy projects, and the community's own suggested workaround doesn't reliably fix it on mobile clients. Since this is a Home Assistant core issue outside this project's control, Barista Assist now writes a fully token-substituted YAML-mode dashboard file (`barista_assist_dashboard.yaml`) into your Home Assistant config directory on every setup/reload, instead of registering a strategy at all.
-- **One-time setup has changed.** Instead of adding the dashboard from **Settings -> Dashboards -> Add dashboard -> Community dashboards**, you now add a short block to `configuration.yaml` once and restart Home Assistant. See the README's "Add the dashboard once" section for the exact snippet. This trades one menu click for one config edit, but removes the browser-side registration step entirely — the dashboard now loads reliably on both desktop and the Companion app.
-- The dashboard file keeps auto-updating with every future release, exactly as before: it's fully regenerated from the packaged `dashboard.yaml` template on every integration load, so a HACS update still needs no repeat setup.
-- Removed the v0.2.6 `.js` `Content-Type` fix and the dashboard-strategy JavaScript class — both were specific to the now-abandoned strategy mechanism. The shot-export card (**Copy all shot data**) and its WebSocket endpoint are unaffected.
+- **Found the actual cause of the "calls async_write_ha_state from a thread other than the event loop" errors** that kept appearing even after 0.2.6's BLE thread-safety fix (thousands of occurrences per session, and Home Assistant treats these as hard errors, not just warnings). The real problem was in `entity.py`: the function Home Assistant calls whenever any Barista Assist entity needs to refresh wasn't marked as a Home Assistant "callback," so Home Assistant defensively ran it in a background thread instead of on its own event loop, every single time. That's also what was silently causing several other confusing symptoms during live testing, because the entity's new state was never actually reaching the frontend:
+  - the scale showing **Unavailable** even while genuinely connected;
+  - the active bag reading **Unknown** after being set;
+  - the **Bean slot** selector getting stuck after switching it a second time;
+  - **Stop Compensation** not staying in sync between Settings and the Live Shot tile.
+
+  All four should now update normally.
+- Fixed a second, similar BLE thread-safety bug in the SwitchBot Bot connection code (same class of bug as 0.2.6's scale fix, just in a different file).
+- **The Bags tab, active bag, and beans-remaining icons were still blank.** 0.2.6's fix (`mdi:coffee-bean`) turned out to be just as made-up as the icon name it replaced - neither exists in Material Design Icons. Switched to a real icon (`mdi:sack`) this time, and added an automated check against the actual icon catalog so this can't happen a third time.
+- **Every dashboard tile's title overflowed**, showing the full "Barista Assist <name>" text instead of a short label. Every tile now shows a short, readable name.
+- Swapped the coffee-maker icon for a coffee-to-go icon across the Brew view and a few related entities/services, per request.
+
+## Docs
+
+- Documented a real Bluetooth limitation some setups will hit: Barista Assist needs **two** concurrent Bluetooth connections available (one held continuously by the scale, one briefly opened per shot for the SwitchBot Bot). A single adapter or Bluetooth proxy that only supports one connection at a time will fail the Bot connection while the scale is connected - this is a capacity limit of your Bluetooth setup, not a bug, and Barista Assist already falls back gracefully when it happens. See the README's "SwitchBot requirement" section for the fix (an additional Bluetooth proxy near the machine).
+
+## Testing
+
+- 4 new regression tests added, each verified to fail against the pre-fix code, for: the missing `@callback`, the SwitchBot thread-safety bug, invalid icon names, and missing tile names.
+- Full suite: 75 tests, all passing.
 
 ## Upgrade
 
-1. Update via HACS and restart Home Assistant as usual.
-2. Add the `lovelace.dashboards` block from the README to `configuration.yaml`.
-3. Restart Home Assistant once more (YAML-mode dashboards are only picked up on restart).
-4. If you'd already added the old Community Dashboard, you can remove it from **Settings -> Dashboards** — it no longer registers or updates.
-
-No database migration.
+No database migration. A full Home Assistant restart is needed to pick up this release, same as any integration update.

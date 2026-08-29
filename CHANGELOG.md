@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.8
+
+### Fixed
+
+- **The actual root cause of the "calls async_write_ha_state from a thread other than the event loop" flood** (thousands of occurrences per session, logged as a RuntimeError, not just a warning): `entity.py`'s dispatcher-connected `_handle_runtime_update` was a plain, undecorated method. Home Assistant's job scheduler treats an undecorated callable passed to `async_dispatcher_connect` as possibly-blocking and defensively runs it in the executor thread pool instead of inline on the event loop - so *every* entity-state dispatch, from any trigger, was being routed off-thread regardless of the 0.2.6 BLE-callback marshaling fix. Marked it `@callback`, which is what actually told Home Assistant it's safe to run inline. This was also the root cause of several once-mysterious symptoms reported during live testing that all trace back to state writes silently failing to reach the frontend: the scale showing "Unavailable" while genuinely connected, the active bag reading "Unknown" after being set, the Bean slot select getting stuck after a second change, and Stop Compensation not staying in sync between Settings and the Live Shot tile.
+- A second real BLE thread-safety bug, same class as 0.2.6's: `switchbot.py`'s Bot-response notification callback touched a plain `asyncio.Event`/dict directly from bleak's raw callback thread. Now marshals onto the event loop first, like `bookoo.py` already did.
+- `mdi:coffee-bean` (the 0.2.6 "fix" for the Bags tab/active-bag/beans-remaining icons showing blank) turned out to be just as invalid as the `mdi:coffee-beans` it replaced - neither name exists in Material Design Icons. Switched to `mdi:sack`, and added `tests/test_icons.py`, which checks every `mdi:` reference in the repo against a real snapshot of the MDI catalog so an invented icon name can't ship undetected again.
+- Every dashboard tile showed its entity's full "Barista Assist <name>" friendly name as its header, which overflows the tile on typical screen widths. Every tile now sets an explicit short `name:` instead.
+- Swapped `mdi:coffee-maker` for `mdi:coffee-to-go` across the Brew view, its "Ready to brew" section heading, the System view heading, and the `brew` entity/service icons.
+
+### Docs
+
+- README: documented that Barista Assist needs at least 2 concurrent Bluetooth connection slots (the BOOKOO scale holds one continuously; brewing briefly opens a second to the SwitchBot Bot) - a single adapter/ESPHome proxy that only supports one connection at a time will fail the Bot connection with `BleakOutOfConnectionSlotsError` every time you brew while the scale is connected. This is a Bluetooth capacity limit, not a bug, and Barista Assist already degrades gracefully (falls back to a full-length press instead of an instant tap) when it happens; the fix is adding a second proxy/adapter near the machine.
+
+### Testing
+
+- Added `tests/test_entity.py`, confirming `_handle_runtime_update` is marked as a Home Assistant callback (fails without the fix, verified via `git stash`).
+- Added `tests/test_switchbot.py`, reproducing the switchbot.py thread-safety bug the same way `test_bookoo.py` does (fails/hangs against the pre-fix code, verified via `git stash`).
+- Added `tests/test_icons.py` (icon-name validation against the real MDI catalog) and a dashboard test asserting every tile declares a `name:`.
+- Full suite: 75 tests, all passing.
+
 ## 0.2.7
 
 ### Changed

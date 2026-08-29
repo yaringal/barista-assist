@@ -39,6 +39,19 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("36.0 g yield", text)
         self.assertNotIn("38 g / 0", text)
 
+    def test_every_tile_card_has_an_explicit_short_name(self):
+        """Without an explicit `name:`, a tile card's header falls back to the
+        entity's has_entity_name friendly name, which is prefixed with the
+        device name ("Barista Assist") and overflows the tile."""
+        data = yaml.safe_load(DASHBOARD.read_text(encoding="utf-8"))
+        for view in data["views"]:
+            for section in view.get("sections", []):
+                for card in section.get("cards", []):
+                    if card.get("type") == "tile":
+                        self.assertIn(
+                            "name", card, f"tile for {card.get('entity')!r} has no name"
+                        )
+
 
 if __name__ == "__main__":
     unittest.main()

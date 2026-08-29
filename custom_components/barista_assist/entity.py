@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
@@ -41,5 +42,12 @@ class BaristaAssistEntity(Entity):
             )
         )
 
+    @callback
     def _handle_runtime_update(self) -> None:
+        """Dispatcher-connected callbacks must be marked @callback or Home
+        Assistant assumes they might block and runs them in the executor
+        thread pool instead of inline on the event loop - which is exactly
+        what was causing every async_write_ha_state() call here to violate
+        HA's own thread-safety contract, regardless of which thread
+        originally triggered the dispatch."""
         self.async_write_ha_state()

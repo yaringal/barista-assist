@@ -68,10 +68,18 @@ class SwitchBotBotConfigurator:
         )
         response_event = asyncio.Event()
         response_box: dict[str, bytes] = {}
+        loop = asyncio.get_running_loop()
+
+        def _handle_response_on_loop(data: bytes) -> None:
+            response_box["data"] = data
+            response_event.set()
 
         def _notification(_sender: Any, data: bytearray) -> None:
-            response_box["data"] = bytes(data)
-            response_event.set()
+            # bleak's raw notification callback is not guaranteed to run on
+            # the event loop (see bookoo.py's _notification for the same
+            # issue) - asyncio.Event.set() is not thread-safe, so this must
+            # always marshal onto the loop before touching it.
+            loop.call_soon_threadsafe(_handle_response_on_loop, bytes(data))
 
         try:
             await client.start_notify(BOT_NOTIFY_UUID, _notification)

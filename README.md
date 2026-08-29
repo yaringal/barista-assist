@@ -359,6 +359,8 @@ Barista Assist uses the existing Home Assistant SwitchBot entity for the actual 
 
 The brew Bot must be configured in **press / momentary mode**, not toggle/retract mode. Barista Assist will refuse to brew if the selected Bot reports switch mode.
 
+**Needs at least 2 concurrent Bluetooth connection slots.** The BOOKOO scale holds one BLE connection continuously; brewing briefly opens a second, separate BLE connection to the SwitchBot Bot to (re)program its long-press duration. A single Bluetooth adapter or a single ESPHome Bluetooth proxy in range often only supports **one** connection at a time, in which case the Bot connection fails with something like `BleakOutOfConnectionSlotsError: ... No backend with an available connection slot ...` every time you brew while the scale is connected — this is a Bluetooth capacity limit, not a bug, and Barista Assist already degrades gracefully when it happens (it logs a warning and the Bot press falls back to holding for the full pre-infusion duration instead of an instant tap). If you hit this, add a second [ESPHome Bluetooth proxy](https://esphome.github.io/bluetooth-proxies/) (or a proxy/adapter that supports multiple simultaneous connections) near the machine so the scale and the Bot can each hold their own connection.
+
 ## Barista Express shot-duration safety requirement
 
 Before using automatic brew control, **program the relevant CUP button (1-CUP or 2-CUP) on the Barista Express with a maximum shot duration that you know, then confirm that duration in Barista Assist**.

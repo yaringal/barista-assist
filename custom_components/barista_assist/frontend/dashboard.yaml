@@ -2,7 +2,7 @@ title: Barista Assist
 views:
   - title: Brew
     path: brew
-    icon: mdi:coffee-maker
+    icon: mdi:coffee-to-go
     type: sections
     max_columns: 3
     sections:
@@ -11,15 +11,17 @@ views:
           - type: heading
             heading: Ready to brew
             heading_style: title
-            icon: mdi:coffee-maker
+            icon: mdi:coffee-to-go
 
           - type: tile
             entity: __STATUS__
+            name: Status
             color: green
             vertical: true
 
           - type: tile
             entity: __BEAN_SLOT__
+            name: Bean slot
             color: brown
             features:
               - type: select-options
@@ -27,6 +29,7 @@ views:
 
           - type: tile
             entity: __ACTIVE_BAG__
+            name: Active bag
             color: brown
             state_content:
               - state
@@ -36,6 +39,7 @@ views:
 
           - type: tile
             entity: __BEANS_REMAINING__
+            name: Beans remaining
             color: brown
             vertical: true
 
@@ -48,6 +52,7 @@ views:
 
           - type: tile
             entity: __DOSE__
+            name: Dose
             color: amber
             features: &number_buttons
               - type: numeric-input
@@ -56,18 +61,21 @@ views:
 
           - type: tile
             entity: __GRIND__
+            name: Grind
             color: amber
             features: *number_buttons
             features_position: bottom
 
           - type: tile
             entity: __TARGET_YIELD__
+            name: Target yield
             color: amber
             features: *number_buttons
             features_position: bottom
 
           - type: tile
             entity: __TEMPERATURE__
+            name: Temperature offset
             color: orange
             features:
               - type: select-options
@@ -75,6 +83,7 @@ views:
 
           - type: tile
             entity: __PREINFUSION__
+            name: Pre-infusion
             color: blue
             features: *number_buttons
             features_position: bottom
@@ -88,31 +97,37 @@ views:
 
           - type: tile
             entity: __SCALE_WEIGHT__
+            name: Weight
             color: blue
             vertical: true
 
           - type: tile
             entity: __FLOW_RATE__
+            name: Flow rate
             color: cyan
             vertical: true
 
           - type: tile
             entity: __LAST_YIELD__
+            name: Last yield
             color: green
             vertical: true
 
           - type: tile
             entity: __SHOT_CLASSIFICATION__
+            name: Shot diagnosis
             color: brown
             vertical: true
 
           - type: tile
             entity: __SHOT_CHANNELING_SUSPICION__
+            name: Channeling suspicion
             color: red
             vertical: true
 
           - type: tile
             entity: __STOP_COMPENSATION__
+            name: Stop compensation
             color: purple
             features: *number_buttons
             features_position: bottom
@@ -124,6 +139,7 @@ views:
 
           - type: tile
             entity: __BREW__
+            name: Brew
             color: green
             vertical: true
             state_content: []
@@ -133,6 +149,7 @@ views:
 
           - type: tile
             entity: __TARE__
+            name: Tare
             color: blue
             vertical: true
             state_content: []
@@ -142,6 +159,7 @@ views:
 
           - type: tile
             entity: __ABORT__
+            name: Abort
             color: red
             vertical: true
             state_content: []
@@ -155,7 +173,7 @@ views:
 
   - title: Bags
     path: bags
-    icon: mdi:coffee-bean
+    icon: mdi:sack
     type: sections
     max_columns: 2
     sections:
@@ -175,6 +193,7 @@ views:
 
           - type: tile
             entity: __BEAN_SLOT__
+            name: Bean slot
             features:
               - type: select-options
             features_position: bottom
@@ -190,6 +209,7 @@ views:
 
           - type: tile
             entity: __CREATE_BAG__
+            name: Create bag
             color: green
             state_content: []
             features:
@@ -205,6 +225,7 @@ views:
 
           - type: tile
             entity: __ACTIVE_BAG__
+            name: Active bag
             color: brown
             state_content:
               - state
@@ -234,7 +255,7 @@ views:
           - type: heading
             heading: Barista Assist
             heading_style: title
-            icon: mdi:coffee-maker
+            icon: mdi:coffee-to-go
 
           - type: entities
             title: Connection and control
