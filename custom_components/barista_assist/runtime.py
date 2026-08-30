@@ -67,6 +67,12 @@ class ShotPhase(str, Enum):
     ERROR = "error"
     MANUAL_STOP_REQUIRED = "manual_stop_required"
     SCALE_DISCONNECTED = "scale_disconnected"
+    # Display-only: never set via _set_phase. The `status` property reports
+    # this instead of IDLE whenever there's no active shot and the scale
+    # isn't connected, since "idle" reads as "everything's fine" when really
+    # nothing can happen (brewing requires a connected scale) until it's
+    # reconnected.
+    CONNECT_SCALE = "connect_scale"
 
     def __str__(self) -> str:
         return self.value
@@ -93,6 +99,15 @@ class ActiveShot:
     target_yield_g: float
     stop_compensation_g: float
     samples: list[ShotSample]
+    # Set once the initial brew Bot press actually lands (see async_brew).
+    # started_monotonic marks when brewing was *requested*, which can be
+    # anywhere from milliseconds to (on constrained Bluetooth hardware)
+    # nearly a minute before the machine is physically engaged - using it as
+    # the reference point for the safety deadline or for sample timing means
+    # BLE connection delay silently eats into both. press_monotonic is what
+    # the physical machine's own timing - and therefore ours - should
+    # actually be measured against.
+    press_monotonic: float | None = None
     stop_command_elapsed_ms: int | None = None
     stop_scheduled: bool = False
     stop_triggered: bool = False
@@ -155,6 +170,8 @@ class BaristaRuntime:
     # ---------------------------------------------------------------------
     @property
     def status(self) -> str:
+        if self._phase == ShotPhase.IDLE and not self.scale_connected:
+            return ShotPhase.CONNECT_SCALE.value
         return self._phase.value
 
     @property
@@ -508,8 +525,13 @@ class BaristaRuntime:
     # -- read scale and decide if to stop shot --
     def _handle_reading(self, reading: BookooReading) -> None:
         shot = self.active_shot
-        if shot is not None:
-            elapsed_ms = int((time.monotonic() - shot.started_monotonic) * 1000)
+        if shot is not None and shot.press_monotonic is not None:
+            # Samples only start once the machine is actually engaged, not
+            # from when brewing was requested (see ActiveShot.press_monotonic) -
+            # readings that arrive during Bot connection setup aren't part of
+            # the shot's real timeline and would otherwise pad every
+            # exported/analyzed shot with a flat prefix of BLE-connect delay.
+            elapsed_ms = int((time.monotonic() - shot.press_monotonic) * 1000)
             shot.samples.append(
                 ShotSample(
                     seq=len(shot.samples),
@@ -618,9 +640,6 @@ class BaristaRuntime:
             self._set_phase(ShotPhase.CONNECTING_SCALE)
             await self.scale.async_ensure_connected()
             await self.scale.async_wait_for_fresh_reading()
-            await self.scale.async_set_flow_smoothing(False)
-            await self.scale.async_tare_and_start_timer()
-            await asyncio.sleep(0.20)
 
             started_at = datetime.now(timezone.utc).isoformat()
             shot_id = await self.hass.async_add_executor_job(
@@ -655,6 +674,12 @@ class BaristaRuntime:
             except Exception:
                 await self._async_finalize(ShotPhase.ERROR.value)
                 raise
+            self.active_shot.press_monotonic = time.monotonic()
+            connect_delay_s = self.active_shot.press_monotonic - self.active_shot.started_monotonic
+            _LOGGER.debug(
+                "Brew Bot engaged %.2fs after brew was requested (BLE connect+program+press)",
+                connect_delay_s,
+            )
 
             self._phase_task = self.hass.async_create_background_task(
                 self._mark_extracting_after_preinfusion(shot_id, bag.preinfusion_s),
@@ -663,6 +688,26 @@ class BaristaRuntime:
             self._timeout_task = self.hass.async_create_background_task(
                 self._shot_timeout(), "barista_assist_shot_timeout"
             )
+
+            # Tare and start the scale's own physical timer only now that the
+            # machine is actually engaged, so both its on-device display and
+            # our own zero-weight reference reflect the real start of the
+            # shot rather than however long the Bluetooth connection above
+            # took. The machine is already pouring by this point - unlike a
+            # failure earlier in this method, there's no "the shot never
+            # happened" to fall back to, so this can only warn and continue
+            # with an untared baseline rather than abort a shot that's
+            # already physically running.
+            try:
+                await self.scale.async_set_flow_smoothing(False)
+                await self.scale.async_tare_and_start_timer()
+            except Exception as err:
+                _LOGGER.warning(
+                    "Could not tare the scale or start its timer after "
+                    "pressing the brew Bot; continuing with an untared "
+                    "weight baseline: %s",
+                    err,
+                )
             return shot_id
 
     async def _mark_extracting_after_preinfusion(
@@ -755,6 +800,19 @@ class BaristaRuntime:
         except asyncio.CancelledError:
             return
 
+    @staticmethod
+    def _elapsed_since_press(shot: ActiveShot) -> float:
+        """Time since the machine was actually engaged, for safety-deadline
+        checks - not since brewing was requested (see
+        ActiveShot.press_monotonic). If the initial press hasn't landed yet,
+        the machine isn't running at all yet, so there's nothing to protect
+        against; treat it as 0 rather than the (BLE-connect-inflated) time
+        since the request.
+        """
+        if shot.press_monotonic is None:
+            return 0.0
+        return time.monotonic() - shot.press_monotonic
+
     async def _async_press_stop(self, shot: ActiveShot, verb: str) -> None:
         """Press the brew Bot to stop/abort the shot, or set STOP_ERROR and raise."""
         try:
@@ -771,7 +829,7 @@ class BaristaRuntime:
             shot = self.active_shot
             if shot is None or shot.stop_triggered:
                 return
-            elapsed_s = time.monotonic() - shot.started_monotonic
+            elapsed_s = self._elapsed_since_press(shot)
             _LOGGER.debug("async_stop_at_target called at elapsed=%.2fs", elapsed_s)
             if elapsed_s >= self.safe_shot_deadline_s:  # too close to the deadline to safely press again - see async_abort
                 late = True
@@ -800,7 +858,7 @@ class BaristaRuntime:
             if shot is None or shot.stop_triggered:
                 return
             shot.stop_triggered = True
-            elapsed_s = time.monotonic() - shot.started_monotonic
+            elapsed_s = self._elapsed_since_press(shot)
             _LOGGER.info("async_abort called (reason=%s) at elapsed=%.2fs", reason, elapsed_s)
             shot.stop_command_elapsed_ms = int(elapsed_s * 1000)
             if elapsed_s < self.safe_shot_deadline_s:  # don't try to stop if machine auto-termination will be within safety_margin_s

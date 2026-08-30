@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.14
+
+### Added
+
+- **The `status` sensor now shows `connect_scale` instead of `idle` whenever there's no active shot and the scale isn't connected.** Plain "idle" reads as "everything's fine," but nothing can actually happen (brewing requires a connected scale) until it's reconnected. Purely a display-time override on the existing `status` property - the underlying shot-phase state machine is unaffected, and this never shows mid-shot even if the scale drops out then (that's `manual_stop_required`/the scale-disconnect auto-abort's job, unchanged).
+
+### Fixed
+
+- **The Brew/Tare/Abort/Create-bag tiles still showed a timestamp ("X minutes ago") or "Unavailable" text**, despite `state_content: []` supposedly suppressing it since 0.2.6. Checked Home Assistant's own tile-card docs directly: `state_content: []`'s behavior for an empty list was never actually documented, and the real, documented option for this is a separate `hide_state: true` - switched all four tiles to it.
+- **A slow Bluetooth connection to the brew Bot could silently eat into the shot's safety deadline and corrupt its flow-analysis timing.** A live coffee shot showed ~50s of BLE connection delay (a first connect attempt hitting `BleakOutOfConnectionSlotsError`, recovered by the retry-once fix above) counted as if it were part of the shot itself: recorded samples showed a ~60s flat prefix before any real flow, the shot classified as `too_restrictive` even though the puck itself extracted at a completely normal rate once flow actually started, and it got cut off by the safety timeout despite the machine having only been running a normal amount of time. Root cause: `elapsed_ms`/the safety-deadline check were both measured from when brewing was *requested* (`ActiveShot.started_monotonic`), not from when the brew Bot was actually pressed - so any BLE connection delay before that point was silently counted as shot time. Added `ActiveShot.press_monotonic`, set once the initial press actually lands: the safety-deadline check (`async_stop_at_target`/`async_abort`) now measures elapsed time from it instead, and scale readings that arrive before it (i.e. during Bot connection setup) are no longer recorded as part of the shot at all - both the deadline and every sample's timeline now reflect when the machine was actually engaged, not how long Bluetooth took to cooperate.
+- **The scale's own physical timer/tare had the identical problem, one level down.** `async_tare_and_start_timer` used to run *before* the brew Bot connection was even attempted, so on a slow connection the scale's own on-device timer - and the zero-weight reference it captures - would already be running for however long Bluetooth took before the machine was actually engaged. Tare and timer-start now happen right after the press lands instead, alongside `press_monotonic`. Since the machine is already pouring by that point, a tare failure there can't fall back to "the shot never happened" like earlier failures in `async_brew` do - it now just logs a warning and continues with an untared baseline rather than aborting a shot that's already physically running.
+
+### Testing
+
+- Added regression tests for the new `connect_scale` status override, including that it doesn't leak into an active shot if the scale drops mid-brew.
+- Added regression tests proving readings before the press are dropped (with elapsed time reset relative to the press), that a large gap between request and press doesn't trip the safety deadline, and that the scale is tared/timer-started after the press lands, not before.
+- Full suite: 94 tests, all passing.
+
 ## 0.2.13
 
 ### Fixed

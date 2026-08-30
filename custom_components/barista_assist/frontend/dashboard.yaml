@@ -142,7 +142,7 @@ views:
             name: Brew
             color: green
             vertical: true
-            state_content: []
+            hide_state: true
             features:
               - type: button
                 action_name: Start shot
@@ -152,7 +152,7 @@ views:
             name: Tare
             color: blue
             vertical: true
-            state_content: []
+            hide_state: true
             features:
               - type: button
                 action_name: Tare scale
@@ -162,7 +162,7 @@ views:
             name: Abort
             color: red
             vertical: true
-            state_content: []
+            hide_state: true
             features:
               - type: button
                 action_name: Stop now
@@ -211,7 +211,7 @@ views:
             entity: __CREATE_BAG__
             name: Create bag
             color: green
-            state_content: []
+            hide_state: true
             features:
               - type: button
                 action_name: Save new bag

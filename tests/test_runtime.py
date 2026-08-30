@@ -362,6 +362,90 @@ class ScaleDisconnectTests(RuntimeTestCase):
         self.assertEqual(len(self.hass.tasks), tasks_before)
 
 
+class PressRelativeTimingTests(RuntimeTestCase):
+    async def test_samples_before_the_press_are_dropped_and_elapsed_is_press_relative(self):
+        """Regression test: a live shot showed ~50s of BLE connection delay
+        (a slow/retried SwitchBot connect) counted as part of the shot's own
+        timeline - samples showed a ~60s flat prefix before any real flow,
+        and the shot got cut off by the safety timeout despite the machine
+        having only been running a normal amount of time. Readings that
+        arrive before the brew Bot is actually pressed aren't part of the
+        real shot and must not be recorded, and elapsed_ms/the safety
+        deadline must be measured from the actual press (ActiveShot.press_monotonic),
+        not from when brewing was requested."""
+        await self.create_bag(preinfusion_s=1.0)
+        stuck_event = asyncio.Event()
+        FakeBotConfigurator.delay_once = stuck_event
+
+        brew_task = asyncio.ensure_future(self.runtime.async_brew())
+        await asyncio.sleep(0.3)  # past the tare settle sleep; brew is now stuck connecting to the Bot
+
+        shot = self.runtime.active_shot
+        self.assertIsNotNone(shot)
+        self.assertIsNone(shot.press_monotonic)
+        self.scale.push_reading(make_reading(weight_g=99.0))  # arrives during the "connect delay"
+        self.assertEqual(shot.samples, [])
+
+        stuck_event.set()
+        await asyncio.wait_for(brew_task, timeout=5)
+
+        self.assertIsNotNone(shot.press_monotonic)
+        self.scale.push_reading(make_reading(weight_g=1.0))
+        self.assertEqual(len(shot.samples), 1)
+        self.assertLess(shot.samples[0].elapsed_ms, 200)  # not inflated by the connect delay
+
+    async def test_safety_deadline_is_measured_from_the_press_not_the_request(self):
+        """A slow Bot connection must not eat into the protected safety
+        window: the deadline check compares elapsed-since-press, not
+        elapsed-since-request, against safe_shot_deadline_s."""
+        await self.create_bag(preinfusion_s=1.0)
+        stuck_event = asyncio.Event()
+        FakeBotConfigurator.delay_once = stuck_event
+
+        brew_task = asyncio.ensure_future(self.runtime.async_brew())
+        await asyncio.sleep(0.3)  # past the tare settle sleep; brew is now stuck connecting to the Bot
+
+        shot = self.runtime.active_shot
+        # Simulate a connect delay long enough to have blown the deadline if
+        # it were (incorrectly) measured from the request.
+        shot.started_monotonic -= self.runtime.safe_shot_deadline_s + 100.0
+
+        stuck_event.set()
+        await asyncio.wait_for(brew_task, timeout=5)
+
+        calls_before = len(self.hass.services.calls)
+        await self.runtime.async_abort()
+
+        # Pressed normally - the request-time-only delay above must not have
+        # been treated as "already past the deadline".
+        self.assertGreater(len(self.hass.services.calls), calls_before)
+        self.assertEqual(self.runtime.status, ShotPhase.ABORTED.value)
+
+
+class ScaleTareTimingTests(RuntimeTestCase):
+    async def test_scale_is_tared_after_the_press_lands_not_before(self):
+        """Taring and starting the scale's own timer before the brew Bot is
+        actually pressed means the scale's physical timer - and our own
+        zero-weight reference - starts counting from whenever Bluetooth
+        connection setup happened to finish, not from the real physical
+        start of the shot. Both must wait until the press has landed."""
+        await self.create_bag(preinfusion_s=1.0)
+        stuck_event = asyncio.Event()
+        FakeBotConfigurator.delay_once = stuck_event
+
+        brew_task = asyncio.ensure_future(self.runtime.async_brew())
+        await asyncio.sleep(0.05)  # brew is stuck connecting to the Bot for the initial press
+
+        self.assertEqual(self.scale.tare_and_start_timer_calls, 0)
+        self.assertEqual(self.scale.set_flow_smoothing_calls, [])
+
+        stuck_event.set()
+        await asyncio.wait_for(brew_task, timeout=5)
+
+        self.assertEqual(self.scale.tare_and_start_timer_calls, 1)
+        self.assertEqual(self.scale.set_flow_smoothing_calls, [False])
+
+
 class ScaleTimerTests(RuntimeTestCase):
     async def test_finalizing_a_shot_stops_the_scales_own_timer(self):
         """The scale keeps its own onboard timer running (started by
@@ -377,6 +461,24 @@ class ScaleTimerTests(RuntimeTestCase):
         self.assertEqual(self.scale.stop_timer_calls, 1)
 
 
+class StatusPropertyTests(RuntimeTestCase):
+    async def test_status_prompts_to_connect_the_scale_when_idle_and_disconnected(self):
+        """Plain 'idle' reads as 'everything's fine' - but nothing can
+        actually happen (brewing requires a connected scale) until it's
+        reconnected, so the idle status should say so instead."""
+        self.assertEqual(self.runtime.status, ShotPhase.CONNECT_SCALE.value)
+
+        self.runtime.scale_connected = True
+        self.assertEqual(self.runtime.status, ShotPhase.IDLE.value)
+
+    async def test_status_reflects_the_real_phase_during_a_shot_even_if_scale_drops(self):
+        """The connect_scale override only applies while idle - it must not
+        mask what's actually happening mid-shot."""
+        await self.start_shot()
+        self.runtime.scale_connected = False
+        self.assertNotEqual(self.runtime.status, ShotPhase.CONNECT_SCALE.value)
+
+
 class DeadlineSafetyTests(RuntimeTestCase):
     async def test_never_presses_after_protected_deadline(self):
         """Safety invariant: once the protected shot deadline has passed,
@@ -388,7 +490,7 @@ class DeadlineSafetyTests(RuntimeTestCase):
         await asyncio.sleep(0.05)
 
         shot = self.runtime.active_shot
-        shot.started_monotonic -= 100.0  # simulate far past safe_shot_deadline_s
+        shot.press_monotonic -= 100.0  # simulate far past safe_shot_deadline_s
 
         calls_before = len(self.hass.services.calls)
         await self.runtime.async_abort(reason="timeout")
@@ -519,6 +621,7 @@ class FinalizeIdempotencyTests(RuntimeTestCase):
         after a settle-task already finalized it) must not double-write to
         the database or crash - the second call is simply a no-op."""
         await self.start_shot()
+        self.runtime.scale_connected = True  # isolate from the connect_scale status override
 
         await self.runtime._async_finalize("complete")
         self.assertIsNone(self.runtime.active_shot)
