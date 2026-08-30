@@ -245,6 +245,8 @@ class BaristaRuntime:
         )
 
     def _set_phase(self, phase: ShotPhase) -> None:
+        if phase != self._phase:
+            _LOGGER.debug("Shot phase: %s -> %s", self._phase.value, phase.value)
         self._phase = phase
         self._notify(force=True)
 
@@ -484,8 +486,12 @@ class BaristaRuntime:
 
     # -- scale callbacks --
     def _handle_scale_connection(self, connected: bool) -> None:
+        _LOGGER.debug("Scale %s", "connected" if connected else "disconnected")
         self.scale_connected = connected
         if not connected and self.active_shot is not None:
+            _LOGGER.warning(
+                "Scale disconnected mid-shot; issuing a best-effort auto-abort"
+            )
             # Without the scale there's no way to track the pour or trigger
             # the target-weight stop, and Brew/Abort now both require a
             # connected scale - so a dropped shot would otherwise be stuck
@@ -535,15 +541,19 @@ class BaristaRuntime:
         independently-locked call paths, and racing two BLE sessions to the
         same Bot is exactly how a shot can end up starving/failing itself.
         """
+        if self._bot_lock.locked():
+            _LOGGER.debug("Waiting for _bot_lock before programming Bot to %ss", hold_seconds)
         async with self._bot_lock:
             address = resolve_bluetooth_address(self.hass, self.brew_entity)
             if address is None:
                 raise HomeAssistantError(
                     "Could not resolve the Bluetooth address of the selected brew SwitchBot"
                 )
+            _LOGGER.debug("Programming brew Bot long-press duration to %ss", hold_seconds)
             await SwitchBotBotConfigurator(
                 self.hass, address
             ).async_set_long_press_duration(hold_seconds)
+            _LOGGER.debug("Brew Bot programmed to %ss", hold_seconds)
 
     async def _async_press_brew_bot(self) -> None:
         """The actual button press - used by brew, stop, and abort alike, so
@@ -576,12 +586,14 @@ class BaristaRuntime:
             await self.hass.services.async_call(
                 "switch", SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True
             )
+            _LOGGER.debug("Pressed brew Bot %s", entity_id)
         finally:
             if held_lock:
                 self._bot_lock.release()
 
     # -- brew / stop / abort / finalize --
     async def async_brew(self) -> str:
+        _LOGGER.debug("async_brew called")
         async with self._shot_lock:
             if self.active_shot is not None:
                 raise HomeAssistantError("A shot is already active")
@@ -626,6 +638,14 @@ class BaristaRuntime:
                 target_yield_g=bag.target_yield_g,
                 stop_compensation_g=self.stop_compensation_g,
                 samples=[],
+            )
+            _LOGGER.info(
+                "Shot %s started: bag=%s dose=%sg target_yield=%sg preinfusion=%ss",
+                shot_id,
+                bag.coffee_name,
+                bag.dose_g,
+                bag.target_yield_g,
+                bag.preinfusion_s,
             )
             self._set_phase(ShotPhase.PREINFUSION)
 
@@ -684,14 +704,20 @@ class BaristaRuntime:
         can't hang the time-critical stop/abort path forever.
         """
         if shot.quick_press_ready:
+            _LOGGER.debug("Quick stop press already programmed ahead of time")
             return
         phase_task = self._phase_task
         if phase_task is not None and not phase_task.done():
+            _LOGGER.debug(
+                "Waiting up to %ss for the in-flight proactive Bot reprogram",
+                _QUICK_STOP_BOT_WAIT_TIMEOUT_S,
+            )
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                 await asyncio.wait_for(
                     asyncio.shield(phase_task), timeout=_QUICK_STOP_BOT_WAIT_TIMEOUT_S
                 )
             if shot.quick_press_ready:
+                _LOGGER.debug("Proactive Bot reprogram landed while waiting")
                 return
             if not phase_task.done():
                 # Still in flight after the bounded wait: don't also open a
@@ -746,6 +772,7 @@ class BaristaRuntime:
             if shot is None or shot.stop_triggered:
                 return
             elapsed_s = time.monotonic() - shot.started_monotonic
+            _LOGGER.debug("async_stop_at_target called at elapsed=%.2fs", elapsed_s)
             if elapsed_s >= self.safe_shot_deadline_s:  # too close to the deadline to safely press again - see async_abort
                 late = True
             else:
@@ -774,6 +801,7 @@ class BaristaRuntime:
                 return
             shot.stop_triggered = True
             elapsed_s = time.monotonic() - shot.started_monotonic
+            _LOGGER.info("async_abort called (reason=%s) at elapsed=%.2fs", reason, elapsed_s)
             shot.stop_command_elapsed_ms = int(elapsed_s * 1000)
             if elapsed_s < self.safe_shot_deadline_s:  # don't try to stop if machine auto-termination will be within safety_margin_s
                 await self._async_press_stop(shot, "abort")
@@ -796,6 +824,11 @@ class BaristaRuntime:
             # can rely on with full confidence - the user is expected to
             # physically stop the machine themselves if it's still pouring
             # past this point; Barista Assist has no way to detect that.
+            _LOGGER.warning(
+                "Past the protected deadline (elapsed=%.2fs) - not pressing the "
+                "brew Bot; entering manual_stop_required",
+                elapsed_s,
+            )
             self._set_phase(ShotPhase.MANUAL_STOP_REQUIRED)
             remaining_s = max(0.0, self.machine_max_shot_s - elapsed_s + 1.0)
             self._manual_finalize_task = self.hass.async_create_background_task(
@@ -815,6 +848,13 @@ class BaristaRuntime:
         shot = self.active_shot
         if shot is None:
             return
+        _LOGGER.info(
+            "Finalizing shot %s as %s (%d samples)", shot.id, status, len(shot.samples)
+        )
+        try:
+            await self.scale.async_stop_timer()
+        except Exception as err:
+            _LOGGER.debug("Could not stop the scale's own timer: %s", err)
         for task in self._background_tasks():
             if task and task is not asyncio.current_task():
                 task.cancel()

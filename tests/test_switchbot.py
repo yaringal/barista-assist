@@ -34,7 +34,7 @@ class FakeBleClient:
     async def start_notify(self, _uuid, callback) -> None:
         if self._fail_start_notify_times > 0:
             self._fail_start_notify_times -= 1
-            raise sys.modules["bleak_retry_connector"].BleakError(
+            raise sys.modules["bleak.exc"].BleakError(
                 "[org.bluez.Error.NotConnected] Not Connected"
             )
         self.notify_callback = callback
@@ -101,9 +101,9 @@ class RetryOnTransientDisconnectTests(unittest.IsolatedAsyncioTestCase):
         after connecting, before the first GATT operation lands - observed
         live as `BleakDBusError: [org.bluez.Error.NotConnected]` from
         start_notify immediately after establish_connection had already
-        succeeded. async_set_long_press_duration must retry the whole
-        operation (a fresh connection) via @retry_bluetooth_connection_error
-        rather than fail outright on one transient disconnect."""
+        succeeded. async_set_long_press_duration must reconnect and retry
+        the GATT sequence exactly once rather than fail outright on one
+        transient disconnect."""
         attempted_clients: list[FakeBleClient] = []
 
         async def fake_establish_connection(*_args, **_kwargs):
@@ -136,6 +136,43 @@ class RetryOnTransientDisconnectTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task, timeout=5)
 
         self.assertEqual(len(attempted_clients), 2)  # first attempt failed, second succeeded
+
+    async def test_a_hard_connect_failure_is_not_retried(self) -> None:
+        """Regression test: a real install got stuck for a long time with
+        the brew Bot completely unresponsive after establish_connection()
+        itself failed outright (BleakOutOfConnectionSlotsError - the adapter
+        genuinely had no free connection slot). establish_connection()
+        already retries internally and its own attempt count can already
+        reach the high single digits on real hardware; retrying the whole
+        connect step again on top of that (as an earlier version of this
+        method did) multiplies an already-slow, often unrecoverable failure
+        several times over instead of just failing promptly."""
+        connect_attempts = 0
+
+        async def failing_establish_connection(*_args, **_kwargs):
+            nonlocal connect_attempts
+            connect_attempts += 1
+            raise sys.modules["bleak.exc"].BleakError("out of connection slots")
+
+        configurator = switchbot.SwitchBotBotConfigurator(
+            ha_stubs.sys.modules["homeassistant.core"].HomeAssistant(),
+            "AA:BB:CC:DD:EE:FF",
+        )
+
+        with (
+            patch.object(
+                switchbot.bluetooth,
+                "async_ble_device_from_address",
+                return_value=SimpleNamespace(name="Test Bot"),
+            ),
+            patch.object(switchbot, "establish_connection", failing_establish_connection),
+        ):
+            with self.assertRaises(sys.modules["bleak.exc"].BleakError):
+                await asyncio.wait_for(
+                    configurator.async_set_long_press_duration(0), timeout=5
+                )
+
+        self.assertEqual(connect_attempts, 1)
 
 
 if __name__ == "__main__":

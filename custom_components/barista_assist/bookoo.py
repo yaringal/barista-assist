@@ -179,5 +179,8 @@ class BookooUltraClient:
         # BOOKOO recommends command 0x07 for tare + timer start.
         await self._write_command(0x07)
 
+    async def async_stop_timer(self) -> None:
+        await self._write_command(0x05)
+
     async def async_set_flow_smoothing(self, enabled: bool) -> None:
         await self._write_command(0x08, 0x01 if enabled else 0x00, 0x00)

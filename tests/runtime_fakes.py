@@ -104,6 +104,7 @@ class FakeScale:
         self.last_reading = None
         self.started = False
         self.tare_and_start_timer_calls = 0
+        self.stop_timer_calls = 0
         self.set_flow_smoothing_calls: list[bool] = []
 
     async def async_start(self) -> None:
@@ -126,6 +127,9 @@ class FakeScale:
 
     async def async_tare(self) -> None:
         pass
+
+    async def async_stop_timer(self) -> None:
+        self.stop_timer_calls += 1
 
     def push_reading(self, reading) -> None:
         """Simulate a BLE notification arriving, exactly like the real client."""

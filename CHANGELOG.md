@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.12
+
+### Fixed
+
+- **Regression in 0.2.11: the brew Bot could become completely unresponsive for a long time, with Brew stuck and Stop/Abort not doing anything.** 0.2.10 wrapped `SwitchBotBotConfigurator.async_set_long_press_duration` entirely in `bleak_retry_connector`'s `retry_bluetooth_connection_error`, intending to retry only a rare, narrow failure (the Bot dropping the link right after a successful connect, before the first GATT operation lands). But `establish_connection()` already retries the connect step internally - its own attempt count can reach the high single digits on constrained hardware - so wrapping the *entire* method multiplied that already-slow retry loop several times over on every genuine failure (e.g. the adapter simply being out of connection slots, which retrying more doesn't fix), live-observed in 0.2.11 as the brew button becoming unresponsive for a long stretch. Restructured so only the narrow case it was meant for (connect succeeds, then the GATT sequence fails) triggers one reconnect-and-retry; a hard failure of the connect step itself now fails immediately.
+
+### Added
+
+- **The scale's own onboard timer now stops when a shot finalizes.** Barista Assist starts it (`async_tare_and_start_timer`) at the beginning of every shot, but never told it to stop, so the scale's own display kept counting up indefinitely after a shot ended instead of freezing at the real shot duration. `BookooUltraClient` gained `async_stop_timer()` (BOOKOO command `0x05`), called from `_async_finalize` - so it only fires once a shot has actually and confidently ended, not on an ambiguous `stop_error`.
+- **Added debug/info-level logging across the shot lifecycle and Bot BLE operations**, to make live issues like the one above diagnosable from the log alone: every shot-phase transition, brew/abort/stop entry (with elapsed time and reason), scale connect/disconnect events, Bot connect/program/press attempts (including `_bot_lock` waits and reconnect-retries), and shot finalization. Enable debug logging for `custom_components.barista_assist` to see it (see README's new "Debug logging" section).
+
+### Docs
+
+- The README's `configuration.yaml` example still showed the old `mdi:coffee-maker` sidebar icon after the earlier coffee-maker → coffee-to-go icon sweep - that example is copied into the user's own config, not anything Barista Assist regenerates, so it wasn't touched by that sweep. Updated the example; anyone who already copied it needs to update their own `configuration.yaml` to match (and restart, since YAML-mode dashboard config is only read at startup).
+
+### Testing
+
+- Added a regression test proving a hard connect failure is not retried again (only one `establish_connection()` call), plus kept the existing test proving a post-connect disconnect still gets exactly one retry.
+- Added a regression test proving `_async_finalize` stops the scale's own timer.
+- Full suite: 88 tests, all passing.
+
 ## 0.2.11
 
 ### Fixed

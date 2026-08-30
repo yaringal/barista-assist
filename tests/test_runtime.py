@@ -362,6 +362,21 @@ class ScaleDisconnectTests(RuntimeTestCase):
         self.assertEqual(len(self.hass.tasks), tasks_before)
 
 
+class ScaleTimerTests(RuntimeTestCase):
+    async def test_finalizing_a_shot_stops_the_scales_own_timer(self):
+        """The scale keeps its own onboard timer running (started by
+        async_tare_and_start_timer at brew time) until explicitly told to
+        stop - without this, the scale's display keeps counting up
+        indefinitely after a shot ends instead of freezing at the real
+        shot duration."""
+        await self.start_shot()
+        self.assertEqual(self.scale.stop_timer_calls, 0)
+
+        await self.runtime._async_finalize("complete")
+
+        self.assertEqual(self.scale.stop_timer_calls, 1)
+
+
 class DeadlineSafetyTests(RuntimeTestCase):
     async def test_never_presses_after_protected_deadline(self):
         """Safety invariant: once the protected shot deadline has passed,

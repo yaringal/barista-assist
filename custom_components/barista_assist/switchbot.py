@@ -6,11 +6,8 @@ import asyncio
 import logging
 from typing import Any
 
-from bleak_retry_connector import (
-    BleakClientWithServiceCache,
-    establish_connection,
-    retry_bluetooth_connection_error,
-)
+from bleak.exc import BleakError
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -54,7 +51,6 @@ class SwitchBotBotConfigurator:
         self.hass = hass
         self.address = address
 
-    @retry_bluetooth_connection_error(attempts=3)
     async def async_set_long_press_duration(self, seconds: int) -> None:
         """Set the stored Bot long-press duration and require device confirmation.
 
@@ -62,10 +58,16 @@ class SwitchBotBotConfigurator:
         right after connecting but before the first GATT operation lands
         (observed live as `BleakDBusError: [org.bluez.Error.NotConnected]`
         from start_notify immediately after establish_connection succeeded).
-        @retry_bluetooth_connection_error re-runs this whole method - a fresh
-        connect, not just the failed step - which is the documented way
-        bleak_retry_connector expects transient mid-operation disconnects to
-        be handled.
+        If that happens, reconnect and retry the GATT sequence exactly once -
+        but deliberately not the connect step itself: establish_connection()
+        already retries internally (its own attempt count can already reach
+        the high single digits on real hardware), so wrapping the whole
+        method in another retry would multiply an already-slow, and
+        sometimes genuinely unrecoverable (e.g. the adapter is simply out of
+        connection slots), failure by several times over - observed live as
+        the brew button becoming unresponsive for a long time. Retrying is
+        only worth it for the narrow case where the connection itself
+        succeeded and then dropped.
         """
         device = bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
@@ -75,12 +77,32 @@ class SwitchBotBotConfigurator:
                 "The brew SwitchBot is not currently reachable through Home Assistant Bluetooth"
             )
 
+        _LOGGER.debug("Connecting to SwitchBot Bot %s", self.address)
         client = await establish_connection(
             BleakClientWithServiceCache,
             device,
             device.name or "SwitchBot Bot",
             max_attempts=3,
         )
+        try:
+            await self._async_configure(client, seconds)
+        except BleakError as err:
+            _LOGGER.debug(
+                "SwitchBot Bot %s dropped the link after connecting (%s) - "
+                "reconnecting once",
+                self.address,
+                err,
+            )
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                device,
+                device.name or "SwitchBot Bot",
+                max_attempts=3,
+            )
+            await self._async_configure(client, seconds)
+        _LOGGER.debug("SwitchBot Bot %s long-press duration set to %ss", self.address, seconds)
+
+    async def _async_configure(self, client: BleakClientWithServiceCache, seconds: int) -> None:
         response_event = asyncio.Event()
         response_box: dict[str, bytes] = {}
         loop = asyncio.get_running_loop()

@@ -252,7 +252,7 @@ lovelace:
     barista-assist:
       mode: yaml
       title: Barista Assist
-      icon: mdi:coffee-maker
+      icon: mdi:coffee-to-go
       show_in_sidebar: true
       filename: barista_assist_dashboard.yaml
 ```
@@ -375,3 +375,16 @@ Do not use automatic brew control unless you're prepared to supervise every shot
 ## Shot-data export
 
 The Brew view includes **Copy all shot data**. It copies every stored shot and its raw BOOKOO time series as plain text, including recipe/context metadata, stop timing, sample count and a `post_stop` flag. The export is intended to be pasted directly into a diagnostics tool; samples recorded after the automatic/manual stop are preserved so late scale movement or other recording artefacts can be identified.
+
+## Debug logging
+
+For BLE/timing issues (the most common source of real-world problems), enable debug logging for the integration in `configuration.yaml`:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.barista_assist: debug
+```
+
+This logs every shot-phase transition, brew/stop/abort call (with elapsed time and reason), scale connect/disconnect events, and every brew-Bot connect/program/press attempt - including `_bot_lock` waits and reconnect-retries - which is usually enough to tell whether a stuck or failed shot was a Bluetooth capacity/timing issue versus something else. Restart Home Assistant (or reload the integration) after changing this.

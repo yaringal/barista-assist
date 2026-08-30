@@ -148,6 +148,15 @@ def install() -> None:
 
     voluptuous.Required = Required
 
+    bleak_module = _new_module("bleak")
+    bleak_exc = _new_module("bleak.exc")
+
+    class BleakError(Exception):
+        """Stand-in for bleak.exc.BleakError."""
+
+    bleak_exc.BleakError = BleakError
+    bleak_module.exc = bleak_exc
+
     bleak_retry_connector = _new_module("bleak_retry_connector")
 
     class BleakClientWithServiceCache:
@@ -159,31 +168,8 @@ def install() -> None:
             "patch BookooUltraClient/SwitchBotBotConfigurator instead"
         )
 
-    class BleakError(Exception):
-        """Stand-in for bleak.exc.BleakError."""
-
-    def retry_bluetooth_connection_error(attempts=2):
-        """Match the shape of the real decorator closely enough for tests to
-        exercise real retry-on-BleakError behavior, without the real
-        backoff sleep."""
-
-        def decorator(func):
-            async def wrapper(*args, **kwargs):
-                for attempt in range(attempts):
-                    try:
-                        return await func(*args, **kwargs)
-                    except (BleakError, AttributeError, EOFError, BrokenPipeError):
-                        if attempt == attempts - 1:
-                            raise
-
-            return wrapper
-
-        return decorator
-
     bleak_retry_connector.BleakClientWithServiceCache = BleakClientWithServiceCache
     bleak_retry_connector.establish_connection = establish_connection
-    bleak_retry_connector.BleakError = BleakError
-    bleak_retry_connector.retry_bluetooth_connection_error = retry_bluetooth_connection_error
 
 
 def _stub_package(name: str, path: Path) -> types.ModuleType:
