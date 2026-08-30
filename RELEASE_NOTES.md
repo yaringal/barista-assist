@@ -1,16 +1,12 @@
-# Barista Assist v0.2.18
+# Barista Assist v0.2.19
 
-Follow-ups to v0.2.17: a Tare safety fix, a live-shot graph, and a small display fix.
-
-## Fixed
-
-- **Tare could be pressed with no scale connected** - it's now disabled in that state, matching Brew and Abort.
-- **Bean slot's dropdown now reads "Normal"/"Decaf"** instead of lowercase.
+A rework of the "Live shot" graph: a real dual-axis chart that tracks one shot at a time.
 
 ## Changed
 
-- **"Live shot" now shows Weight and Flow rate as a single live graph** instead of two separate tiles, so you can watch the pour's shape over time. Flow rate is plotted ×10 scaled so it doesn't look flat next to weight.
+- **"Live shot" now uses the [ApexCharts Card](https://github.com/RomRider/apexcharts-card) instead of the built-in history graph.** This is a new dependency - install it once via HACS (Frontend → search "ApexCharts Card" → Download) before restarting; see the README's "Add the dashboard once" section. Weight and Flow rate now plot on genuinely separate axes (0-60g / 0-6 g/s), so the earlier ×10 flow-rate scaling trick is gone.
+- **The graph now shows exactly one shot instead of a rolling time window.** It grows live while a shot is running, anchored to when that shot actually started, and freezes on the completed shot's data afterward - instead of continuing to scroll with the clock and losing the shot off-screen a minute or so later.
 
 ## Upgrade
 
-No database migration. A full Home Assistant restart is needed to pick up this release.
+No database migration. Install the ApexCharts Card via HACS, then do a full Home Assistant restart to pick up this release.

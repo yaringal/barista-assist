@@ -238,6 +238,8 @@ Recipe, PI and stop compensation are deliberately **not** set in the setup flow;
 
 ### Add the dashboard once
 
+The Brew view's "Live shot" graph uses the [ApexCharts Card](https://github.com/RomRider/apexcharts-card) custom card for a real dual-axis weight/flow-rate chart - install it once via HACS (**HACS → Frontend → search "ApexCharts Card" → Download**) before adding the dashboard below. Everything else in the packaged dashboard uses only Home Assistant's built-in card types.
+
 After the integration is set up, it writes its dashboard as a YAML file into your Home Assistant config directory:
 
 ```text

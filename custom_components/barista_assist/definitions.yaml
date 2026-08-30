@@ -27,13 +27,12 @@ entities:
       field: status
       translation_key: status
       token: __STATUS__
-      attributes: [scale_connected, selected_slot, stop_compensation_g]
+      attributes: [scale_connected, selected_slot, stop_compensation_g, shot_plot]
 
     scale_weight:
       source: scale
       field: weight_g
       translation_key: scale_weight
-      token: __SCALE_WEIGHT__
       unit: g
       device_class: weight
       state_class: measurement
@@ -98,15 +97,6 @@ entities:
       unit: g/s
       state_class: measurement
       precision: 2
-      requires_scale: true
-
-    flow_rate_x10:
-      source: runtime
-      field: flow_rate_x10
-      translation_key: flow_rate_x10
-      token: __FLOW_RATE_X10__
-      state_class: measurement
-      precision: 1
       requires_scale: true
 
     beans_remaining:

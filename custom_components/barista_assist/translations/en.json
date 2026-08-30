@@ -102,9 +102,6 @@
       "flow_rate": {
         "name": "Flow rate"
       },
-      "flow_rate_x10": {
-        "name": "Flow rate (×10, for graphing)"
-      },
       "beans_remaining": {
         "name": "Estimated beans remaining"
       }

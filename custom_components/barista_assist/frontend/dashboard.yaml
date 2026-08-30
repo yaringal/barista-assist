@@ -99,14 +99,45 @@ views:
             heading_style: title
             icon: mdi:chart-line
 
-          - type: history-graph
-            title: Weight & flow rate (×10)
-            hours_to_show: 0.02
-            entities:
-              - entity: __SCALE_WEIGHT__
+          - type: custom:apexcharts-card
+            header:
+              title: Weight & flow rate
+              show: true
+            # No graph_span/history here on purpose: both series use
+            # data_generator, reading the status sensor's shot_plot attribute
+            # (see BaristaRuntime._shot_plot_points) instead of the recorder.
+            # That attribute holds the active shot's own samples while one is
+            # running (so the chart grows live, anchored to when the shot
+            # actually started) and the last completed shot's otherwise (so
+            # it freezes there instead of scrolling on with wall-clock time).
+            yaxis:
+              - id: weight
+                min: 0
+                max: 60
+                decimals: 0
+              - id: flow
+                opposite: true
+                min: 0
+                max: 6
+                decimals: 1
+            series:
+              - entity: __STATUS__
                 name: Weight
-              - entity: __FLOW_RATE_X10__
-                name: Flow rate ×10
+                yaxis_id: weight
+                color: "#2196f3"
+                stroke_width: 2
+                curve: smooth
+                data_generator: |
+                  return (entity.attributes.shot_plot || []).map(p => [p[0], p[1]]);
+              - entity: __STATUS__
+                name: Flow rate
+                yaxis_id: flow
+                color: "#00bcd4"
+                stroke_width: 2
+                curve: smooth
+                data_generator: |
+                  return (entity.attributes.shot_plot || []).map(p => [p[0], p[2]]);
+                fill_raw: "null"
 
           - type: heading
             heading: Controls

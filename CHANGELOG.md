@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.19
+
+### Changed
+
+- **Reworked "Live shot" again: it now uses the [ApexCharts Card](https://github.com/RomRider/apexcharts-card) (a new HACS dependency - see the README's "Add the dashboard once" section) instead of the built-in `history-graph` used in 0.2.18.** Weight and Flow rate now plot on genuinely separate y-axes (0-60g / 0-6 g/s) rather than needing the `flow_rate_x10` scaling workaround from 0.2.18, which is removed.
+- **The graph now shows exactly one shot at a time instead of a rolling wall-clock window.** A new `shot_plot` attribute on the `status` sensor (`BaristaRuntime._shot_plot_points`) holds the active shot's own samples while one is running - so the chart grows live, anchored to when that shot actually started - and freezes on the last completed shot's samples afterward, instead of continuing to scroll with real time and losing the shot off-screen. The chart reads this via ApexCharts' `data_generator`, which bypasses the normal history-window fetch entirely. Capped at 300 points per shot regardless of its length.
+- `scale_weight`/`flow_rate` are no longer placed directly in the dashboard (superseded by the chart above) and lost the `requires_active_shot` gating 0.2.18 added for the old approach - both sensors are available under the same conditions as before 0.2.18 (just needing a connected scale) for anyone using them elsewhere (e.g. automations).
+
+### Testing
+
+- Added regression tests for `_shot_plot_points`: empty before any shot has run, growing live during an active shot with real epoch timestamps anchored to `press_wall_time`, and frozen (not cleared) at the last shot's data after finalizing.
+- Full suite: 102 tests, all passing.
+
 ## 0.2.18
 
 ### Fixed

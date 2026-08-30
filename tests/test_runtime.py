@@ -23,6 +23,7 @@ not a real Home Assistant install or real Bluetooth hardware.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import shutil
 import sys
@@ -361,15 +362,52 @@ class ButtonAvailabilityTests(RuntimeTestCase):
         self.assertFalse(self.runtime.entity_available(abort))
 
 
-class FlowRateX10Tests(RuntimeTestCase):
-    """flow_rate_x10 exists purely so the Live shot dashboard graph can plot
-    it alongside weight on one shared axis - it must track flow_g_s exactly,
-    scaled by 10x."""
+class ShotPlotPointsTests(RuntimeTestCase):
+    """_shot_plot_points feeds the Live shot dashboard graph's data_generator:
+    it must grow live during an active shot, freeze at the last completed
+    shot's data afterward, and translate elapsed_ms into real epoch
+    timestamps anchored to when the shot actually started."""
 
-    async def test_scales_the_latest_reading_by_ten(self):
-        self.assertIsNone(self.runtime.flow_rate_x10)
-        self.scale.push_reading(make_reading(weight_g=10.0, flow_g_s=1.25))
-        self.assertEqual(self.runtime.flow_rate_x10, 12.5)
+    def _status(self):
+        return next(d for d in self.runtime.definitions.platform("sensor") if d.key == "status")
+
+    async def test_empty_before_any_shot_has_ever_run(self):
+        self.assertEqual(self.runtime._shot_plot_points(), [])
+        self.assertEqual(self.runtime.entity_attributes(self._status())["shot_plot"], [])
+
+    async def test_grows_live_during_an_active_shot(self):
+        await self.start_shot(preinfusion_s=1.0)
+        await self.wait_for_extracting()
+        press_wall_ms = int(
+            datetime.fromisoformat(self.runtime.active_shot.press_wall_time).timestamp() * 1000
+        )
+        self.scale.push_reading(make_reading(weight_g=5.0, flow_g_s=1.5))
+
+        points = self.runtime._shot_plot_points()
+        self.assertGreater(len(points), 0)
+        last = points[-1]
+        self.assertEqual(last[1], 5.0)
+        self.assertEqual(last[2], 1.5)
+        self.assertGreaterEqual(last[0], press_wall_ms)
+
+    async def test_freezes_at_the_last_shot_after_finalizing(self):
+        await self.start_shot(preinfusion_s=1.0)
+        await self.wait_for_extracting()
+        # _handle_reading only schedules the target-weight stop once the
+        # shot has run for over 1s since press_monotonic (see runtime.py).
+        await asyncio.sleep(1.05)
+        calls_before = len(self.hass.services.calls)
+        self.scale.push_reading(make_reading(weight_g=36.0, flow_g_s=1.0))
+        await self.hass.tasks[-1]
+        self.assertGreater(len(self.hass.services.calls), calls_before)
+        await asyncio.sleep(3.1)  # settle then finalize
+
+        self.assertIsNone(self.runtime.active_shot)
+        frozen = self.runtime._shot_plot_points()
+        self.assertGreater(len(frozen), 0)
+        # Calling again after the shot is long gone must return the exact
+        # same points, not an empty list or a re-derived one.
+        self.assertEqual(self.runtime._shot_plot_points(), frozen)
 
 
 class BotLockSerializationTests(RuntimeTestCase):

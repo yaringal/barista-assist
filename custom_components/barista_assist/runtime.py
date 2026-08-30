@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from enum import Enum
 import json
 import logging
+import math
 from pathlib import Path
 import time
 from typing import Any
@@ -49,6 +50,10 @@ _BOT_PRESS_LOCK_TIMEOUT_S = 2.0
 # button is single-tapped rather than held (see BaristaRuntime.auto_pi) -
 # fixed by the machine itself, not something Barista Assist can configure.
 AUTO_PI_DURATION_S = 8.0
+# Cap on points returned by _shot_plot_points, regardless of how many raw
+# samples a shot has - keeps the `shot_plot` attribute payload bounded for an
+# unusually long shot instead of growing without limit.
+_SHOT_PLOT_MAX_POINTS = 300
 
 
 class ShotPhase(str, Enum):
@@ -113,6 +118,11 @@ class ActiveShot:
     # the physical machine's own timing - and therefore ours - should
     # actually be measured against.
     press_monotonic: float | None = None
+    # Wall-clock counterpart to press_monotonic, set at the same instant -
+    # samples are timestamped in elapsed_ms (monotonic, not wall-clock), so
+    # this is what lets the live-shot graph convert them back to real
+    # absolute timestamps for charting (see BaristaRuntime._shot_plot_points).
+    press_wall_time: str | None = None
     stop_command_elapsed_ms: int | None = None
     stop_scheduled: bool = False
     stop_triggered: bool = False
@@ -153,6 +163,11 @@ class BaristaRuntime:
         self.scale_connected = False
         self.active_shot: ActiveShot | None = None
         self.last_shot: dict[str, Any] | None = None
+        # Kept around after a shot finalizes purely so the live-shot dashboard
+        # graph can keep showing it (frozen) instead of going blank the
+        # instant the shot ends - see _shot_plot_points.
+        self._last_shot_samples: list[ShotSample] = []
+        self._last_shot_press_wall_time: str | None = None
         self._bags: dict[str, Bag] = {}
         self._bag_remaining: dict[str, float | None] = {}
         self._last_dispatch = 0.0
@@ -208,14 +223,6 @@ class BaristaRuntime:
     @property
     def selected_bag(self) -> Bag | None:
         return self._bags.get(self.selected_slot)
-
-    @property
-    def flow_rate_x10(self) -> float | None:
-        """flow_g_s scaled by 10x, purely so the dashboard's live-shot graph
-        can plot it alongside weight on one shared axis without the flow
-        line reading as flat next to weight's much larger range."""
-        reading = self.scale.last_reading
-        return round(reading.flow_g_s * 10, 1) if reading else None
 
     # ---------------------------------------------------------------------
     # Lifecycle
@@ -347,6 +354,8 @@ class BaristaRuntime:
                 value = self.selected_slot
             elif attribute == "stop_compensation_g":
                 value = self.stop_compensation_g
+            elif attribute == "shot_plot":
+                value = self._shot_plot_points()
             elif attribute == "bag_id":
                 value = bag.id if bag else None
             elif attribute == "remaining_g":
@@ -357,6 +366,30 @@ class BaristaRuntime:
                 continue
             result[attribute] = value
         return result
+
+    def _shot_plot_points(self) -> list[list[float]]:
+        """[epoch_ms, weight_g, flow_g_s] points for the dashboard's live-shot
+        graph: the active shot's own samples while one is running (growing
+        live), or the last completed shot's otherwise (frozen - see
+        _async_finalize) - so the graph shows real data exactly for a shot's
+        actual duration instead of a wall-clock rolling window that drifts
+        away from it. Absolute epoch timestamps let the chart place points on
+        a real time axis despite samples being timestamped in elapsed_ms
+        (monotonic, not wall-clock) - see ActiveShot.press_wall_time.
+        """
+        shot = self.active_shot
+        if shot is not None and shot.press_wall_time is not None:
+            samples, press_wall_time = shot.samples, shot.press_wall_time
+        else:
+            samples, press_wall_time = self._last_shot_samples, self._last_shot_press_wall_time
+        if not samples or press_wall_time is None:
+            return []
+        anchor_ms = int(datetime.fromisoformat(press_wall_time).timestamp() * 1000)
+        step = max(1, math.ceil(len(samples) / _SHOT_PLOT_MAX_POINTS))
+        return [
+            [anchor_ms + sample.elapsed_ms, sample.weight_g, round(sample.flow_g_s, 2)]
+            for sample in samples[::step]
+        ]
 
     async def async_set_entity_value(
         self, definition: EntityDefinition, value: Any
@@ -713,6 +746,7 @@ class BaristaRuntime:
                 await self._async_finalize(ShotPhase.ERROR.value)
                 raise
             self.active_shot.press_monotonic = time.monotonic()
+            self.active_shot.press_wall_time = datetime.now(timezone.utc).isoformat()
             connect_delay_s = self.active_shot.press_monotonic - self.active_shot.started_monotonic
             _LOGGER.debug(
                 "Brew Bot engaged %.2fs after brew was requested (BLE connect+program+press)",
@@ -989,6 +1023,8 @@ class BaristaRuntime:
                 analysis_json=json.dumps(asdict(analysis)),
             )
         )
+        self._last_shot_samples = shot.samples
+        self._last_shot_press_wall_time = shot.press_wall_time
         self.active_shot = None
         self._set_phase(ShotPhase.IDLE if status == "complete" else ShotPhase(status))
         await self.async_refresh_cache()
