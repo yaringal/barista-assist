@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.20
+
+### Fixed
+
+- **A failed stop/abort press could leave a shot permanently stuck.** `stop_triggered` is set to `True` right before attempting the press (to stop a second concurrent caller from also pressing), but was never reset back on failure - so once a press failed once (e.g. a transient `BleakOutOfConnectionSlotsError`), every later stop/abort attempt on that shot silently no-op'd forever, including a manual Abort click and the protected-deadline timeout's own safety-net abort. `active_shot` never cleared and Brew never re-enabled, with no way out short of restarting/reloading. `_async_press_stop` now resets the flag on failure, so a retry (manual or automatic) can actually try again - `_actuation_lock`, held for the whole call by both callers, still fully prevents a real concurrent double-press.
+
+### Changed
+
+- **Flow rate is now drawn behind Weight in the "Live shot" graph, at 10% opacity**, so it reads as a subtle backdrop rather than competing with the weight curve for attention.
+
+### Docs
+
+- **Documented that a Raspberry Pi's onboard Bluetooth adapter is a common way to hit the connection-slot limit** described in the SwitchBot requirement section - live testing showed it struggling to hold and toggle between even two BLE connections, with a wedged connection that survived a full Home Assistant restart and needed the Bluetooth integration itself reloaded to clear. Added concrete step-by-step instructions for setting up an ESPHome Bluetooth proxy as the fix.
+- Removed leftover commented-out `vertical: true` lines and a stray `fill_raw` option (both dead from earlier iterations of the Live shot graph) from the packaged dashboard.
+
+### Testing
+
+- Added a regression test proving a shot can be retried and successfully aborted after an earlier failed press, instead of silently no-op'ing forever.
+- Full suite: 103 tests, all passing.
+
 ## 0.2.19
 
 ### Changed

@@ -1,12 +1,19 @@
-# Barista Assist v0.2.19
+# Barista Assist v0.2.20
 
-A rework of the "Live shot" graph: a real dual-axis chart that tracks one shot at a time.
+A safety fix for a real stuck-shot bug, plus Bluetooth setup guidance from live testing.
+
+## Fixed
+
+- **A failed stop/abort press could leave a shot permanently stuck**, with Brew never re-enabling and Abort clicks doing nothing - the only way out was restarting or reloading. Root cause: a flag meant to stop two concurrent presses racing was left `True` after a failed attempt, so every later stop/abort attempt (manual or automatic) silently no-op'd. A retry now actually works.
 
 ## Changed
 
-- **"Live shot" now uses the [ApexCharts Card](https://github.com/RomRider/apexcharts-card) instead of the built-in history graph.** This is a new dependency - install it once via HACS (Frontend → search "ApexCharts Card" → Download) before restarting; see the README's "Add the dashboard once" section. Weight and Flow rate now plot on genuinely separate axes (0-60g / 0-6 g/s), so the earlier ×10 flow-rate scaling trick is gone.
-- **The graph now shows exactly one shot instead of a rolling time window.** It grows live while a shot is running, anchored to when that shot actually started, and freezes on the completed shot's data afterward - instead of continuing to scroll with the clock and losing the shot off-screen a minute or so later.
+- Flow rate is now drawn behind Weight in the "Live shot" graph, at 10% opacity, so it reads as a subtle backdrop instead of competing with the weight curve.
+
+## Docs
+
+- Documented that a Raspberry Pi's onboard Bluetooth adapter is a common way to run into the connection-slot limit described in the SwitchBot requirement section, with step-by-step instructions for setting up an ESPHome Bluetooth proxy instead.
 
 ## Upgrade
 
-No database migration. Install the ApexCharts Card via HACS, then do a full Home Assistant restart to pick up this release.
+No database migration. A full Home Assistant restart is needed to pick up this release.

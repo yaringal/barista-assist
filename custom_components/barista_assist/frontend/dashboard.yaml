@@ -31,7 +31,6 @@ views:
             entity: __ACTIVE_BAG__
             name: Active bag
             color: brown
-            # vertical: true
             state_content:
               - state
               - roaster
@@ -41,7 +40,6 @@ views:
             entity: __BEANS_REMAINING__
             name: Beans remaining
             color: brown
-            # vertical: true
 
       - type: grid
         cards:
@@ -136,7 +134,6 @@ views:
                 curve: smooth
                 data_generator: |
                   return (entity.attributes.shot_plot || []).map(p => [p[0], p[2]]);
-                fill_raw: "null"
               - entity: __STATUS__
                 name: Weight
                 yaxis_id: weight
@@ -176,19 +173,16 @@ views:
             entity: __LAST_YIELD__
             name: Last yield
             color: green
-            # vertical: true
 
           - type: tile
             entity: __SHOT_CLASSIFICATION__
             name: Shot diagnosis
             color: brown
-            # vertical: true
 
           - type: tile
             entity: __SHOT_CHANNELING_SUSPICION__
             name: Channeling suspicion
             color: red
-            # vertical: true
 
   - title: Bags
     path: bags
