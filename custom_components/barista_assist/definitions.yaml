@@ -242,6 +242,7 @@ entities:
       translation_key: brew
       token: __BREW__
       requires_bag: true
+      requires_scale: true
       requires_no_active_shot: true
 
     abort:
@@ -249,6 +250,7 @@ entities:
       translation_key: abort
       token: __ABORT__
       requires_active_shot: true
+      requires_scale: true
 
     tare:
       action: tare

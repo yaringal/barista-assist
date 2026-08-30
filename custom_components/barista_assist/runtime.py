@@ -41,6 +41,10 @@ _STORE_VERSION = 1
 # How long the time-critical stop/abort path waits for an in-flight proactive
 # Bot reprogram before giving up on it (see _async_ensure_quick_stop_press).
 _QUICK_STOP_BOT_WAIT_TIMEOUT_S = 3.0
+# How long the actual brew Bot press waits for _bot_lock before proceeding
+# without it anyway (see _async_press_brew_bot) - it must never be blocked
+# indefinitely behind a slow/stuck prepare call.
+_BOT_PRESS_LOCK_TIMEOUT_S = 2.0
 
 
 class ShotPhase(str, Enum):
@@ -62,6 +66,7 @@ class ShotPhase(str, Enum):
     TIMEOUT = "timeout"
     ERROR = "error"
     MANUAL_STOP_REQUIRED = "manual_stop_required"
+    SCALE_DISCONNECTED = "scale_disconnected"
 
     def __str__(self) -> str:
         return self.value
@@ -136,6 +141,14 @@ class BaristaRuntime:
         self._manual_finalize_task: asyncio.Task[None] | None = None
         self._shot_lock = asyncio.Lock()
         self._actuation_lock = asyncio.Lock()
+        # _shot_lock (brew) and _actuation_lock (stop/abort) are intentionally
+        # separate so a fast abort never has to wait behind brew's own slow
+        # scale-connect/tare preamble - but both paths eventually talk BLE to
+        # the exact same brew Bot, and running two of those sessions
+        # concurrently is exactly how a shot ends up racing itself (see
+        # _async_prepare_brew_bot/_async_press_brew_bot). This lock is the
+        # actual point of mutual exclusion between them.
+        self._bot_lock = asyncio.Lock()
 
     # ---------------------------------------------------------------------
     # Config & derived properties
@@ -472,6 +485,18 @@ class BaristaRuntime:
     # -- scale callbacks --
     def _handle_scale_connection(self, connected: bool) -> None:
         self.scale_connected = connected
+        if not connected and self.active_shot is not None:
+            # Without the scale there's no way to track the pour or trigger
+            # the target-weight stop, and Brew/Abort now both require a
+            # connected scale - so a dropped shot would otherwise be stuck
+            # forever with no way to start a new one, even after the scale
+            # reconnects. Best-effort abort (like a manual one, it still
+            # correctly refuses to clear the shot if the stop press itself
+            # also fails) so reconnecting the scale leaves a clean slate.
+            self.hass.async_create_task(
+                self.async_abort(reason=ShotPhase.SCALE_DISCONNECTED.value),
+                "barista_assist_scale_dropped_abort",
+            )
         self._notify(force=True)
 
     # -- read scale and decide if to stop shot --
@@ -503,28 +528,57 @@ class BaristaRuntime:
 
     # -- brew Bot actuation (SwitchBot) --
     async def _async_prepare_brew_bot(self, hold_seconds: int) -> None:
-        """Program the Bot's stored press-hold duration (0 = an instant tap)."""
-        address = resolve_bluetooth_address(self.hass, self.brew_entity)
-        if address is None:
-            raise HomeAssistantError(
-                "Could not resolve the Bluetooth address of the selected brew SwitchBot"
-            )
-        await SwitchBotBotConfigurator(
-            self.hass, address
-        ).async_set_long_press_duration(hold_seconds)
+        """Program the Bot's stored press-hold duration (0 = an instant tap).
+
+        Guarded by _bot_lock: brew, the proactive mid-shot reprogram, and the
+        stop/abort fallback reprogram can all reach this from different,
+        independently-locked call paths, and racing two BLE sessions to the
+        same Bot is exactly how a shot can end up starving/failing itself.
+        """
+        async with self._bot_lock:
+            address = resolve_bluetooth_address(self.hass, self.brew_entity)
+            if address is None:
+                raise HomeAssistantError(
+                    "Could not resolve the Bluetooth address of the selected brew SwitchBot"
+                )
+            await SwitchBotBotConfigurator(
+                self.hass, address
+            ).async_set_long_press_duration(hold_seconds)
 
     async def _async_press_brew_bot(self) -> None:
-        entity_id = self.brew_entity
-        state = self.hass.states.get(entity_id)
-        if state is None:
-            raise HomeAssistantError(f"Brew SwitchBot entity {entity_id!r} is unavailable")
-        if state.attributes.get("switch_mode") is True:
-            raise HomeAssistantError(
-                "The brew SwitchBot is in switch mode. Configure it as a press/long-press Bot."
+        """The actual button press - used by brew, stop, and abort alike, so
+        unlike _async_prepare_brew_bot this is always time-critical (it's
+        what physically stops a pour). It still prefers to wait for
+        _bot_lock (see _async_prepare_brew_bot) to avoid racing a concurrent
+        BLE session, but only up to _BOT_PRESS_LOCK_TIMEOUT_S - it must never
+        be blocked indefinitely behind a slow/stuck prepare call.
+        """
+        try:
+            await asyncio.wait_for(
+                self._bot_lock.acquire(), timeout=_BOT_PRESS_LOCK_TIMEOUT_S
             )
-        await self.hass.services.async_call(
-            "switch", SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True
-        )
+            held_lock = True
+        except asyncio.TimeoutError:
+            held_lock = False
+            _LOGGER.warning(
+                "Pressing the brew Bot without waiting further for an "
+                "in-flight Bot operation to finish - this press can't wait"
+            )
+        try:
+            entity_id = self.brew_entity
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                raise HomeAssistantError(f"Brew SwitchBot entity {entity_id!r} is unavailable")
+            if state.attributes.get("switch_mode") is True:
+                raise HomeAssistantError(
+                    "The brew SwitchBot is in switch mode. Configure it as a press/long-press Bot."
+                )
+            await self.hass.services.async_call(
+                "switch", SERVICE_TURN_ON, {ATTR_ENTITY_ID: entity_id}, blocking=True
+            )
+        finally:
+            if held_lock:
+                self._bot_lock.release()
 
     # -- brew / stop / abort / finalize --
     async def async_brew(self) -> str:
@@ -692,7 +746,7 @@ class BaristaRuntime:
             if shot is None or shot.stop_triggered:
                 return
             elapsed_s = time.monotonic() - shot.started_monotonic
-            if elapsed_s >= self.safe_shot_deadline_s:  # don't try to stop if machine auto-termination will be within safety_margin_s
+            if elapsed_s >= self.safe_shot_deadline_s:  # too close to the deadline to safely press again - see async_abort
                 late = True
             else:
                 shot.stop_triggered = True
@@ -727,9 +781,21 @@ class BaristaRuntime:
                 await self._async_finalize(reason)
                 return
 
-            # Never press after the protected deadline: the Barista Express may
-            # already have ended the programmed shot, and another press could
-            # start a new shot. Wait for the machine limit and keep logging.
+            # Never press after the protected deadline: pressing after a
+            # single-tap/programmed-volume shot naturally ended would start a
+            # new one instead of stopping anything. Barista Assist always
+            # holds the button for pre-infusion, which Breville's own manual
+            # documents as a distinct "manual" mode from that single-tap one -
+            # so the current shot may in fact still be running rather than
+            # having ended, and there's no reliable way to tell those two
+            # situations apart from software alone, so this stays
+            # conservative and never presses either way. The machine does
+            # appear to have its own independent volume-based safety cutoff
+            # that applies here too (see README's shot-duration safety
+            # section), but its exact timing isn't something Barista Assist
+            # can rely on with full confidence - the user is expected to
+            # physically stop the machine themselves if it's still pouring
+            # past this point; Barista Assist has no way to detect that.
             self._set_phase(ShotPhase.MANUAL_STOP_REQUIRED)
             remaining_s = max(0.0, self.machine_max_shot_s - elapsed_s + 1.0)
             self._manual_finalize_task = self.hass.async_create_background_task(

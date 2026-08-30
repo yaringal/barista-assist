@@ -132,6 +132,10 @@ class FakeScale:
         self.last_reading = reading
         self._on_reading(reading)
 
+    def push_connection(self, connected: bool) -> None:
+        """Simulate a BLE connect/disconnect event, exactly like the real client."""
+        self._on_connection(connected)
+
 
 class FakeBotConfigurator:
     """Stands in for SwitchBotBotConfigurator: no BLE, just records the

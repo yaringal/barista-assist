@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.11
+
+### Fixed
+
+- **Brew and stop/abort could race each other's BLE session to the same brew Bot.** `async_brew` serializes under `_shot_lock` and `async_stop_at_target`/`async_abort` serialize under the separate `_actuation_lock` (intentionally - so a fast abort never has to wait behind brew's own slow scale-connect/tare preamble), but both eventually call the same `_async_prepare_brew_bot`/`_async_press_brew_bot`, and nothing previously stopped those from running concurrently against the same physical device from the two different locks. A live shot showed the likely consequence: the stop command fired at the correct target weight, but the pour continued for several more seconds and ~19g past target - consistent with the instant-tap reprogram silently losing a race and the press falling back to holding for the full configured pre-infusion duration. Both methods now also serialize through a dedicated `_bot_lock`. The actual press (`_async_press_brew_bot`, used by brew/stop/abort alike) only waits up to 2s for it before proceeding anyway, since it must never be blocked indefinitely behind a slow/stuck prepare call - it's the one time-critical action that has to happen regardless.
+
+### Added
+
+- **Brew and Abort** now also show as unavailable without a connected scale, alongside the existing bag/active-shot checks - starting a shot (or, per explicit request, stopping one) without the scale that drives the whole workflow doesn't make sense. Note this means Abort can gray out if the scale drops mid-shot; the physical machine and the Bot's own switch entity remain usable regardless.
+- **A shot is now auto-aborted (best-effort) if the scale disconnects while it's active**, and its state is cleared once that abort succeeds. Previously a scale dropout left `active_shot` set forever with no way to start a new shot - even after reconnecting the scale - short of restarting Home Assistant, since Brew now also requires an active shot to *not* be set. Like a manual abort, this still correctly leaves the shot in `stop_error` rather than clearing it if the stop press itself also fails, rather than pretending a possibly-still-pouring machine is safely stopped.
+
+### Docs
+
+- **Clarified the shot-duration safety documentation**, confirmed against Breville's own instruction books (BES875, BES878) and live testing: the 1-CUP/2-CUP button has two distinct modes - a single tap starts "Pre-Programmed Shot Volume" mode, auto-stopping at a user-set dose, while press-and-hold (what Barista Assist always uses, to drive pre-infusion) starts "Manual Pre-Infusion & Extraction" mode instead, which the manual doesn't describe as having an equivalent auto-stop. The machine does still appear to have its own cutoff in this mode too - a held water-only test shot stopped itself after ~30s - but third-party reports suggest this is based on total pumped *volume* via an internal flow meter, not elapsed time. Whether that specific 30s is a fixed generic safety timer or tied to whatever volume happens to be programmed for that button (the BES875 manual lists 30ml/60ml as the 1-CUP/2-CUP single-tap defaults, suspiciously close to the water test) is unconfirmed - but either way, how long it takes depends heavily on flow resistance, so a real coffee puck should take meaningfully longer than a water test to hit the same cutoff. Since this isn't documented with full public confidence, `machine_max_shot_seconds` should be set from the user's own measured worst case with real coffee, not a water test. Updated README, `docs/DESIGN.md`, and the in-app options-flow description accordingly.
+
+### Testing
+
+- Added a regression test proving `_async_press_brew_bot` waits for an in-flight `_async_prepare_brew_bot` call rather than racing it.
+- Added regression tests for Brew/Abort's new scale-connected requirement.
+- Added regression tests for the scale-disconnect auto-abort.
+- Full suite: 86 tests, all passing.
+
 ## 0.2.10
 
 ### Fixed

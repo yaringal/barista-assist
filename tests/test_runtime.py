@@ -237,7 +237,10 @@ class InstantTapTests(RuntimeTestCase):
         phase_task = self.runtime._phase_task
         self.assertFalse(phase_task.done())
 
-        with mock.patch.object(runtime_module, "_QUICK_STOP_BOT_WAIT_TIMEOUT_S", 0.05):
+        with (
+            mock.patch.object(runtime_module, "_QUICK_STOP_BOT_WAIT_TIMEOUT_S", 0.05),
+            mock.patch.object(runtime_module, "_BOT_PRESS_LOCK_TIMEOUT_S", 0.05),
+        ):
             self.scale.push_reading(make_reading(weight_g=35.0))
             await self.hass.tasks[-1]  # async_stop_at_target()
 
@@ -266,17 +269,97 @@ class ButtonAvailabilityTests(RuntimeTestCase):
     async def test_brew_is_unavailable_while_a_shot_is_active(self):
         brew = self._button("brew")
         await self.create_bag()
+        self.runtime.scale_connected = True
         self.assertTrue(self.runtime.entity_available(brew))
 
         await self.runtime.async_brew()
         self.assertFalse(self.runtime.entity_available(brew))
+
+    async def test_brew_is_unavailable_without_a_connected_scale(self):
+        brew = self._button("brew")
+        await self.create_bag()
+        self.assertFalse(self.runtime.scale_connected)
+        self.assertFalse(self.runtime.entity_available(brew))
+
+        self.runtime.scale_connected = True
+        self.assertTrue(self.runtime.entity_available(brew))
 
     async def test_abort_is_unavailable_with_no_active_shot(self):
         abort = self._button("abort")
         self.assertFalse(self.runtime.entity_available(abort))
 
         await self.start_shot()
+        self.runtime.scale_connected = True
         self.assertTrue(self.runtime.entity_available(abort))
+
+    async def test_abort_is_unavailable_without_a_connected_scale(self):
+        """Deliberate: Abort stays gated on the scale too, even though that
+        means it can gray out mid-shot if the scale drops out - the user
+        explicitly chose consistency with Brew over keeping Abort reachable
+        during a scale dropout (the physical machine button and the Bot's
+        own switch entity remain available regardless)."""
+        abort = self._button("abort")
+        await self.start_shot()
+        self.assertFalse(self.runtime.scale_connected)
+        self.assertFalse(self.runtime.entity_available(abort))
+
+        self.runtime.scale_connected = True
+        self.assertTrue(self.runtime.entity_available(abort))
+
+        self.runtime.scale_connected = False
+        self.assertFalse(self.runtime.entity_available(abort))
+
+
+class BotLockSerializationTests(RuntimeTestCase):
+    async def test_press_waits_for_an_in_flight_prepare_call(self):
+        """Regression test: _async_prepare_brew_bot (used by brew and the
+        proactive/fallback reprogram) and _async_press_brew_bot (the actual
+        press, used by brew, stop, and abort) used to be reachable
+        concurrently from different call paths - brew holds _shot_lock,
+        stop/abort hold the separate _actuation_lock - so nothing prevented
+        two BLE sessions to the same Bot running at once. Both must now
+        serialize through the shared _bot_lock regardless of which
+        higher-level path calls them."""
+        await self.create_bag()
+        stuck_event = asyncio.Event()
+        FakeBotConfigurator.delay_once = stuck_event
+
+        prepare_task = asyncio.ensure_future(self.runtime._async_prepare_brew_bot(7))
+        await asyncio.sleep(0.05)  # prepare call has started and is stuck, holding _bot_lock
+        self.assertEqual(FakeBotConfigurator.calls, [7])
+        self.assertFalse(prepare_task.done())
+
+        press_task = asyncio.ensure_future(self.runtime._async_press_brew_bot())
+        await asyncio.sleep(0.05)
+        self.assertFalse(press_task.done())  # blocked on _bot_lock, not racing ahead
+        self.assertEqual(len(self.hass.services.calls), 0)
+
+        stuck_event.set()
+        await asyncio.wait_for(prepare_task, timeout=5)
+        await asyncio.wait_for(press_task, timeout=5)
+        self.assertEqual(len(self.hass.services.calls), 1)
+
+
+class ScaleDisconnectTests(RuntimeTestCase):
+    async def test_active_shot_is_aborted_and_cleared_when_the_scale_disconnects(self):
+        """Regression test: without this, a scale dropout mid-shot left
+        active_shot set forever - and since Brew/Abort both now require a
+        connected scale, reconnecting the scale still couldn't start a new
+        shot without restarting Home Assistant."""
+        await self.start_shot(preinfusion_s=1.0)
+        self.assertIsNotNone(self.runtime.active_shot)
+
+        self.scale.push_connection(False)
+        self.assertFalse(self.runtime.scale_connected)
+        await asyncio.wait_for(self.hass.tasks[-1], timeout=5)  # the scheduled best-effort abort
+
+        self.assertIsNone(self.runtime.active_shot)
+        self.assertEqual(self.runtime.status, ShotPhase.SCALE_DISCONNECTED.value)
+
+    async def test_scale_disconnect_with_no_active_shot_does_not_schedule_anything(self):
+        tasks_before = len(self.hass.tasks)
+        self.scale.push_connection(False)
+        self.assertEqual(len(self.hass.tasks), tasks_before)
 
 
 class DeadlineSafetyTests(RuntimeTestCase):
