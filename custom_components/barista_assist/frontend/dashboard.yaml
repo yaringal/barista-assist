@@ -35,7 +35,6 @@ views:
               - state
               - roaster
               - roast_date
-              - remaining_g
 
           - type: tile
             entity: __BEANS_REMAINING__
@@ -111,6 +110,32 @@ views:
             color: cyan
             vertical: true
 
+          - type: heading
+            heading: Controls
+            heading_style: title
+            icon: mdi:gesture-tap-button
+
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - entity: __BREW__
+                name: Brew
+              - entity: __TARE__
+                name: Tare
+              - entity: __ABORT__
+                name: Abort
+
+          - type: custom:barista-assist-export-card
+            title: Shot data
+            button_text: Copy all shot data
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Last brew
+            heading_style: title
+            icon: mdi:history
+
           - type: tile
             entity: __LAST_YIELD__
             name: Last yield
@@ -128,52 +153,6 @@ views:
             name: Channeling suspicion
             color: red
             vertical: true
-
-          - type: tile
-            entity: __STOP_COMPENSATION__
-            name: Stop compensation
-            color: purple
-            features: *number_buttons
-            features_position: bottom
-
-          - type: heading
-            heading: Controls
-            heading_style: title
-            icon: mdi:gesture-tap-button
-
-          - type: tile
-            entity: __BREW__
-            name: Brew
-            color: green
-            vertical: true
-            hide_state: true
-            features:
-              - type: button
-                action_name: Start shot
-
-          - type: tile
-            entity: __TARE__
-            name: Tare
-            color: blue
-            vertical: true
-            hide_state: true
-            features:
-              - type: button
-                action_name: Tare scale
-
-          - type: tile
-            entity: __ABORT__
-            name: Abort
-            color: red
-            vertical: true
-            hide_state: true
-            features:
-              - type: button
-                action_name: Stop now
-
-          - type: custom:barista-assist-export-card
-            title: Shot data
-            button_text: Copy all shot data
 
   - title: Bags
     path: bags
@@ -206,10 +185,14 @@ views:
             title: Bag details
             show_header_toggle: false
             entities:
-              - __NEW_BAG_COFFEE__
-              - __NEW_BAG_ROASTER__
-              - __NEW_BAG_ROAST_DATE__
-              - __NEW_BAG_STARTING_MASS__
+              - entity: __NEW_BAG_COFFEE__
+                name: New bag coffee
+              - entity: __NEW_BAG_ROASTER__
+                name: New bag roaster
+              - entity: __NEW_BAG_ROAST_DATE__
+                name: New bag roast date
+              - entity: __NEW_BAG_STARTING_MASS__
+                name: New bag starting mass
 
           - type: tile
             entity: __CREATE_BAG__
@@ -242,11 +225,16 @@ views:
             title: Current recipe
             show_header_toggle: false
             entities:
-              - __DOSE__
-              - __GRIND__
-              - __TARGET_YIELD__
-              - __TEMPERATURE__
-              - __PREINFUSION__
+              - entity: __DOSE__
+                name: Dose
+              - entity: __GRIND__
+                name: Grind
+              - entity: __TARGET_YIELD__
+                name: Target yield
+              - entity: __TEMPERATURE__
+                name: Temperature offset
+              - entity: __PREINFUSION__
+                name: Pre-infusion
 
   - title: System
     path: system
@@ -265,7 +253,11 @@ views:
             title: Connection and control
             show_header_toggle: false
             entities:
-              - __STATUS__
-              - __SCALE_BATTERY__
-              - __STOP_COMPENSATION__
-              - __AUTO_PI__
+              - entity: __STATUS__
+                name: Status
+              - entity: __SCALE_BATTERY__
+                name: Scale battery
+              - entity: __STOP_COMPENSATION__
+                name: Stop compensation
+              - entity: __AUTO_PI__
+                name: Auto PI

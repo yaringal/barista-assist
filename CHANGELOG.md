@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.17
+
+### Fixed
+
+- **"Bag details", "Current recipe", and "Connection and control" entity rows showed the device name prefixed onto every label** (e.g. "Barista Assist New bag coffee" instead of "New bag coffee"). Those are `type: entities` cards, which - unlike `tile` cards - render `has_entity_name` entities' raw `friendly_name` (device name + entity name) rather than stripping the device prefix. Added an explicit `name:` override to every row in all three cards.
+- **Reworked the Brew view's layout.** Last yield, Shot diagnosis, and Channeling suspicion moved out of "Live shot" into a new "Last brew" section at the bottom, since they describe the *previous* shot, not the one in progress. Stop compensation was removed from the Brew view entirely (it's a global setting, not per-shot - it stays on the System view's "Connection and control" card). The Active bag tile no longer repeats `remaining_g` (already shown by its own "Beans remaining" tile next to it), which also fixed the tile's roast-date text overflowing. The three separate Brew/Tare/Abort button tiles under "Controls" are now one compact entities card instead.
+
 ## 0.2.16
 
 ### Fixed

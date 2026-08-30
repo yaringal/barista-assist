@@ -1,12 +1,16 @@
-# Barista Assist v0.2.16
+# Barista Assist v0.2.17
 
-Fixes Auto PI (added in 0.2.15) so it's actually reachable in the dashboard.
+Dashboard fixes: entity labels no longer repeat the device name, and the Brew view is reorganized to be less cluttered.
 
 ## Fixed
 
-- **Auto PI now has a real toggle**: `switch.barista_assist_auto_pi`, shown on the System view's "Connection and control" card. It previously shipped as a config-flow-only option with no dashboard entity, so there was no way to turn it on from the UI.
-- **The Pre-infusion tile hides via a dashboard `visibility` condition** on that switch, instead of rewriting the generated dashboard file on every toggle - it now updates instantly in the browser.
+- **"Bag details", "Current recipe", and "Connection and control" showed "Barista Assist" prefixed onto every entity label** (e.g. "Barista Assist New bag coffee" instead of "New bag coffee"). Those are `entities`-type cards, which render the full device-prefixed name unlike `tile` cards. Every row in all three cards now has an explicit short name.
+- **Reworked the Brew view's layout:**
+  - Last yield, Shot diagnosis, and Channeling suspicion moved into a new "Last brew" section at the bottom - they describe the previous shot, not the one in progress.
+  - Stop compensation removed from the Brew view entirely (it's a global setting; it stays on the System view's "Connection and control" card).
+  - The Active bag tile no longer duplicates the "Beans remaining" tile's value, which also fixed the roast-date text overflowing.
+  - Brew/Tare/Abort are now one compact card instead of three separate tiles.
 
 ## Upgrade
 
-No database migration. A full Home Assistant restart is needed to pick up this release. If you'd already tried to enable Auto PI via Settings on 0.2.15, that option is gone - use the new dashboard toggle instead (off by default, so existing setups are unaffected either way).
+No database migration. A full Home Assistant restart is needed to pick up this release.
