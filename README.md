@@ -357,11 +357,13 @@ See `docs/DESIGN.md` for the longer-term project design.
 
 ## SwitchBot requirement
 
+> **Strongly recommended: give this integration a dedicated ESPHome Bluetooth proxy** (see [setup instructions](#setting-up-an-esphome-bluetooth-proxy) below) rather than relying on your Home Assistant host's own Bluetooth adapter. This is the single highest-priority fix for the connection problems described below - live testing repeatedly hit `BleakOutOfConnectionSlotsError`/wedged connections on a shared adapter, and a dedicated proxy resolved it completely.
+
 Barista Assist uses the existing Home Assistant SwitchBot entity for the actual button action, and opens a short direct BLE connection before each shot to program the Bot's stored long-press duration to the selected bag's pre-infusion time. SwitchBot documents this BLE command in its public Bot protocol. Once extraction begins, Barista Assist reprograms that same stored duration back down to an instant tap (0 s), so the later stop/abort press is quick instead of holding for the pre-infusion duration; if a stop is needed before that reprogram lands, it happens inline first rather than pressing with a stale hold time.
 
 The brew Bot must be configured in **press / momentary mode**, not toggle/retract mode. Barista Assist will refuse to brew if the selected Bot reports switch mode.
 
-**Needs at least 2 concurrent Bluetooth connection slots.** The BOOKOO scale holds one BLE connection continuously; brewing briefly opens a second, separate BLE connection to the SwitchBot Bot to (re)program its long-press duration. A single Bluetooth adapter or a single ESPHome Bluetooth proxy in range often only supports **one** connection at a time, in which case the Bot connection fails with something like `BleakOutOfConnectionSlotsError: ... No backend with an available connection slot ...` every time you brew while the scale is connected — this is a Bluetooth capacity limit, not a bug, and Barista Assist already degrades gracefully when it happens (it logs a warning and the Bot press falls back to holding for the full pre-infusion duration instead of an instant tap). If you hit this, add a second [ESPHome Bluetooth proxy](https://esphome.github.io/bluetooth-proxies/) (or a proxy/adapter that supports multiple simultaneous connections) near the machine so the scale and the Bot can each hold their own connection.
+**Needs at least 2 concurrent Bluetooth connection slots.** The BOOKOO scale holds one BLE connection continuously; brewing briefly opens a second, separate BLE connection to the SwitchBot Bot to (re)program its long-press duration. A single Bluetooth adapter or a single ESPHome Bluetooth proxy in range often only supports **one** connection at a time, in which case the Bot connection fails with something like `BleakOutOfConnectionSlotsError: ... No backend with an available connection slot ...` every time you brew while the scale is connected — this is a Bluetooth capacity limit, not a bug, and Barista Assist already degrades gracefully when it happens (it logs a warning and the Bot press falls back to holding for the full pre-infusion duration instead of an instant tap). Add a second [ESPHome Bluetooth proxy](https://esphome.io/projects/?type=bluetooth&diy) (or a proxy/adapter that supports multiple simultaneous connections) near the machine so the scale and the Bot can each hold their own connection.
 
 **Running Home Assistant on a Raspberry Pi's own onboard Bluetooth adapter is a common way to hit this.** The RPi's built-in adapter has historically been unreliable at holding more than one active BLE connection open at once and toggling between them - live testing on one showed the scale connection and a brew Bot press interfering with each other even one at a time, with the Bot connection getting silently wedged (`BleakOutOfConnectionSlotsError` even on a fresh Home Assistant restart) until the Bluetooth integration itself was reloaded. If your HA host is a Raspberry Pi, don't rely on its onboard adapter for this integration - use a dedicated ESPHome Bluetooth proxy instead (see below), and reserve the Pi's own adapter for other, lighter Bluetooth use if you use it at all.
 
@@ -370,10 +372,23 @@ The brew Bot must be configured in **press / momentary mode**, not toggle/retrac
 An ESPHome Bluetooth proxy is a small, cheap ESP32-based device that gives Home Assistant an extra set of Bluetooth "ears" - each one adds its own independent connection slots that Home Assistant automatically load-balances across, on top of whatever your main adapter already provides.
 
 1. Get any ESP32 board - a bare devkit, or a pre-made proxy like an M5Stack Atom Lite/S3, works fine.
-2. Flash it with ESPHome's **Bluetooth Proxy** template: in the [ESPHome dashboard](https://esphome.io/) (the `esphome` HA add-on, or the standalone ESPHome web/CLI tool), choose **New device**, select your board, and pick the Bluetooth Proxy template when offered - it just needs the `esp32_ble_tracker` and `bluetooth_proxy` components enabled with `active: true` (so it also relays connections, not just passive advertisements).
-3. Once flashed and on your Wi-Fi, Home Assistant auto-discovers it as a new **ESPHome** integration entry - accept the discovery notification (or add it manually under **Settings → Devices & Services → Add Integration → ESPHome**).
-4. Place it physically near the espresso machine/scale - a proxy only sees devices within its own local BLE range, so it needs to actually be close enough to both the BOOKOO scale and the brew SwitchBot, not just anywhere in the house.
-5. No further Barista Assist configuration is needed - once the proxy is online, Home Assistant automatically uses whichever available connection slot (local adapter or any proxy) can reach each device, so the scale and the Bot can each hold their own connection without you having to point either one at a specific adapter.
+2. Pick a ready-made DIY Bluetooth proxy project from [esphome.io/projects (Bluetooth, DIY)](https://esphome.io/projects/?type=bluetooth&diy) matching your board, and flash it via the web installer.
+3. After flashing, follow the **"The device is adoptable in the ESPHome dashboard"** link the installer shows you - this adds it to your ESPHome dashboard (the `esphome` HA add-on, or the standalone dashboard) so you can manage/reconfigure it later. If the DIY project's default config doesn't come up correctly, edit it in the dashboard to make sure it has both components set to **active** mode (not just passive scanning) - see ESPHome's own [complete recommended Bluetooth proxy configuration](https://esphome.io/components/bluetooth_proxy/#complete-sample-recommended-configuration-for-a-wifi-connected-bluetooth-proxy) for the full file:
+
+   ```yaml
+   esp32_ble_tracker:
+     scan_parameters:
+       # We currently use the defaults to ensure Bluetooth
+       # can co-exist with WiFi In the future we may be able to
+       # enable the built-in coexistence logic in ESP-IDF
+       active: true
+
+   bluetooth_proxy:
+     active: true
+   ```
+4. Home Assistant then auto-discovers it as a new **ESPHome** integration entry - accept the discovery notification (or add it manually under **Settings → Devices & Services → Add Integration → ESPHome**).
+5. Place it physically near the espresso machine/scale - a proxy only sees devices within its own local BLE range, so it needs to actually be close enough to both the BOOKOO scale and the brew SwitchBot, not just anywhere in the house.
+6. No further Barista Assist configuration is needed - once the proxy is online, Home Assistant automatically uses whichever available connection slot (local adapter or any proxy) can reach each device, so the scale and the Bot can each hold their own connection without you having to point either one at a specific adapter.
 
 ## Barista Express shot-duration safety requirement
 
@@ -411,3 +426,7 @@ logger:
 ```
 
 This logs every shot-phase transition, brew/stop/abort call (with elapsed time and reason), scale connect/disconnect events, and every brew-Bot connect/program/press attempt - including `_bot_lock` waits and reconnect-retries - which is usually enough to tell whether a stuck or failed shot was a Bluetooth capacity/timing issue versus something else. Restart Home Assistant (or reload the integration) after changing this.
+
+## Troubleshooting
+
+**"Live shot" shows "Configuration error" on the Home Assistant Companion app, but the same dashboard works fine in a desktop browser.** This is a stale cache in the Companion app, not an actual problem with the dashboard config (a working desktop browser proves the YAML itself is valid). The mobile app can keep serving an older cached copy of the ApexCharts Card resource - one that predates a config option Barista Assist's dashboard uses (`data_generator`, `opacity`, `yaxis_id`) - even after HACS has updated it. Fix: force-quit the Companion app, then **Settings → Companion App → Debugging → Reset frontend cache** (or clear the app's storage/cache from your phone's OS settings if that option isn't available), then reopen it.

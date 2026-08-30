@@ -115,15 +115,15 @@ views:
             # graph_span rather than staying frozen forever.
             graph_span: 60s
             yaxis:
+              - id: flow
+                opposite: true
+                min: -2
+                max: 10
+                decimals: 1
               - id: weight
                 min: 0
                 max: 60
                 decimals: 0
-              - id: flow
-                opposite: true
-                min: 0
-                max: 6
-                decimals: 1
             series:
               - entity: __STATUS__
                 name: Flow rate
