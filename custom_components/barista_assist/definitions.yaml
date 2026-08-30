@@ -16,6 +16,7 @@ defaults:
   controller:
     stop_compensation_g: 1.5
     safety_margin_s: 3
+    auto_pi: false
   new_bag:
     starting_mass_g: 250.0
 
@@ -209,6 +210,13 @@ entities:
           value: 1
         - label: "+2 °C"
           value: 2
+
+  switch:
+    auto_pi:
+      source: controller
+      field: auto_pi
+      translation_key: auto_pi
+      token: __AUTO_PI__
 
   text:
     new_bag_coffee:

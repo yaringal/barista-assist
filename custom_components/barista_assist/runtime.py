@@ -22,7 +22,6 @@ from homeassistant.helpers.storage import Store
 
 from .bookoo import BookooUltraClient
 from .const import (
-    CONF_AUTO_PI,
     CONF_BREW_ENTITY,
     CONF_MACHINE_LIMIT_CONFIRMED,
     CONF_MACHINE_MAX_SHOT_SECONDS,
@@ -145,6 +144,7 @@ class BaristaRuntime:
         self.stop_compensation_g = float(
             defaults["controller"]["stop_compensation_g"]
         )
+        self.auto_pi = bool(defaults["controller"].get("auto_pi", False))
         self.draft = BagDraft(
             roast_date=date.today(),
             starting_mass_g=float(defaults["new_bag"]["starting_mass_g"]),
@@ -206,14 +206,6 @@ class BaristaRuntime:
         return bool(self.entry.options.get(CONF_MACHINE_LIMIT_CONFIRMED, False))
 
     @property
-    def auto_pi(self) -> bool:
-        """If enabled, brew with a single short tap and let the Barista
-        Express run its own built-in pre-infusion (AUTO_PI_DURATION_S)
-        instead of Barista Assist holding the button for a per-bag duration.
-        """
-        return bool(self.entry.options.get(CONF_AUTO_PI, False))
-
-    @property
     def selected_bag(self) -> Bag | None:
         return self._bags.get(self.selected_slot)
 
@@ -251,6 +243,9 @@ class BaristaRuntime:
         self.stop_compensation_g = float(
             state.get("stop_compensation_g", legacy_stop)
         )
+        self.auto_pi = bool(
+            state.get("auto_pi", self.definitions.defaults["controller"].get("auto_pi", False))
+        )
         await self._async_save_state()
         await self.async_refresh_cache()
         await self.scale.async_start()
@@ -269,6 +264,7 @@ class BaristaRuntime:
             {
                 "selected_slot": self.selected_slot,
                 "stop_compensation_g": self.stop_compensation_g,
+                "auto_pi": self.auto_pi,
                 "machine_max_shot_s": self.machine_max_shot_s,
                 "safety_margin_s": self.safety_margin_s,
                 "safe_shot_deadline_s": self.safe_shot_deadline_s,
@@ -367,6 +363,11 @@ class BaristaRuntime:
                 return
             if field == "stop_compensation_g":
                 self.stop_compensation_g = float(value)
+                await self._async_save_state()
+                self._notify(force=True)
+                return
+            if field == "auto_pi":
+                self.auto_pi = bool(value)
                 await self._async_save_state()
                 self._notify(force=True)
                 return

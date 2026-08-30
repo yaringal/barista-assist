@@ -1,15 +1,12 @@
-# Barista Assist v0.2.15
+# Barista Assist v0.2.16
 
-A status-sensor polish fix, plus a new opt-in Auto PI brewing mode.
+Fixes Auto PI (added in 0.2.15) so it's actually reachable in the dashboard.
 
-## Added
+## Fixed
 
-- **The Status sensor now shows a proper label for every state** (e.g. "Connect scale" instead of the raw `connect_scale`) - previously every value showed as its raw internal name.
-- **New "Auto PI" option** (Settings): brew with a single short tap and let the Barista Express run its own built-in pre-infusion (~8s) instead of Barista Assist holding the button for a per-bag duration.
-  - Both the start and stop presses go through Home Assistant's switchbot integration only - no direct BLE connection to the Bot is opened at all, since there's no per-bag hold duration to program.
-  - The Pre-infusion tile is hidden from the Recipe section of the dashboard while this is enabled, since its value no longer affects anything.
-  - See the README's new "Auto PI" section for the full tradeoffs, including how it interacts with the Barista Express's own single-tap auto-stop-at-volume behavior.
+- **Auto PI now has a real toggle**: `switch.barista_assist_auto_pi`, shown on the System view's "Connection and control" card. It previously shipped as a config-flow-only option with no dashboard entity, so there was no way to turn it on from the UI.
+- **The Pre-infusion tile hides via a dashboard `visibility` condition** on that switch, instead of rewriting the generated dashboard file on every toggle - it now updates instantly in the browser.
 
 ## Upgrade
 
-No database migration. A full Home Assistant restart is needed to pick up this release. Auto PI is off by default - existing setups keep behaving exactly as before unless you turn it on in the integration's options.
+No database migration. A full Home Assistant restart is needed to pick up this release. If you'd already tried to enable Auto PI via Settings on 0.2.15, that option is gone - use the new dashboard toggle instead (off by default, so existing setups are unaffected either way).

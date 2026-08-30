@@ -1,7 +1,7 @@
 {
   "domain": "barista_assist",
   "name": "Barista Assist",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "config_flow": true,
   "dependencies": [
     "bluetooth_adapters",

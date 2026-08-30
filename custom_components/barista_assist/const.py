@@ -15,7 +15,6 @@ CONF_BREW_ENTITY: Final = "brew_entity"
 CONF_MACHINE_MAX_SHOT_SECONDS: Final = "machine_max_shot_seconds"
 CONF_SAFETY_MARGIN_SECONDS: Final = "safety_margin_seconds"
 CONF_MACHINE_LIMIT_CONFIRMED: Final = "machine_limit_confirmed"
-CONF_AUTO_PI: Final = "auto_pi"
 
 STATIC_URL_PATH: Final = "/barista_assist_static"
 

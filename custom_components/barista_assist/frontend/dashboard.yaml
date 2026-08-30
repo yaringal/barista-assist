@@ -87,6 +87,10 @@ views:
             color: blue
             features: *number_buttons
             features_position: bottom
+            visibility:
+              - condition: state
+                entity: __AUTO_PI__
+                state: "off"
 
       - type: grid
         cards:
@@ -264,3 +268,4 @@ views:
               - __STATUS__
               - __SCALE_BATTERY__
               - __STOP_COMPENSATION__
+              - __AUTO_PI__

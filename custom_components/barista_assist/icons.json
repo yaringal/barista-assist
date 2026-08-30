@@ -20,6 +20,9 @@
       "bean_slot": {"default": "mdi:sack"},
       "temperature_offset": {"default": "mdi:thermometer"}
     },
+    "switch": {
+      "auto_pi": {"default": "mdi:gesture-tap"}
+    },
     "text": {
       "new_bag_coffee": {"default": "mdi:sack"},
       "new_bag_roaster": {"default": "mdi:store"}

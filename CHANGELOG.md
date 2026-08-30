@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.16
+
+### Fixed
+
+- **Auto PI (added in 0.2.15) had no way to actually turn it on.** It shipped as a config-flow option, which isn't a Home Assistant entity and never showed up anywhere in the dashboard. Replaced with `switch.barista_assist_auto_pi`, a real toggle now shown on the System view's "Connection and control" card, persisted the same way as `stop_compensation` (the runtime's own storage, not a config-entry option) rather than requiring a trip to Settings.
+- **The Pre-infusion tile now hides via a plain dashboard `visibility` condition** on that same switch, instead of rewriting the generated dashboard YAML file server-side every time the toggle flips - simpler, and it updates instantly in the browser instead of needing a regenerate round-trip.
+
+### Testing
+
+- Updated the Auto PI regression tests to drive the new `runtime.auto_pi` attribute directly instead of a config-entry option, and replaced the dashboard-stripping test with one confirming token substitution reaches inside `visibility` conditions, not just `entity:` keys.
+- Full suite: 98 tests, all passing.
+
 ## 0.2.15
 
 ### Added
