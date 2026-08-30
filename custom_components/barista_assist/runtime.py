@@ -209,6 +209,14 @@ class BaristaRuntime:
     def selected_bag(self) -> Bag | None:
         return self._bags.get(self.selected_slot)
 
+    @property
+    def flow_rate_x10(self) -> float | None:
+        """flow_g_s scaled by 10x, purely so the dashboard's live-shot graph
+        can plot it alongside weight on one shared axis without the flow
+        line reading as flat next to weight's much larger range."""
+        reading = self.scale.last_reading
+        return round(reading.flow_g_s * 10, 1) if reading else None
+
     # ---------------------------------------------------------------------
     # Lifecycle
     # ---------------------------------------------------------------------

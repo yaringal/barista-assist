@@ -335,6 +335,14 @@ class ButtonAvailabilityTests(RuntimeTestCase):
         self.runtime.scale_connected = True
         self.assertTrue(self.runtime.entity_available(abort))
 
+    async def test_tare_is_unavailable_without_a_connected_scale(self):
+        tare = self._button("tare")
+        self.assertFalse(self.runtime.scale_connected)
+        self.assertFalse(self.runtime.entity_available(tare))
+
+        self.runtime.scale_connected = True
+        self.assertTrue(self.runtime.entity_available(tare))
+
     async def test_abort_is_unavailable_without_a_connected_scale(self):
         """Deliberate: Abort stays gated on the scale too, even though that
         means it can gray out mid-shot if the scale drops out - the user
@@ -351,6 +359,17 @@ class ButtonAvailabilityTests(RuntimeTestCase):
 
         self.runtime.scale_connected = False
         self.assertFalse(self.runtime.entity_available(abort))
+
+
+class FlowRateX10Tests(RuntimeTestCase):
+    """flow_rate_x10 exists purely so the Live shot dashboard graph can plot
+    it alongside weight on one shared axis - it must track flow_g_s exactly,
+    scaled by 10x."""
+
+    async def test_scales_the_latest_reading_by_ten(self):
+        self.assertIsNone(self.runtime.flow_rate_x10)
+        self.scale.push_reading(make_reading(weight_g=10.0, flow_g_s=1.25))
+        self.assertEqual(self.runtime.flow_rate_x10, 12.5)
 
 
 class BotLockSerializationTests(RuntimeTestCase):

@@ -31,6 +31,7 @@ views:
             entity: __ACTIVE_BAG__
             name: Active bag
             color: brown
+            # vertical: true
             state_content:
               - state
               - roaster
@@ -40,7 +41,7 @@ views:
             entity: __BEANS_REMAINING__
             name: Beans remaining
             color: brown
-            vertical: true
+            # vertical: true
 
       - type: grid
         cards:
@@ -98,17 +99,14 @@ views:
             heading_style: title
             icon: mdi:chart-line
 
-          - type: tile
-            entity: __SCALE_WEIGHT__
-            name: Weight
-            color: blue
-            vertical: true
-
-          - type: tile
-            entity: __FLOW_RATE__
-            name: Flow rate
-            color: cyan
-            vertical: true
+          - type: history-graph
+            title: Weight & flow rate (×10)
+            hours_to_show: 0.02
+            entities:
+              - entity: __SCALE_WEIGHT__
+                name: Weight
+              - entity: __FLOW_RATE_X10__
+                name: Flow rate ×10
 
           - type: heading
             heading: Controls
@@ -140,19 +138,19 @@ views:
             entity: __LAST_YIELD__
             name: Last yield
             color: green
-            vertical: true
+            # vertical: true
 
           - type: tile
             entity: __SHOT_CLASSIFICATION__
             name: Shot diagnosis
             color: brown
-            vertical: true
+            # vertical: true
 
           - type: tile
             entity: __SHOT_CHANNELING_SUSPICION__
             name: Channeling suspicion
             color: red
-            vertical: true
+            # vertical: true
 
   - title: Bags
     path: bags

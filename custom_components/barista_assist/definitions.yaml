@@ -95,10 +95,18 @@ entities:
       source: scale
       field: flow_g_s
       translation_key: flow_rate
-      token: __FLOW_RATE__
       unit: g/s
       state_class: measurement
       precision: 2
+      requires_scale: true
+
+    flow_rate_x10:
+      source: runtime
+      field: flow_rate_x10
+      translation_key: flow_rate_x10
+      token: __FLOW_RATE_X10__
+      state_class: measurement
+      precision: 1
       requires_scale: true
 
     beans_remaining:
@@ -188,9 +196,9 @@ entities:
       translation_key: bean_slot
       token: __BEAN_SLOT__
       options:
-        - label: normal
+        - label: Normal
           value: normal
-        - label: decaf
+        - label: Decaf
           value: decaf
 
     temperature_offset:
@@ -264,6 +272,7 @@ entities:
       action: tare
       translation_key: tare
       token: __TARE__
+      requires_scale: true
 
     create_bag:
       action: create_bag

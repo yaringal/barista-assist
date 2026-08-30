@@ -5,7 +5,14 @@
 ### Fixed
 
 - **"Bag details", "Current recipe", and "Connection and control" entity rows showed the device name prefixed onto every label** (e.g. "Barista Assist New bag coffee" instead of "New bag coffee"). Those are `type: entities` cards, which - unlike `tile` cards - render `has_entity_name` entities' raw `friendly_name` (device name + entity name) rather than stripping the device prefix. Added an explicit `name:` override to every row in all three cards.
-- **Reworked the Brew view's layout.** Last yield, Shot diagnosis, and Channeling suspicion moved out of "Live shot" into a new "Last brew" section at the bottom, since they describe the *previous* shot, not the one in progress. Stop compensation was removed from the Brew view entirely (it's a global setting, not per-shot - it stays on the System view's "Connection and control" card). The Active bag tile no longer repeats `remaining_g` (already shown by its own "Beans remaining" tile next to it), which also fixed the tile's roast-date text overflowing. The three separate Brew/Tare/Abort button tiles under "Controls" are now one compact entities card instead.
+- **Reworked the Brew view's layout.** Last yield, Shot diagnosis, and Channeling suspicion moved out of "Live shot" into a new "Last brew" section at the bottom, since they describe the *previous* shot, not the one in progress. Stop compensation was removed from the Brew view entirely (it's a global setting, not per-shot - it stays on the System view's "Connection and control" card). The Active bag tile no longer repeats `remaining_g` (already shown by its own "Beans remaining" tile next to it). The three separate Brew/Tare/Abort button tiles under "Controls" are now one compact entities card instead.
+- **The Active bag tile (Brew view) still cut off its text (e.g. roast date missing) with a long coffee/roaster name, and looked narrower than its neighbors.** It was missing `vertical: true`, which its neighboring tiles (Status, Beans remaining) already had - without it, the tile uses a horizontal icon-left layout that leaves much less width for the multi-line state text. Matched it to its neighbors.
+- **The Tare button stayed pressable with no scale connected**, unlike Brew/Abort which both already require one. Added the same `requires_scale` guard.
+
+### Changed
+
+- **"Live shot" now shows Weight and Flow rate as a single live history graph** instead of two separate number tiles, so you can see the pour's shape over time (a native `history-graph` card, no new dependency) rather than just the instantaneous value. Flow rate is plotted scaled ×10 (a new `flow_rate_x10` sensor, alongside the existing raw `flow_rate`) so its line doesn't read as flat next to weight's much larger range on the shared axis. The raw `flow_rate` sensor still exists (e.g. for automations) but is no longer placed in the packaged dashboard.
+- **Bean slot's dropdown showed lowercase "normal"/"decaf"** - capitalized to "Normal"/"Decaf". Display-only; the underlying stored slot values are unchanged.
 
 ## 0.2.16
 
