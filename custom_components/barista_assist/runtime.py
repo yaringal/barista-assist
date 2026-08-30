@@ -22,6 +22,7 @@ from homeassistant.helpers.storage import Store
 
 from .bookoo import BookooUltraClient
 from .const import (
+    CONF_AUTO_PI,
     CONF_BREW_ENTITY,
     CONF_MACHINE_LIMIT_CONFIRMED,
     CONF_MACHINE_MAX_SHOT_SECONDS,
@@ -45,6 +46,10 @@ _QUICK_STOP_BOT_WAIT_TIMEOUT_S = 3.0
 # without it anyway (see _async_press_brew_bot) - it must never be blocked
 # indefinitely behind a slow/stuck prepare call.
 _BOT_PRESS_LOCK_TIMEOUT_S = 2.0
+# The Barista Express's own built-in pre-infusion duration when the brew
+# button is single-tapped rather than held (see BaristaRuntime.auto_pi) -
+# fixed by the machine itself, not something Barista Assist can configure.
+AUTO_PI_DURATION_S = 8.0
 
 
 class ShotPhase(str, Enum):
@@ -98,6 +103,7 @@ class ActiveShot:
     started_monotonic: float
     target_yield_g: float
     stop_compensation_g: float
+    preinfusion_s: float
     samples: list[ShotSample]
     # Set once the initial brew Bot press actually lands (see async_brew).
     # started_monotonic marks when brewing was *requested*, which can be
@@ -198,6 +204,14 @@ class BaristaRuntime:
     @property
     def machine_limit_confirmed(self) -> bool:
         return bool(self.entry.options.get(CONF_MACHINE_LIMIT_CONFIRMED, False))
+
+    @property
+    def auto_pi(self) -> bool:
+        """If enabled, brew with a single short tap and let the Barista
+        Express run its own built-in pre-infusion (AUTO_PI_DURATION_S)
+        instead of Barista Assist holding the button for a per-bag duration.
+        """
+        return bool(self.entry.options.get(CONF_AUTO_PI, False))
 
     @property
     def selected_bag(self) -> Bag | None:
@@ -630,7 +644,8 @@ class BaristaRuntime:
                 raise HomeAssistantError(
                     "Machine maximum shot duration must exceed the safety margin by at least 5 seconds"
                 )
-            if bag.preinfusion_s >= self.safe_shot_deadline_s:
+            preinfusion_s = AUTO_PI_DURATION_S if self.auto_pi else bag.preinfusion_s
+            if preinfusion_s >= self.safe_shot_deadline_s:
                 raise HomeAssistantError(
                     "Pre-infusion must be shorter than the protected shot window"
                 )
@@ -656,21 +671,35 @@ class BaristaRuntime:
                 started_monotonic=time.monotonic(),
                 target_yield_g=bag.target_yield_g,
                 stop_compensation_g=self.stop_compensation_g,
+                preinfusion_s=preinfusion_s,
                 samples=[],
+                # Auto PI never holds the button, so the Bot is never
+                # reprogrammed away from its default instant tap - the stop
+                # press can go out immediately whenever it's needed.
+                quick_press_ready=self.auto_pi,
             )
             _LOGGER.info(
-                "Shot %s started: bag=%s dose=%sg target_yield=%sg preinfusion=%ss",
+                "Shot %s started: bag=%s dose=%sg target_yield=%sg preinfusion=%ss (auto_pi=%s)",
                 shot_id,
                 bag.coffee_name,
                 bag.dose_g,
                 bag.target_yield_g,
-                bag.preinfusion_s,
+                preinfusion_s,
+                self.auto_pi,
             )
             self._set_phase(ShotPhase.PREINFUSION)
 
             try:
-                await self._async_prepare_brew_bot(int(bag.preinfusion_s))
-                await self._async_press_brew_bot()
+                if self.auto_pi:
+                    # The Barista Express runs its own pre-infusion on a
+                    # single short tap - no hold duration to program, so
+                    # this skips the direct-BLE Bot-configure step entirely
+                    # and presses through Home Assistant's switchbot
+                    # integration only.
+                    await self._async_press_brew_bot()
+                else:
+                    await self._async_prepare_brew_bot(int(preinfusion_s))
+                    await self._async_press_brew_bot()
             except Exception:
                 await self._async_finalize(ShotPhase.ERROR.value)
                 raise
@@ -682,7 +711,7 @@ class BaristaRuntime:
             )
 
             self._phase_task = self.hass.async_create_background_task(
-                self._mark_extracting_after_preinfusion(shot_id, bag.preinfusion_s),
+                self._mark_extracting_after_preinfusion(shot_id, preinfusion_s),
                 "barista_assist_preinfusion_phase",
             )
             self._timeout_task = self.hass.async_create_background_task(
@@ -719,6 +748,10 @@ class BaristaRuntime:
             if shot is None or shot.id != shot_id or shot.stop_scheduled:
                 return
             self._set_phase(ShotPhase.EXTRACTING)
+            if self.auto_pi:
+                # Never held the button in the first place (see async_brew),
+                # so there's nothing to reprogram back to an instant tap.
+                return
             # Reprogram the Bot to an instant tap now, off the time-critical stop
             # path, so the eventual stop/abort press doesn't also hold for
             # preinfusion_s seconds like the start press did. If a real stop
@@ -924,7 +957,7 @@ class BaristaRuntime:
         analysis = analyze_shot(
             shot.samples,
             target_yield_g=shot.target_yield_g,
-            preinfusion_s=shot.bag.preinfusion_s,
+            preinfusion_s=shot.preinfusion_s,
             baseline=BaselineFeatures(**baseline_features) if baseline_features else None,
         )
         if analysis.invalid_reason is not None:

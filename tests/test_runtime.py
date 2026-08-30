@@ -47,6 +47,7 @@ ShotPhase = runtime_module.ShotPhase
 HomeAssistantError = runtime_module.HomeAssistantError
 
 from custom_components.barista_assist.const import (  # noqa: E402
+    CONF_AUTO_PI,
     CONF_BREW_ENTITY,
     CONF_MACHINE_LIMIT_CONFIRMED,
     CONF_MACHINE_MAX_SHOT_SECONDS,
@@ -257,6 +258,49 @@ class InstantTapTests(RuntimeTestCase):
         stuck_event.set()
         await phase_task
         self.assertTrue(phase_task.done())
+
+
+class AutoPiTests(RuntimeTestCase):
+    """Auto PI: a single short tap starts the Barista Express's own built-in
+    pre-infusion instead of Barista Assist holding the button for a per-bag
+    duration - so the direct-BLE Bot-configure step (SwitchBotBotConfigurator)
+    must never be used at all, only Home Assistant's switchbot integration
+    (switch.turn_on)."""
+
+    async def test_start_press_never_reprograms_the_bot(self):
+        self.entry.options[CONF_AUTO_PI] = True
+        with mock.patch.object(runtime_module, "AUTO_PI_DURATION_S", 0.05):
+            await self.start_shot(preinfusion_s=1.0)
+            self.assertTrue(self.runtime.active_shot.quick_press_ready)
+            self.assertEqual(FakeBotConfigurator.calls, [])
+            await self.wait_for_extracting()
+            self.assertEqual(FakeBotConfigurator.calls, [])
+
+    async def test_uses_the_fixed_auto_pi_duration_not_the_bag_value(self):
+        """Regression test: Auto PI must use AUTO_PI_DURATION_S regardless of
+        the bag's configured preinfusion_s, since the machine (not Barista
+        Assist) controls the pre-infusion length in this mode."""
+        self.entry.options[CONF_AUTO_PI] = True
+        with mock.patch.object(runtime_module, "AUTO_PI_DURATION_S", 0.05):
+            await self.start_shot(preinfusion_s=1.0)
+            await asyncio.sleep(0.15)
+            self.assertEqual(self.runtime.status, ShotPhase.EXTRACTING.value)
+
+    async def test_stop_press_also_uses_only_the_switchbot_integration(self):
+        self.entry.options[CONF_AUTO_PI] = True
+        with mock.patch.object(runtime_module, "AUTO_PI_DURATION_S", 0.05):
+            await self.start_shot(preinfusion_s=1.0)
+            await self.wait_for_extracting()
+            # _handle_reading only schedules the target-weight stop once the
+            # shot has run for over 1s since press_monotonic (see runtime.py).
+            await asyncio.sleep(1.05)
+            calls_before = len(self.hass.services.calls)
+            self.scale.push_reading(make_reading(weight_g=35.0))
+            await self.hass.tasks[-1]
+
+            self.assertGreater(len(self.hass.services.calls), calls_before)
+            self.assertEqual(self.runtime.status, ShotPhase.SETTLING.value)
+            self.assertEqual(FakeBotConfigurator.calls, [])
 
 
 class ButtonAvailabilityTests(RuntimeTestCase):

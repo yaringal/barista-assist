@@ -371,6 +371,15 @@ Given that, **you must still determine your own machine's real cutoff by testing
 
 Do not use automatic brew control unless you're prepared to supervise every shot closely enough to intervene manually, and until this machine limit has been physically programmed and confirmed in the integration options.
 
+## Auto PI
+
+Auto PI is an integration option that switches brewing from holding the button (the "Manual Pre-Infusion & Extraction" mode described above) to a single short tap, letting the Barista Express run its own built-in pre-infusion (assumed to be 8 s) before ramping to full pressure. Barista Assist still taps the button a second time to stop the pour once the target weight is reached, exactly as it does in the normal mode.
+
+With Auto PI enabled:
+
+- **No direct BLE connection is used at all.** Both the start and stop presses go through Home Assistant's own SwitchBot integration (`switch.turn_on`) - Barista Assist never opens its own BLE session to reprogram the Bot's long-press duration, since there's no hold duration to configure.
+- **The Pre-infusion tile is hidden** from the Recipe section of the dashboard, since the duration is fixed by the machine rather than something Barista Assist controls per bag.
+- The single tap starts what Breville's manuals describe as "Pre-Programmed Shot Volume" mode, which has its own auto-stop at whatever volume is currently programmed into the CUP button - Barista Assist's own stop press is meant to land well before that, but if it's ever late, the same safety-margin/`manual_stop_required` logic as the normal mode still applies (see above), and the machine's programmed volume becomes the backstop instead of its water-only volume-based cutoff.
 
 ## Shot-data export
 

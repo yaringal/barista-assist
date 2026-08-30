@@ -54,12 +54,40 @@ def _replace_tokens(value: Any, mapping: dict[str, str]) -> Any:
     return value
 
 
-def render_dashboard_yaml(template: Any, entity_map: dict[str, str]) -> str:
+_AUTO_PI_HIDDEN_TOKEN = "__PREINFUSION__"
+
+
+def _strip_auto_pi_tile(value: Any) -> Any:
+    """Drop the pre-infusion tile/list-entry from the dashboard template.
+
+    Its duration is fixed by the machine (not user-configurable) once Auto
+    PI is enabled, so showing a number entity for it would be misleading.
+    Rebuilds new lists/dicts rather than mutating in place, since `value` is
+    the cached parsed template from dashboard_template() and must stay
+    intact for the non-Auto-PI case.
+    """
+    if isinstance(value, list):
+        kept = [
+            item
+            for item in value
+            if item != _AUTO_PI_HIDDEN_TOKEN
+            and not (isinstance(item, dict) and item.get("entity") == _AUTO_PI_HIDDEN_TOKEN)
+        ]
+        return [_strip_auto_pi_tile(item) for item in kept]
+    if isinstance(value, dict):
+        return {key: _strip_auto_pi_tile(item) for key, item in value.items()}
+    return value
+
+
+def render_dashboard_yaml(
+    template: Any, entity_map: dict[str, str], *, auto_pi: bool = False
+) -> str:
     """Token-substituted `views:`-only YAML for a YAML-mode Lovelace
     dashboard file. Only `views` is kept - the file's own title/icon come
     from the user's configuration.yaml entry, per Home Assistant's YAML
     dashboard format, not from this package's dashboard.yaml."""
-    substituted = _replace_tokens(template, entity_map)
+    working = _strip_auto_pi_tile(template) if auto_pi else template
+    substituted = _replace_tokens(working, entity_map)
     return yaml.safe_dump({"views": substituted["views"]}, sort_keys=False)
 
 
@@ -74,7 +102,9 @@ async def async_write_dashboard_file(hass: HomeAssistant, runtime) -> None:
     await hass.async_add_executor_job(load_definitions)
     # _dashboard_entity_map's own load_definitions() call is now a cache
     # hit; its entity-registry lookups must still run on the event loop.
-    yaml_text = render_dashboard_yaml(template, _dashboard_entity_map(hass, runtime))
+    yaml_text = render_dashboard_yaml(
+        template, _dashboard_entity_map(hass, runtime), auto_pi=runtime.auto_pi
+    )
     path = Path(hass.config.path(DASHBOARD_FILENAME))
     await hass.async_add_executor_job(path.write_text, yaml_text, "utf-8")
 

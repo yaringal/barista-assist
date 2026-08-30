@@ -10,7 +10,8 @@
           "brew_entity": "Brew SwitchBot",
           "machine_max_shot_seconds": "Barista Express programmed maximum shot duration (seconds)",
           "safety_margin_seconds": "Stop safety margin (seconds)",
-          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express"
+          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express",
+          "auto_pi": "Auto pre-infusion (single short tap; skip manual pre-infusion hold)"
         }
       },
       "bluetooth_confirm": {
@@ -20,7 +21,8 @@
           "brew_entity": "Brew SwitchBot",
           "machine_max_shot_seconds": "Barista Express programmed maximum shot duration (seconds)",
           "safety_margin_seconds": "Stop safety margin (seconds)",
-          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express"
+          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express",
+          "auto_pi": "Auto pre-infusion (single short tap; skip manual pre-infusion hold)"
         }
       }
     },
@@ -43,7 +45,8 @@
           "brew_entity": "Brew SwitchBot",
           "machine_max_shot_seconds": "Barista Express programmed maximum shot duration (seconds)",
           "safety_margin_seconds": "Stop safety margin (seconds)",
-          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express"
+          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express",
+          "auto_pi": "Auto pre-infusion (single short tap; skip manual pre-infusion hold)"
         },
         "description": "Set the physical shot limit programmed into the Barista Express. Determine this by testing with a real coffee puck (not just water, which flows much faster and can trip the machine's own cutoff far sooner) and holding the button through a full bench-test shot to see how long it takes before the machine stops itself. Barista Assist will stop before this limit and will never press the brew button after the protected window because that could start a new shot - but always supervise the shot yourself, since Barista Assist can't guarantee the machine's own cutoff will land in time."
       }
@@ -57,7 +60,22 @@
   "entity": {
     "sensor": {
       "status": {
-        "name": "Status"
+        "name": "Status",
+        "state": {
+          "idle": "Idle",
+          "connect_scale": "Connect scale",
+          "connecting_scale": "Connecting scale",
+          "preinfusion": "Pre-infusion",
+          "extracting": "Extracting",
+          "stopping": "Stopping",
+          "settling": "Settling",
+          "stop_error": "Stop error",
+          "aborted": "Aborted",
+          "timeout": "Timeout",
+          "error": "Error",
+          "manual_stop_required": "Manual stop required",
+          "scale_disconnected": "Scale disconnected"
+        }
       },
       "scale_weight": {
         "name": "Scale weight"

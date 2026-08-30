@@ -16,6 +16,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     BOOKOO_SERVICE_UUID,
+    CONF_AUTO_PI,
     CONF_BREW_ENTITY,
     CONF_MACHINE_LIMIT_CONFIRMED,
     CONF_MACHINE_MAX_SHOT_SECONDS,
@@ -55,6 +56,10 @@ def _confirmation_selector() -> selector.BooleanSelector:
     return selector.BooleanSelector()
 
 
+def _auto_pi_selector() -> selector.BooleanSelector:
+    return selector.BooleanSelector()
+
+
 def _settings_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     defaults = defaults or {}
     brew_key = (
@@ -68,6 +73,7 @@ def _settings_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         load_definitions().defaults["controller"]["safety_margin_s"],
     )
     confirmation = defaults.get(CONF_MACHINE_LIMIT_CONFIRMED, False)
+    auto_pi = defaults.get(CONF_AUTO_PI, False)
     machine_key = (
         vol.Required(CONF_MACHINE_MAX_SHOT_SECONDS, default=machine_limit)
         if machine_limit is not None
@@ -79,6 +85,7 @@ def _settings_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             machine_key: _machine_limit_selector(),
             vol.Required(CONF_SAFETY_MARGIN_SECONDS, default=margin): _margin_selector(),
             vol.Required(CONF_MACHINE_LIMIT_CONFIRMED, default=confirmation): _confirmation_selector(),
+            vol.Required(CONF_AUTO_PI, default=auto_pi): _auto_pi_selector(),
         }
     )
 

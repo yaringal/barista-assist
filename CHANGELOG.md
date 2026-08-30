@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.15
+
+### Added
+
+- **The `status` sensor now has proper display labels for every value** (e.g. "Connect scale" instead of the raw `connect_scale`) - it never had a `state` translation map at all before, so every status ("idle", "connecting_scale", "manual_stop_required", etc.) showed as its raw snake_case string. Added the full mapping, matching the pattern `shot_classification` already used.
+- **New "Auto PI" option**: brew with a single short tap and let the Barista Express run its own built-in pre-infusion (~8s) instead of Barista Assist holding the button for a per-bag duration. When enabled, both the start and stop presses go through Home Assistant's switchbot integration only - the direct-BLE Bot-reprogram step is skipped entirely, since there's no hold duration to configure - and the Pre-infusion tile is hidden from the Recipe section of the dashboard, since its value no longer affects anything. See the README's new "Auto PI" section for the tradeoffs.
+
 ## 0.2.14
 
 ### Added
