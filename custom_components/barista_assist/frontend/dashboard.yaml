@@ -103,13 +103,19 @@ views:
             header:
               title: Weight & flow rate
               show: true
-            # No graph_span/history here on purpose: both series use
-            # data_generator, reading the status sensor's shot_plot attribute
-            # (see BaristaRuntime._shot_plot_points) instead of the recorder.
-            # That attribute holds the active shot's own samples while one is
-            # running (so the chart grows live, anchored to when the shot
-            # actually started) and the last completed shot's otherwise (so
-            # it freezes there instead of scrolling on with wall-clock time).
+            # Both series use data_generator, reading the status sensor's
+            # shot_plot attribute (see BaristaRuntime._shot_plot_points)
+            # instead of the recorder - it holds the active shot's own
+            # samples while one is running (so the chart grows live, anchored
+            # to when the shot actually started) and the last completed
+            # shot's otherwise. graph_span still has to be set explicitly
+            # even though data_generator supplies the actual points: without
+            # it, apexcharts-card's default (effectively 24h) x-axis window
+            # makes a ~60s shot's worth of real data an imperceptibly thin
+            # sliver at the right edge - it just reads as one static dot.
+            # This still means a finished shot scrolls out of view after
+            # graph_span rather than staying frozen forever.
+            graph_span: 60s
             yaxis:
               - id: weight
                 min: 0
@@ -122,6 +128,16 @@ views:
                 decimals: 1
             series:
               - entity: __STATUS__
+                name: Flow rate
+                yaxis_id: flow
+                color: "#00bcd4"
+                opacity: 0.1
+                stroke_width: 2
+                curve: smooth
+                data_generator: |
+                  return (entity.attributes.shot_plot || []).map(p => [p[0], p[2]]);
+                fill_raw: "null"
+              - entity: __STATUS__
                 name: Weight
                 yaxis_id: weight
                 color: "#2196f3"
@@ -129,15 +145,6 @@ views:
                 curve: smooth
                 data_generator: |
                   return (entity.attributes.shot_plot || []).map(p => [p[0], p[1]]);
-              - entity: __STATUS__
-                name: Flow rate
-                yaxis_id: flow
-                color: "#00bcd4"
-                stroke_width: 2
-                curve: smooth
-                data_generator: |
-                  return (entity.attributes.shot_plot || []).map(p => [p[0], p[2]]);
-                fill_raw: "null"
 
           - type: heading
             heading: Controls

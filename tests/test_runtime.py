@@ -195,6 +195,31 @@ class StopFailureTests(RuntimeTestCase):
         self.assertEqual(self.runtime.status, ShotPhase.STOP_ERROR.value)
         self.assertIsNotNone(self.runtime.active_shot)
 
+    async def test_abort_can_be_retried_after_a_failed_press(self):
+        """Regression test: a failed stop/abort press used to leave
+        stop_triggered permanently True (it's set before the press attempt,
+        to block a second concurrent caller, but was never reset back on
+        failure) - so every later stop/abort attempt on that shot silently
+        no-op'd forever, including a manual retry and the protected-deadline
+        timeout's own safety-net abort. active_shot would never clear and
+        Brew would never re-enable, with no way out short of reloading the
+        integration to force the stuck BLE connection to release."""
+        await self.start_shot()
+        await self.wait_for_extracting()
+        self.hass.services.fail_next_call()
+
+        with self.assertRaises(HomeAssistantError):
+            await self.runtime.async_abort()
+        self.assertEqual(self.runtime.status, ShotPhase.STOP_ERROR.value)
+        self.assertFalse(self.runtime.active_shot.stop_triggered)
+
+        await self.runtime.async_abort()  # retry - must actually press, not no-op
+
+        # async_abort presses, settles (3s), and finalizes all within the one
+        # call - so by the time it returns the shot is fully wrapped up.
+        self.assertEqual(self.runtime.status, ShotPhase.ABORTED.value)
+        self.assertIsNone(self.runtime.active_shot)
+
 
 class InstantTapTests(RuntimeTestCase):
     async def test_ensure_quick_stop_press_reprograms_when_not_already_ready(self):

@@ -890,13 +890,30 @@ class BaristaRuntime:
         return time.monotonic() - shot.press_monotonic
 
     async def _async_press_stop(self, shot: ActiveShot, verb: str) -> None:
-        """Press the brew Bot to stop/abort the shot, or set STOP_ERROR and raise."""
+        """Press the brew Bot to stop/abort the shot, or set STOP_ERROR and raise.
+
+        Resets stop_triggered back to False on failure: both callers set it
+        to True *before* attempting the press, to stop a second concurrent
+        caller from also pressing - but left True after a failed press, it
+        permanently blocks every future stop/abort attempt for this shot
+        (including the protected-deadline timeout's own safety-net abort),
+        since they all guard on "if shot.stop_triggered: return". A
+        transient BLE failure (e.g. BleakOutOfConnectionSlotsError) would
+        otherwise leave the shot stuck in STOP_ERROR forever - active_shot
+        never clears, Brew never re-enables, and even clicking Abort again
+        silently no-ops - with no way out short of reloading the integration.
+        _actuation_lock (held by both callers for the whole call) still
+        prevents a real concurrent double-press: nothing can observe
+        stop_triggered as False again until this method has already returned
+        and the lock has been released.
+        """
         try:
             await self._async_ensure_quick_stop_press(shot)
             await self._async_press_brew_bot()
         except Exception as err:
             _LOGGER.exception("Failed to press brew Bot while trying to %s the shot", verb)
             self._set_phase(ShotPhase.STOP_ERROR)
+            shot.stop_triggered = False
             raise HomeAssistantError(f"Failed to {verb} shot: {err}") from err
 
     async def async_stop_at_target(self) -> None:
