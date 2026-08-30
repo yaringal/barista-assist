@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.13
+
+### Fixed
+
+- **Regression in 0.2.12: a SwitchBot Bot connection that just needed a second attempt now failed permanently on the first one.** 0.2.12 fixed a multi-minute stall (see its own changelog entry below) by removing all retrying of a failed connect step - but live testing then showed a *different*, real regression: a connection that's genuinely just transient/marginal rather than truly unavailable, which 0.2.10 would sometimes recover on a second or third attempt, now failed outright every time. Settled on retrying the whole connect-and-configure sequence exactly **once** (two total attempts) - enough to recover a transient case, without reproducing the multi-attempt stall a truly unrecoverable one caused. Worst case for a genuinely unrecoverable failure is now ~2×36s ≈ 72s (was ~36s after 0.2.12's fix, ~108s before it).
+
+### Testing
+
+- Added regression tests proving a hard connect failure is retried exactly once (not zero, not three-plus) and that a connect failure followed by success recovers, plus kept the existing test proving a post-connect disconnect still gets exactly one retry.
+- Full suite: 89 tests, all passing.
+
 ## 0.2.12
 
 ### Fixed

@@ -137,16 +137,26 @@ class RetryOnTransientDisconnectTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(attempted_clients), 2)  # first attempt failed, second succeeded
 
-    async def test_a_hard_connect_failure_is_not_retried(self) -> None:
-        """Regression test: a real install got stuck for a long time with
-        the brew Bot completely unresponsive after establish_connection()
-        itself failed outright (BleakOutOfConnectionSlotsError - the adapter
-        genuinely had no free connection slot). establish_connection()
-        already retries internally and its own attempt count can already
-        reach the high single digits on real hardware; retrying the whole
-        connect step again on top of that (as an earlier version of this
-        method did) multiplies an already-slow, often unrecoverable failure
-        several times over instead of just failing promptly."""
+    async def test_a_hard_connect_failure_is_retried_exactly_once(self) -> None:
+        """Regression test with two contradictory failure modes to balance:
+
+        (1) A real install got stuck for a long time with the brew Bot
+        completely unresponsive after establish_connection() failed outright
+        (BleakOutOfConnectionSlotsError). establish_connection() already
+        retries internally and its own attempt count can reach the high
+        single digits on real hardware; retrying the whole connect step
+        3 more times on top of that (0.2.10's behavior) multiplies an
+        already-slow, often unrecoverable failure several times over.
+
+        (2) But retrying the connect step zero times (this method's very
+        next fix) turned out to regress a *different*, real, working case:
+        a connection that's genuinely just transient/marginal rather than
+        truly unavailable - 0.2.10 would sometimes succeed on a second or
+        third attempt where connecting only once failed outright.
+
+        One retry (two total attempts) is the balance: enough to recover the
+        transient case, bounded enough not to reproduce the multi-minute
+        stall."""
         connect_attempts = 0
 
         async def failing_establish_connection(*_args, **_kwargs):
@@ -172,7 +182,49 @@ class RetryOnTransientDisconnectTests(unittest.IsolatedAsyncioTestCase):
                     configurator.async_set_long_press_duration(0), timeout=5
                 )
 
-        self.assertEqual(connect_attempts, 1)
+        self.assertEqual(connect_attempts, 2)  # retried once, then stopped - not 1, not 3+
+
+    async def test_a_connect_failure_followed_by_success_recovers(self) -> None:
+        """The actual scenario this balance is meant to recover: the first
+        connect attempt fails (transient/marginal contention), the second
+        succeeds - matching what 0.2.10 apparently relied on."""
+        attempted_clients: list[FakeBleClient] = []
+        connect_attempts = 0
+
+        async def flaky_establish_connection(*_args, **_kwargs):
+            nonlocal connect_attempts
+            connect_attempts += 1
+            if connect_attempts == 1:
+                raise sys.modules["bleak.exc"].BleakError("out of connection slots")
+            client = FakeBleClient()
+            attempted_clients.append(client)
+            return client
+
+        configurator = switchbot.SwitchBotBotConfigurator(
+            ha_stubs.sys.modules["homeassistant.core"].HomeAssistant(),
+            "AA:BB:CC:DD:EE:FF",
+        )
+
+        with (
+            patch.object(
+                switchbot.bluetooth,
+                "async_ble_device_from_address",
+                return_value=SimpleNamespace(name="Test Bot"),
+            ),
+            patch.object(switchbot, "establish_connection", flaky_establish_connection),
+        ):
+            task = asyncio.ensure_future(configurator.async_set_long_press_duration(0))
+
+            async def _wait_for_notify_registration() -> None:
+                while not attempted_clients or attempted_clients[-1].notify_callback is None:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_wait_for_notify_registration(), timeout=5)
+            response = bytes([switchbot_protocol.STATUS_OK])
+            attempted_clients[-1].notify_callback(None, bytearray(response))
+            await asyncio.wait_for(task, timeout=5)
+
+        self.assertEqual(connect_attempts, 2)
 
 
 if __name__ == "__main__":

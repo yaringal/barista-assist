@@ -54,20 +54,24 @@ class SwitchBotBotConfigurator:
     async def async_set_long_press_duration(self, seconds: int) -> None:
         """Set the stored Bot long-press duration and require device confirmation.
 
-        A BLE peripheral is free to drop the link at any point, including
-        right after connecting but before the first GATT operation lands
-        (observed live as `BleakDBusError: [org.bluez.Error.NotConnected]`
-        from start_notify immediately after establish_connection succeeded).
-        If that happens, reconnect and retry the GATT sequence exactly once -
-        but deliberately not the connect step itself: establish_connection()
-        already retries internally (its own attempt count can already reach
-        the high single digits on real hardware), so wrapping the whole
-        method in another retry would multiply an already-slow, and
-        sometimes genuinely unrecoverable (e.g. the adapter is simply out of
-        connection slots), failure by several times over - observed live as
-        the brew button becoming unresponsive for a long time. Retrying is
-        only worth it for the narrow case where the connection itself
-        succeeded and then dropped.
+        Retries the whole connect-and-configure sequence exactly once on any
+        BleakError - covering both a peripheral dropping the link right after
+        connecting but before the first GATT operation lands (observed live
+        as `BleakDBusError: [org.bluez.Error.NotConnected]`), and
+        establish_connection() itself failing outright (e.g.
+        BleakOutOfConnectionSlotsError). A single extra attempt recovers a
+        connection that's genuinely just transient/marginal rather than truly
+        unavailable - live testing showed the previous version of this
+        method (0.2.10), despite the bug below, would sometimes succeed on a
+        second or third attempt where connecting only once would have failed
+        outright. But retrying more than once risks the opposite problem
+        also seen live: establish_connection() already retries internally
+        (its own attempt count can reach the high single digits on real
+        hardware), so multiplying that by 3 attempts here made an
+        already-slow, sometimes genuinely unrecoverable failure (the adapter
+        really is out of connection slots) take 3x as long, observed as the
+        brew button becoming completely unresponsive. One extra attempt is
+        the balance between those two failure modes.
         """
         device = bluetooth.async_ble_device_from_address(
             self.hass, self.address, connectable=True
@@ -77,6 +81,18 @@ class SwitchBotBotConfigurator:
                 "The brew SwitchBot is not currently reachable through Home Assistant Bluetooth"
             )
 
+        try:
+            await self._async_connect_and_configure(device, seconds)
+        except BleakError as err:
+            _LOGGER.debug(
+                "First attempt to program SwitchBot Bot %s failed (%s) - retrying once",
+                self.address,
+                err,
+            )
+            await self._async_connect_and_configure(device, seconds)
+        _LOGGER.debug("SwitchBot Bot %s long-press duration set to %ss", self.address, seconds)
+
+    async def _async_connect_and_configure(self, device: Any, seconds: int) -> None:
         _LOGGER.debug("Connecting to SwitchBot Bot %s", self.address)
         client = await establish_connection(
             BleakClientWithServiceCache,
@@ -84,23 +100,7 @@ class SwitchBotBotConfigurator:
             device.name or "SwitchBot Bot",
             max_attempts=3,
         )
-        try:
-            await self._async_configure(client, seconds)
-        except BleakError as err:
-            _LOGGER.debug(
-                "SwitchBot Bot %s dropped the link after connecting (%s) - "
-                "reconnecting once",
-                self.address,
-                err,
-            )
-            client = await establish_connection(
-                BleakClientWithServiceCache,
-                device,
-                device.name or "SwitchBot Bot",
-                max_attempts=3,
-            )
-            await self._async_configure(client, seconds)
-        _LOGGER.debug("SwitchBot Bot %s long-press duration set to %ss", self.address, seconds)
+        await self._async_configure(client, seconds)
 
     async def _async_configure(self, client: BleakClientWithServiceCache, seconds: int) -> None:
         response_event = asyncio.Event()
