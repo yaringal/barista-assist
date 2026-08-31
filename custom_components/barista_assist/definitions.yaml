@@ -14,11 +14,14 @@ defaults:
     temperature_offset_c: 0
     preinfusion_s: 7
   controller:
-    stop_compensation_g: 1.5
+    early_stop_margin_min_g: 1.5
+    early_stop_margin_max_g: 20.0
     safety_margin_s: 3
     machine_max_shot_s: 50
     machine_pi_s: 8.0
     adapt_pi: true
+    stop_latency_normal_s: 3.4
+    stop_latency_elevated_s: 4.3
   new_bag:
     starting_mass_g: 250.0
 
@@ -29,7 +32,7 @@ entities:
       field: status
       translation_key: status
       token: __STATUS__
-      attributes: [scale_connected, selected_slot, stop_compensation_g, shot_plot]
+      attributes: [scale_connected, selected_slot, early_stop_margin_min_g, early_stop_margin_max_g, stop_latency_normal_s, stop_latency_elevated_s, shot_plot]
 
     scale_weight:
       source: scale
@@ -159,14 +162,25 @@ entities:
       mode: box
       requires_bag: true
 
-    stop_compensation:
+    early_stop_margin_min:
       source: controller
-      field: stop_compensation_g
-      translation_key: stop_compensation
-      token: __STOP_COMPENSATION__
+      field: early_stop_margin_min_g
+      translation_key: early_stop_margin_min
+      token: __EARLY_STOP_MARGIN_MIN__
       min: 0.0
-      max: 8.0
+      max: 15.0
       step: 0.1
+      unit: g
+      mode: box
+
+    early_stop_margin_max:
+      source: controller
+      field: early_stop_margin_max_g
+      translation_key: early_stop_margin_max
+      token: __EARLY_STOP_MARGIN_MAX__
+      min: 2.0
+      max: 60.0
+      step: 0.5
       unit: g
       mode: box
 

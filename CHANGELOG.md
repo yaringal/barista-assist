@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.22
+
+### Added
+
+- **A new "Shots" dashboard view lists every stored shot, most recent first.** Click a row to expand it into full recipe/result details and a weight/flow graph of that shot's own raw samples. Each row has a delete button (with a confirmation prompt); deleting a shot also removes its raw samples and updates that bag's estimated remaining beans accordingly. The shot currently brewing can't be deleted.
+- **Automatic stop now projects a margin from the shot's own live flow rate, not just a flat number.** Barista Assist still stops once weight reaches `target yield - margin`, but the margin is now the larger of your calibrated "Minimum early stop margin" or a live projection (current smoothed flow rate × an estimated stop latency), clipped to a separately-tunable "Maximum early stop margin". A real shot had overshot from 36g to 47.9g because flow was still accelerating when a flat margin fired - the live projection catches that by raising the margin (never lowering it below your calibrated minimum) once flow runs unusually fast. See the README's "Adaptive stop margin" section for the full design, including the earlier, rejected approaches (deriving latency from the margin setting itself; extrapolating flow acceleration) and why each regressed a real recorded shot.
+- **The stop-latency estimate behind that projection is learned from your own machine's shots, not fixed.** It's split into two independently-learned values - one for shots flowing at a normal rate at the moment of the stop decision, one for shots flowing faster - since a shot's own flow rate at that moment predicts almost perfectly how much extra latency it needs (correlation 0.97 across 5 real recorded shots). Each nudges a small step toward what a newly-completed shot on its own side actually needed, so no single unusual shot swings either estimate far, and it keeps improving with real usage rather than being a one-time fit.
+
+### Changed
+
+- **"Stop compensation" is renamed "Minimum early stop margin", and its previous hardcoded 3x ceiling is now its own independently-tunable "Maximum early stop margin" setting** (System view → Connection and control), rather than a fixed multiple of the minimum - raising one no longer silently changes the other. Renaming the underlying entity means Home Assistant creates it fresh on upgrade; your previously-calibrated value carries over automatically (a legacy-key fallback reads the old stored value), but the old `number.barista_assist_stop_compensation` entity is left behind, unavailable, in the entity registry - safe to delete once you've confirmed the new "Minimum early stop margin" entity shows the right value.
+
+### Docs
+
+- Updated the README's "Adaptive stop margin" section and DESIGN.md's dynamic-stop-margin notes for the two-bucket latency model and the independent minimum/maximum settings, replacing the earlier single-latency/3x-ceiling description.
+
+### Testing
+
+- Added tests for the two-bucket learned latency (including bucket isolation - learning from an elevated-flow shot doesn't touch the normal-flow estimate, and vice versa) and the independent minimum/maximum margin settings.
+- Full suite: 170 tests, all passing (up from 141).
+
 ## 0.2.21
 
 ### Changed

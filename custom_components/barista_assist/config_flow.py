@@ -65,7 +65,7 @@ def _settings_schema(
     them (there's no dashboard yet to edit them on), but the options flow no
     longer does - those two are dashboard-editable number entities now (see
     BaristaRuntime.machine_max_shot_s/safety_margin_s), the same as
-    stop_compensation_g, so editing them here would just be a second,
+    early_stop_margin_min_g, so editing them here would just be a second,
     disconnected copy of the same setting.
     """
     defaults = defaults or {}

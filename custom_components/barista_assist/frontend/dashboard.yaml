@@ -287,8 +287,10 @@ views:
                 name: Status
               - entity: __SCALE_BATTERY__
                 name: Scale battery
-              - entity: __STOP_COMPENSATION__
-                name: Stop compensation
+              - entity: __EARLY_STOP_MARGIN_MIN__
+                name: Minimum early stop margin (stop at weight = target yield - margin)
+              - entity: __EARLY_STOP_MARGIN_MAX__
+                name: Maximum early stop margin (stop at weight = target yield - margin)
               - entity: __MACHINE_MAX_SHOT_SECONDS__
                 name: Machine max shot duration
               - entity: __SAFETY_MARGIN_SECONDS__

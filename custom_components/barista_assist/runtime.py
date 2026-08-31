@@ -50,6 +50,79 @@ _BOT_PRESS_LOCK_TIMEOUT_S = 2.0
 # samples a shot has - keeps the `shot_plot` attribute payload bounded for an
 # unusually long shot instead of growing without limit.
 _SHOT_PLOT_MAX_POINTS = 300
+# How far back _smoothed_flow_g_s averages when projecting the live stop
+# margin - matches flow_analysis.SMOOTHING_WINDOW_MS so "how fast is this
+# shot flowing right now" means the same thing during the shot as it does in
+# the post-shot analysis, rather than reacting to one noisy single reading.
+_STOP_MARGIN_FLOW_WINDOW_MS = 500
+# BaristaRuntime.stop_latency_normal_s/stop_latency_elevated_s (a rough
+# estimate of the physical latency between the stop decision and the pour
+# actually stopping - BLE press + pump stop + drip settle - multiplied by
+# the shot's own live flow rate to get the adaptive component of the stop
+# margin) are persisted, learned values, not fixed constants - see
+# _update_learned_stop_latency. Earlier, simpler versions kept failing:
+# a single global latency derived from early_stop_margin_min_g itself implied
+# a physically impossible ~6.4s latency and regressed a real good shot; a
+# single global latency learned from every completed shot worked, but a
+# fast/channeling shot's flow doesn't hold roughly constant through the
+# latency window the model assumes (a real one kept accelerating for ~2s
+# past its own decision point), so mixing it into one shared average risked
+# dragging the estimate past the point where early_stop_margin_min_g's floor
+# stops protecting an ordinary shot.
+#
+# Checked against real recorded shots, though, the "atypical shot" framing
+# was the wrong cut: a shot's own flow rate at the decision moment predicts
+# how much extra latency it actually needs almost perfectly (correlation
+# 0.97 between flow-at-decision and tail grams across 5 real shots) - a
+# shot flowing at 5 g/s isn't a different *kind* of shot needing to be
+# excluded, it's a normal point on a continuum that just needs a bigger
+# latency estimate. So instead of one shared value (or excluding shots by
+# classification, which papers over the same problem instead of modeling
+# it), there are two: stop_latency_normal_s calibrates from shots at or
+# below _STOP_LATENCY_BUCKET_CUTOFF_G_S, stop_latency_elevated_s from
+# shots above it - each still just a small-step online average (predictive
+# flow-based stop-by-weight is an established technique - see La Marzocco/
+# Acaia's Connected Scale and the open-source Gaggiuino project - and
+# online/incremental calibration from real usage, rather than batch-fitting
+# a global constant from a handful of examples, is the standard way these
+# systems are actually calibrated), just one per regime instead of one
+# global compromise between them. Seed values (defaults.controller.
+# stop_latency_normal_s/stop_latency_elevated_s in definitions.yaml, 3.4s
+# and 4.3s) are themselves the average observed latency of the real shots
+# on each side of the cutoff - reasonable starting points, not uniquely
+# correct ones; a continuous flow->latency regression (fitting a slope
+# instead of two buckets) is a more principled destination once there's
+# enough real data across the flow range to trust a fitted slope rather
+# than the ~5 points available today.
+_STOP_LATENCY_LEARNING_RATE = 0.15
+# Sane physical bounds on either learned latency, regardless of what any one
+# shot's observation implies - so one anomalous shot (a stuck BLE
+# connection, a channeling burst) can only nudge its bucket's estimate,
+# never send it somewhere absurd in a single step.
+_STOP_LATENCY_MIN_S = 0.5
+_STOP_LATENCY_MAX_S = 8.0
+# The flow rate (at the stop decision, for learning; live, for the margin
+# projection) that separates the "normal" and "elevated" latency buckets -
+# see the comment above stop_latency_normal_s/stop_latency_elevated_s. Falls
+# in the real gap between our normal-shot flow rates (~2.0-2.4 g/s) and our
+# elevated ones (~3.6-5.1 g/s); revisit once more real shots exist across a
+# wider range.
+_STOP_LATENCY_BUCKET_CUTOFF_G_S = 3.0
+# Flow must be at least this fast at the stop decision for that shot's
+# observed latency ((final_weight - weight_at_decision) / flow_at_decision)
+# to be numerically meaningful - dividing by a near-zero flow rate would
+# produce a wildly unstable "observed latency" from essentially no signal,
+# and feed noise into the learned estimate.
+_MIN_FLOW_FOR_LATENCY_LEARNING_G_S = 0.5
+# How much longer than the larger of the two learned latencies to keep
+# recording samples and hold the shot open after a stop/abort press lands,
+# before finalizing and recording actual_yield_g as whatever the last
+# sample says. Needs real headroom above both, or the very shots used to
+# learn them would have their own tail cut off before the pour was actually
+# done - under-recording actual_yield_g and corrupting the observation used
+# to learn stop_latency_normal_s/stop_latency_elevated_s in the first place.
+_SETTLE_BUFFER_S = 2.0
+_MIN_SETTLE_S = 4.0
 
 
 class ShotPhase(str, Enum):
@@ -102,7 +175,7 @@ class ActiveShot:
     started_at: str
     started_monotonic: float
     target_yield_g: float
-    stop_compensation_g: float
+    early_stop_margin_min_g: float
     preinfusion_s: float
     samples: list[ShotSample]
     # Set once the initial brew Bot press actually lands (see async_brew).
@@ -147,13 +220,18 @@ class BaristaRuntime:
 
         defaults = self.definitions.defaults
         self.selected_slot = self.definitions.slots[0]
-        self.stop_compensation_g = float(
-            defaults["controller"]["stop_compensation_g"]
+        self.early_stop_margin_min_g = float(
+            defaults["controller"]["early_stop_margin_min_g"]
+        )
+        self.early_stop_margin_max_g = float(
+            defaults["controller"]["early_stop_margin_max_g"]
         )
         self.adapt_pi = bool(defaults["controller"]["adapt_pi"])
         self.machine_pi_s = float(defaults["controller"]["machine_pi_s"])
         self.machine_max_shot_s = float(defaults["controller"]["machine_max_shot_s"])
         self.safety_margin_s = float(defaults["controller"]["safety_margin_s"])
+        self.stop_latency_normal_s = float(defaults["controller"]["stop_latency_normal_s"])
+        self.stop_latency_elevated_s = float(defaults["controller"]["stop_latency_elevated_s"])
         self.draft = BagDraft(
             roast_date=date.today(),
             starting_mass_g=float(defaults["new_bag"]["starting_mass_g"]),
@@ -234,15 +312,30 @@ class BaristaRuntime:
         if selected in self.definitions.slots:
             self.selected_slot = selected
 
+        # legacy_stop/legacy_stop_state chain: this setting has been renamed
+        # twice now (originally the config-flow option
+        # "stop_compensation_grams", then the dashboard-editable state key
+        # "stop_compensation_g", now "early_stop_margin_min_g") - each older
+        # key is checked as a fallback, in order, so a real installation's
+        # already-calibrated value (this project's own dev install has it set
+        # to 8.0) carries forward instead of silently resetting to the
+        # definitions.yaml default on the first load after the rename.
         legacy_stop = self.entry.options.get(
             "stop_compensation_grams",
             self.entry.data.get(
                 "stop_compensation_grams",
-                self.definitions.defaults["controller"]["stop_compensation_g"],
+                self.definitions.defaults["controller"]["early_stop_margin_min_g"],
             ),
         )
-        self.stop_compensation_g = float(
-            state.get("stop_compensation_g", legacy_stop)
+        legacy_stop_state = state.get("stop_compensation_g", legacy_stop)
+        self.early_stop_margin_min_g = float(
+            state.get("early_stop_margin_min_g", legacy_stop_state)
+        )
+        self.early_stop_margin_max_g = float(
+            state.get(
+                "early_stop_margin_max_g",
+                self.definitions.defaults["controller"]["early_stop_margin_max_g"],
+            )
         )
         self.adapt_pi = bool(
             state.get("adapt_pi", self.definitions.defaults["controller"]["adapt_pi"])
@@ -251,8 +344,8 @@ class BaristaRuntime:
             state.get("machine_pi_s", self.definitions.defaults["controller"]["machine_pi_s"])
         )
         # machine_max_shot_s/safety_margin_s used to live only in entry.options
-        # (config-flow-managed) - now dashboard-editable like stop_compensation_g,
-        # seeded once from whatever was last saved there.
+        # (config-flow-managed) - now dashboard-editable like
+        # early_stop_margin_min_g, seeded once from whatever was last saved there.
         legacy_machine_max_shot_s = self.entry.options.get(
             CONF_MACHINE_MAX_SHOT_SECONDS,
             self.definitions.defaults["controller"]["machine_max_shot_s"],
@@ -265,6 +358,18 @@ class BaristaRuntime:
         )
         self.safety_margin_s = float(
             state.get("safety_margin_s", legacy_safety_margin_s)
+        )
+        self.stop_latency_normal_s = float(
+            state.get(
+                "stop_latency_normal_s",
+                self.definitions.defaults["controller"]["stop_latency_normal_s"],
+            )
+        )
+        self.stop_latency_elevated_s = float(
+            state.get(
+                "stop_latency_elevated_s",
+                self.definitions.defaults["controller"]["stop_latency_elevated_s"],
+            )
         )
         await self._async_save_state()
         await self.async_refresh_cache()
@@ -283,11 +388,14 @@ class BaristaRuntime:
         await self.store.async_save(
             {
                 "selected_slot": self.selected_slot,
-                "stop_compensation_g": self.stop_compensation_g,
+                "early_stop_margin_min_g": self.early_stop_margin_min_g,
+                "early_stop_margin_max_g": self.early_stop_margin_max_g,
                 "adapt_pi": self.adapt_pi,
                 "machine_pi_s": self.machine_pi_s,
                 "machine_max_shot_s": self.machine_max_shot_s,
                 "safety_margin_s": self.safety_margin_s,
+                "stop_latency_normal_s": self.stop_latency_normal_s,
+                "stop_latency_elevated_s": self.stop_latency_elevated_s,
                 "safe_shot_deadline_s": self.safe_shot_deadline_s,
             }
         )
@@ -358,8 +466,14 @@ class BaristaRuntime:
                 value = self.scale_connected
             elif attribute == "selected_slot":
                 value = self.selected_slot
-            elif attribute == "stop_compensation_g":
-                value = self.stop_compensation_g
+            elif attribute == "early_stop_margin_min_g":
+                value = self.early_stop_margin_min_g
+            elif attribute == "early_stop_margin_max_g":
+                value = self.early_stop_margin_max_g
+            elif attribute == "stop_latency_normal_s":
+                value = round(self.stop_latency_normal_s, 2)
+            elif attribute == "stop_latency_elevated_s":
+                value = round(self.stop_latency_elevated_s, 2)
             elif attribute == "shot_plot":
                 value = self._shot_plot_points()
             elif attribute == "bag_id":
@@ -408,8 +522,13 @@ class BaristaRuntime:
             if field == "selected_slot":
                 await self.async_select_slot(str(value))
                 return
-            if field == "stop_compensation_g":
-                self.stop_compensation_g = float(value)
+            if field == "early_stop_margin_min_g":
+                self.early_stop_margin_min_g = float(value)
+                await self._async_save_state()
+                self._notify(force=True)
+                return
+            if field == "early_stop_margin_max_g":
+                self.early_stop_margin_max_g = float(value)
                 await self._async_save_state()
                 self._notify(force=True)
                 return
@@ -599,6 +718,134 @@ class BaristaRuntime:
             )
         self._notify(force=True)
 
+    @staticmethod
+    def _smoothed_flow_g_s(samples: list[ShotSample], window_ms: int) -> float:
+        """Average flow_g_s (as reported by the scale itself) over the
+        trailing window_ms of samples - smooths out single-reading noise
+        without needing to numerically differentiate weight ourselves."""
+        if not samples:
+            return 0.0
+        cutoff = samples[-1].elapsed_ms - window_ms
+        recent: list[float] = []
+        for sample in reversed(samples):
+            if sample.elapsed_ms < cutoff:
+                break
+            recent.append(sample.flow_g_s)  # always >= 1 entry: the last sample itself
+        return sum(recent) / len(recent)
+
+    def _effective_stop_margin_g(self, shot: ActiveShot) -> float:
+        """Live flow-projected stop margin - early_stop_margin_min_g's floor,
+        raised when the shot's current flow rate implies more will land
+        during the physical stop latency than that floor alone budgets for.
+
+        Basically flow_now (eg 2 or 4g/s) * whichever learned latency bucket
+        flow_now falls into (stop_latency_normal_s below
+        _STOP_LATENCY_BUCKET_CUTOFF_G_S, stop_latency_elevated_s at or above
+        it - see that constant's own comment for why two buckets instead of
+        one shared value), clipped between early_stop_margin_min_g (the
+        floor) and early_stop_margin_max_g (an explicit, independently-
+        tunable cap - not a multiple of the floor, so raising the floor for a
+        conservative baseline doesn't also silently raise how early a fast
+        shot can be cut off, and vice versa).
+
+        An earlier version derived an "implied latency" as
+        early_stop_margin_min_g / flow_analysis._EXPECTED_FLOW_G_S (a
+        generic, cross-installation placeholder, not this bag's or this
+        machine's actual typical flow rate) and multiplied that latency by
+        live flow outright, replacing early_stop_margin_min_g entirely. For a
+        real installation calibrated well above that generic reference, this
+        implied a latency of 6.4s - physically absurd for a BLE press + pump
+        stop - and triggered a real "good" shot's stop 6g/17% early with no
+        actual problem to react to: a clear regression, not an improvement.
+
+        Instead, early_stop_margin_min_g is always the floor (identical to
+        pre-adaptive behavior at any normal flow rate - this can only ever
+        raise the margin, never shrink it below what's already trusted), and
+        the latency multiplied against live flow is a small, persisted,
+        per-installation estimate that's *learned* from real completed shots
+        (see _update_learned_stop_latency) rather than a fixed guess.
+        """
+        flow_now = max(
+            0.0, self._smoothed_flow_g_s(shot.samples, _STOP_MARGIN_FLOW_WINDOW_MS)
+        )
+        latency_s = (
+            self.stop_latency_elevated_s
+            if flow_now >= _STOP_LATENCY_BUCKET_CUTOFF_G_S
+            else self.stop_latency_normal_s
+        )
+        projected_margin_g = flow_now * latency_s
+        floor = shot.early_stop_margin_min_g
+        ceiling = self.early_stop_margin_max_g
+        return min(ceiling, max(floor, projected_margin_g))
+
+    def _update_learned_stop_latency(self, shot: ActiveShot, final_weight: float) -> None:
+        """Nudge whichever latency bucket this shot's own flow rate falls
+        into (stop_latency_normal_s or stop_latency_elevated_s - see
+        _STOP_LATENCY_BUCKET_CUTOFF_G_S's comment) toward what this shot's
+        own tail actually needed.
+
+        Called (see the call site in _async_finalize) for every completed
+        shot with an analyzable trace, regardless of classification -
+        unlike an earlier version, which only learned from healthy shots
+        because a fast/channeling shot's flow doesn't hold roughly constant
+        through the latency window this model assumes, and mixing its
+        "observed latency" into one shared average risked dragging a single
+        global estimate past the point where early_stop_margin_min_g's floor
+        stops protecting an ordinary shot. Splitting into two buckets by the
+        shot's own flow rate fixes that more directly than excluding shots
+        by classification did: a fast shot's own flow rate is exactly the
+        signal that tells this method which bucket it belongs to, so it
+        becomes a valid, separate data point instead of a risk to filter
+        out.
+
+        Also skipped for a shot with no recorded stop decision (nothing to
+        learn from) or where flow at that decision was too slow to divide by
+        meaningfully (_MIN_FLOW_FOR_LATENCY_LEARNING_G_S).
+        """
+        if shot.stop_command_elapsed_ms is None:
+            return
+        decision_index = None
+        for i, sample in enumerate(shot.samples):
+            if sample.elapsed_ms <= shot.stop_command_elapsed_ms:
+                decision_index = i
+            else:
+                break
+        if decision_index is None:
+            return
+        decision_sample = shot.samples[decision_index]
+        flow_at_decision = self._smoothed_flow_g_s(
+            shot.samples[: decision_index + 1], _STOP_MARGIN_FLOW_WINDOW_MS
+        )
+        if flow_at_decision < _MIN_FLOW_FOR_LATENCY_LEARNING_G_S:
+            return
+        observed_latency_s = max(
+            0.0, (final_weight - decision_sample.weight_g) / flow_at_decision
+        )
+        elevated = flow_at_decision >= _STOP_LATENCY_BUCKET_CUTOFF_G_S
+        previous = self.stop_latency_elevated_s if elevated else self.stop_latency_normal_s
+        updated = min(
+            _STOP_LATENCY_MAX_S,
+            max(
+                _STOP_LATENCY_MIN_S,
+                previous + _STOP_LATENCY_LEARNING_RATE * (observed_latency_s - previous),
+            ),
+        )
+        if elevated:
+            self.stop_latency_elevated_s = updated
+        else:
+            self.stop_latency_normal_s = updated
+        _LOGGER.info(
+            "Shot %s: observed stop latency %.2fs (tail=%.2fg at flow=%.2fg/s at "
+            "decision) -> stop_latency_%s_s %.2fs -> %.2fs",
+            shot.id,
+            observed_latency_s,
+            final_weight - decision_sample.weight_g,
+            flow_at_decision,
+            "elevated" if elevated else "normal",
+            previous,
+            updated,
+        )
+
     # -- read scale and decide if to stop shot --
     def _handle_reading(self, reading: BookooReading) -> None:
         shot = self.active_shot
@@ -619,13 +866,23 @@ class BaristaRuntime:
                     battery_percent=reading.battery_percent,
                 )
             )
-            threshold = shot.target_yield_g - shot.stop_compensation_g
+            margin_g = self._effective_stop_margin_g(shot)
+            threshold = shot.target_yield_g - margin_g
             if (
                 not shot.stop_scheduled
                 and elapsed_ms > 1000
                 and reading.weight_g >= threshold
             ):
                 shot.stop_scheduled = True
+                _LOGGER.info(
+                    "Stop scheduled at %.2fs: weight=%.2fg margin=%.2fg "
+                    "(early_stop_margin_min_g=%.2fg) threshold=%.2fg",
+                    elapsed_ms / 1000.0,
+                    reading.weight_g,
+                    margin_g,
+                    shot.early_stop_margin_min_g,
+                    threshold,
+                )
                 self.hass.async_create_task(
                     self.async_stop_at_target(), "barista_assist_target_stop"
                 )
@@ -712,7 +969,7 @@ class BaristaRuntime:
                 raise HomeAssistantError(
                     "Pre-infusion must be shorter than the protected shot window"
                 )
-            if bag.target_yield_g <= self.stop_compensation_g + 1.0:
+            if bag.target_yield_g <= self.early_stop_margin_min_g + 1.0:
                 raise HomeAssistantError("Stop compensation is too large for target yield")
 
             self._set_phase(ShotPhase.CONNECTING_SCALE)
@@ -724,7 +981,7 @@ class BaristaRuntime:
                 lambda: self.db.create_shot(
                     bag=bag,
                     started_at=started_at,
-                    stop_compensation_g=self.stop_compensation_g,
+                    stop_compensation_g=self.early_stop_margin_min_g,
                     preinfusion_s=preinfusion_s,
                     adapt_pi=self.adapt_pi,
                 )
@@ -735,7 +992,7 @@ class BaristaRuntime:
                 started_at=started_at,
                 started_monotonic=time.monotonic(),
                 target_yield_g=bag.target_yield_g,
-                stop_compensation_g=self.stop_compensation_g,
+                early_stop_margin_min_g=self.early_stop_margin_min_g,
                 preinfusion_s=preinfusion_s,
                 samples=[],
                 # With Adapt PI off, the machine runs its own pre-infusion on
@@ -966,9 +1223,17 @@ class BaristaRuntime:
         if late:
             await self.async_abort(reason=ShotPhase.TIMEOUT.value)
 
+    def _settle_seconds(self) -> float:
+        """How long to keep recording samples after a stop/abort press lands
+        before finalizing - see _SETTLE_BUFFER_S/_MIN_SETTLE_S. Sized off
+        the larger of the two learned latencies, since either bucket could
+        apply to whatever shot just finished."""
+        larger_latency = max(self.stop_latency_normal_s, self.stop_latency_elevated_s)
+        return max(_MIN_SETTLE_S, larger_latency + _SETTLE_BUFFER_S)
+
     async def _settle_then_finalize(self) -> None:
         try:
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(self._settle_seconds())
             await self._async_finalize("complete")
         except asyncio.CancelledError:
             return
@@ -984,7 +1249,7 @@ class BaristaRuntime:
             shot.stop_command_elapsed_ms = int(elapsed_s * 1000)
             if elapsed_s < self.safe_shot_deadline_s:  # don't try to stop if machine auto-termination will be within safety_margin_s
                 await self._async_press_stop(shot, "abort")
-                await asyncio.sleep(3.0)  # settle
+                await asyncio.sleep(self._settle_seconds())  # settle
                 await self._async_finalize(reason)
                 return
 
@@ -1054,6 +1319,9 @@ class BaristaRuntime:
                 shot.id,
                 analysis.invalid_reason,
             )
+        elif status == "complete" and last_weight is not None:
+            self._update_learned_stop_latency(shot, last_weight)
+            await self._async_save_state()
 
         await self.hass.async_add_executor_job(
             lambda: self.db.finalize_shot(

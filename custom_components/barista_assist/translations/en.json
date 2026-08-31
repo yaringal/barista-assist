@@ -117,8 +117,11 @@
       "preinfusion": {
         "name": "Pre-infusion"
       },
-      "stop_compensation": {
-        "name": "Stop compensation"
+      "early_stop_margin_min": {
+        "name": "Minimum early stop margin (stop at weight = target yield - margin)"
+      },
+      "early_stop_margin_max": {
+        "name": "Maximum early stop margin (stop at weight = target yield - margin)"
       },
       "machine_max_shot_seconds": {
         "name": "Machine max shot duration"

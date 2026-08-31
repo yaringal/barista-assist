@@ -15,11 +15,7 @@ Barista Assist is installed and updated as one HACS package.
 - Connects directly to a BOOKOO Themis Ultra over Home Assistant Bluetooth.
 - Records timestamped raw weight/flow/battery samples.
 - Uses a SwitchBot `switch` entity as the brew actuator, with direct BLE configuration of its stored long-press duration.
-- Programs per-bag SwitchBot long-press pre-infusion and controls automatic stop at:
-
-  `target yield - stop compensation`
-
-  reprogramming the Bot back to an instant tap once extraction begins, so the stop/abort press itself is quick.
+- Programs per-bag SwitchBot long-press pre-infusion and controls automatic stop once weight reaches `target yield - stop margin`, where the stop margin is your Minimum early stop margin setting or a live flow-rate projection (capped at your Maximum early stop margin setting), whichever is larger (see "Adaptive stop margin" below), reprogramming the Bot back to an instant tap once extraction begins, so the stop/abort press itself is quick.
 
 - Stores physical bags, recipes, shots, and raw samples in SQLite.
 - Lists every stored shot in a Shots view, each expandable into full details and a weight/flow graph, with a delete option per shot.
@@ -140,7 +136,11 @@ number.barista_assist_dose
 number.barista_assist_grind
 number.barista_assist_target_yield
 number.barista_assist_preinfusion
-number.barista_assist_stop_compensation
+number.barista_assist_early_stop_margin_min
+number.barista_assist_early_stop_margin_max
+number.barista_assist_machine_max_shot_seconds
+number.barista_assist_safety_margin_seconds
+number.barista_assist_machine_pi_seconds
 
 select.barista_assist_bean_slot
 select.barista_assist_temperature_offset
@@ -291,8 +291,7 @@ Automatic stopping is convenience logic, not a substitute for supervision or the
 
 ## Not implemented yet
 
-- **High priority: dynamic stop-time adjustment based on live flow-rate/acceleration projection during the shot**, instead of relying on the fixed `stop_compensation_g` alone. A real shot overshot from a 36g target to 47.9g because flow was still accelerating (~4 → 8.67 g/s) at the exact moment the stop threshold fired - a static compensation margin can't account for that, but projecting the flow trend forward could stop closer to target regardless of how fast flow happens to be changing at that instant.
-- adaptive/predictive tail compensation;
+- **acceleration-aware stop projection**: the adaptive stop margin (see below) projects from the *current* smoothed flow rate, not where flow is heading. Checked against the real shot that motivated the feature (36g target → 47.9g actual, flow accelerating ~4 → 8.67 g/s), the current-flow-only projection barely moves the stop point earlier at all for that specific shot - its acceleration happened *during* the stop-latency window itself, after the projection's decision point, so no amount of extrapolating the *current* rate can catch it. A first attempt at extrapolating the flow trend forward instead (projecting where flow is heading, not just where it is) was tried and rejected: checked against real shots, it badly over-fired during completely normal early-shot flow ramp-up and stopped two genuinely healthy shots several grams early - every shot's flow rises from zero at the start, and that ordinary rise isn't a danger signal the way a mid-shot acceleration is. The current-flow-only projection is still worth having on its own, for pours that are already fast/gushing before the margin is crossed (verified via `tests/fixtures/real_shots/violent_gush_machine_pi.txt`), but a trend-aware version needs either a fundamentally different shape (e.g. gated to only fire once a shot is well past its own initial ramp-up) or meaningfully more real shot history to tell normal onset apart from real danger - not just a better-tuned version of the same naive extrapolation;
 - data-driven thresholds for flow-curve diagnostics, once enough shot history exists to derive them instead of using placeholder constants;
 - automatic DF54 recommendations;
 - sensory expert rules;
@@ -401,6 +400,16 @@ The machine still has its own cutoff in this held mode - live testing confirms t
 Given that, **you must still determine your own machine's real cutoff by testing it yourself, with a real coffee puck in the portafilter, not just water** - hold the button through a full bench-test shot (see "Safety / bench test" below) and time how long it takes before the machine stops itself. Program the relevant CUP button (1-CUP or 2-CUP) on the Barista Express with that duration, then confirm it in Barista Assist. Barista Assist treats that value as a hard ceiling for its own logic: past a safety margin (3 s by default) before it, Barista Assist stops sending stop/abort button presses entirely and enters `manual_stop_required` instead, because pressing too close to when a shot would naturally end risks starting a **new** shot instead of stopping the current one. In `manual_stop_required`, Barista Assist keeps logging the shot but takes no further automatic action - treat the machine's own cutoff as a last-resort backstop, not a substitute for watching the shot, since its exact timing (and whether it behaves identically for every recipe/dose) isn't something documented publicly with full confidence.
 
 Do not use automatic brew control unless you're prepared to supervise every shot closely enough to intervene manually, and until this machine limit has been physically programmed and confirmed in the integration options.
+
+## Adaptive stop margin
+
+**Minimum early stop margin** (System view → Connection and control) is a floor rather than a flat margin applied unconditionally. There's real latency between deciding to stop and the pour actually stopping (BLE connect, the button press itself, the pump physically stopping, residual drips settling) - a fixed margin only lands close to target when the pour happens to be running at roughly the same rate it was calibrated against. A real shot overshot from a 36g target to 47.9g because flow was still accelerating (~4 → 8.67 g/s) right when the fixed margin was crossed - the same latency landed far more beverage than the margin assumed.
+
+Barista Assist now also projects a margin from the shot's own live, smoothed flow rate (an estimate of that physical stop latency × the current flow rate) and uses **whichever is larger**: your calibrated Minimum early stop margin, or the live projection - clipped so it never exceeds your **Maximum early stop margin** setting, an independent, separately-tunable cap rather than a multiple of the floor, so raising one doesn't silently change how the other behaves. At a normal pour the projection stays below your calibrated minimum, so nothing changes - this is a one-sided adjustment, it can only add extra margin on top of what you've already tuned, never shrink below it. A pour running unusually fast gets the larger, projected margin instead (stopping earlier, in grams-so-far, since more will land before the mechanical stop completes), up to the maximum you've configured.
+
+An earlier version of this instead tried to derive the physical stop latency *from* the minimum margin itself (dividing it by a generic, cross-installation reference flow rate) and let the live projection replace the flat margin entirely rather than only raise it. For an installation calibrated well above that generic reference, this implied a physically impossible ~6 second stop latency and triggered a real good shot's stop 6g/17% early with no actual problem to react to - a regression, not an improvement. The floor-based design above was adopted specifically because it's provably safe regardless of how the latency estimate is tuned: it can only help, never regress a shot that was already stopping correctly.
+
+The latency estimate itself isn't a fixed constant - it's learned continuously from your own machine's shots, and isn't a single number either. Checked against real shots, a shot's own flow rate at the stop decision predicts almost perfectly how much extra latency it needs (correlation 0.97 across 5 real shots): a fast-flowing shot's residual drip doesn't behave like a normal-paced one's, and averaging both into one shared estimate risked dragging it past the point where the floor still protects an ordinary shot. So there are two independently-learned latency estimates instead of one - a "normal" bucket for shots flowing under 3.0 g/s at the moment of the stop decision, and an "elevated" bucket for shots at or above it - each seeded from real shots on its own side of that cutoff (3.4s and 4.3s respectively) and nudged a small step toward what each newly-completed shot on its side actually needed. Predictive, flow-rate-based stop-by-weight is an established technique (La Marzocco/Acaia's Connected Scale and the open-source Gaggiuino project both do a version of it), and per-installation online calibration - a small step at a time from real outcomes, rather than a one-time batch fit from a handful of historical shots - is the standard way these systems are actually tuned in practice: a value hand-derived from just two or three shots didn't reliably generalize, since real per-shot latency (BLE timing, how a specific pour's residual drip behaves) varies more than a single number can capture. No single unusual shot can swing either estimate by much; each converges over real usage instead, bounded to [0.5s, 8s] regardless of what any one shot implies. Recording also now waits a bit longer after a stop/abort press before finalizing the shot and recording its final yield - long enough to comfortably exceed the larger of the two learned latencies, since a fixed, too-short window was previously found to cut a real shot's tail off before it had actually finished, both under-recording that shot's yield and denying the learning step above an accurate observation to work from. A shot may take a couple of seconds longer to return to "ready to brew" after stopping as a result.
 
 ## Adapt PI
 

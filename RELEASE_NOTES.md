@@ -1,23 +1,24 @@
-# Barista Assist v0.2.21
+# Barista Assist v0.2.22
 
-A real bug fix (Adapt PI's on/off meaning was backwards), a smarter shot classifier, and brew-safety settings consolidated onto the dashboard.
+A live, flow-adaptive automatic stop that learns from your own machine's shots instead of a hand-tuned constant, plus a new Shots view for reviewing and cleaning up past brews.
+
+## Added
+
+- **A new Shots view lists every stored shot**, most recent first - click one to see its full recipe/result details and a weight/flow graph, or delete it (with confirmation). Deleting a shot updates that bag's estimated remaining beans.
+- **Automatic stop now adapts to how fast a shot is actually pouring.** It still stops at `target yield - margin`, but the margin is now the larger of your calibrated minimum or a live projection from the shot's own current flow rate, capped at a separately-tunable maximum - so a fast-running shot gets stopped earlier (in grams-so-far) instead of overshooting the way a flat margin could. A real shot had overshot from 36g to 47.9g this way before this change. The projection's underlying stop-latency estimate is learned from your own shots (split into two buckets, for normal and fast-flowing shots, since a shot's own flow rate turns out to predict almost perfectly how much extra latency it needs), not a fixed number - see the README's "Adaptive stop margin" section for the full design.
 
 ## Changed
 
-- **Adapt PI's on/off meaning was backwards and has been corrected.** Enabled (the default) now means the app holds the button for your bag's own Pre-infusion setting, exactly as its name always implied; disabled means the machine's own built-in pre-infusion runs instead. This is the reverse of the previous release's behavior - a real hardware-affecting bug, not just a naming change - so double-check which mode you want after upgrading.
-- **The machine's own pre-infusion duration is no longer assumed to be a fixed 8 seconds.** With Adapt PI off, a new "Machine pre-infusion" setting (shown on the dashboard) lets you tell Barista Assist what your machine is actually programmed with.
-- **Shot records now log the pre-infusion duration that actually ran**, not always the bag's recipe value - "Copy all shot data" reflects the true number either way.
-- **"Barista Express programmed maximum shot duration" and "Stop safety margin" moved from Settings to the dashboard**, next to Stop compensation. Your existing values carry over automatically; Settings now only asks you to confirm the machine limit.
-
-## Fixed
-
-- Three shot-classification bugs, each traced back to a real recorded shot that came back with an obviously wrong result: a healthy shot flagged invalid because of one noisy scale reading, a normal shot flagged invalid because of a stale leftover scale packet, and a fast, splashy shot flagged as too-restrictive because a single scale bounce truncated the data before the pour's real outcome was recorded. All three now classify correctly.
+- **"Stop compensation" is now two settings: "Minimum early stop margin" and "Maximum early stop margin"**, both on the System view's "Connection and control" card. The maximum used to be a fixed 3x multiple of the minimum; it's now independently tunable. Your existing calibrated value carries over automatically under the new name.
 
 ## Docs
 
-- Corrected the README's Adapt PI section for the fix above.
-- Noted a real overshoot (36g target, 47.9g actual) as the motivation for a future dynamic stop-time improvement - not implemented yet, just documented.
+- Updated the README's "Adaptive stop margin" section and DESIGN.md for the two-bucket latency model and the independent minimum/maximum settings.
+
+## Testing
+
+- Full suite: 170 tests, all passing (up from 141).
 
 ## Upgrade
 
-Includes a database migration (adds an `adapt_pi` column to the shots table) - applied automatically on first load. A full Home Assistant restart is needed to pick up this release.
+Renaming the stop-compensation setting creates its Home Assistant entity fresh; your calibrated value carries over automatically (a legacy-key fallback reads the old stored value), but the old `number.barista_assist_stop_compensation` entity is left behind, unavailable, in the entity registry - safe to delete once you've confirmed the new "Minimum early stop margin" entity shows the right value. A full Home Assistant restart is needed to pick up this release.

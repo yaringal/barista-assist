@@ -27,6 +27,7 @@ from datetime import datetime
 import json
 import shutil
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -34,6 +35,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ha_stubs  # noqa: E402
+from real_shot_fixtures import load_real_shot  # noqa: E402
 from runtime_fakes import (  # noqa: E402
     FakeBotConfigurator,
     FakeConfigEntry,
@@ -46,6 +48,7 @@ runtime_module = ha_stubs.import_runtime_module()
 BaristaRuntime = runtime_module.BaristaRuntime
 ShotPhase = runtime_module.ShotPhase
 HomeAssistantError = runtime_module.HomeAssistantError
+ShotSample = runtime_module.ShotSample
 
 from custom_components.barista_assist.const import (  # noqa: E402
     CONF_BREW_ENTITY,
@@ -113,10 +116,10 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         *,
         preinfusion_s: float = 1.0,
         target_yield_g: float = 36.0,
-        stop_compensation_g: float = 1.5,
+        early_stop_margin_min_g: float = 1.5,
     ) -> None:
         """Create and select a bag, without brewing."""
-        self.runtime.stop_compensation_g = stop_compensation_g
+        self.runtime.early_stop_margin_min_g = early_stop_margin_min_g
         await self.runtime.async_new_bag(
             {
                 "slot": self.runtime.definitions.slots[0],
@@ -131,13 +134,13 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         *,
         preinfusion_s: float = 1.0,
         target_yield_g: float = 36.0,
-        stop_compensation_g: float = 1.5,
+        early_stop_margin_min_g: float = 1.5,
     ) -> str:
         """Create a bag and brew. Real wait of about preinfusion_s + 0.2s."""
         await self.create_bag(
             preinfusion_s=preinfusion_s,
             target_yield_g=target_yield_g,
-            stop_compensation_g=stop_compensation_g,
+            early_stop_margin_min_g=early_stop_margin_min_g,
         )
         return await self.runtime.async_brew()
 
@@ -344,7 +347,7 @@ class AdaptPiTests(RuntimeTestCase):
         await asyncio.sleep(1.05)
         self.scale.push_reading(make_reading(weight_g=35.0))
         await self.hass.tasks[-1]
-        await asyncio.sleep(3.1)  # settle then finalize
+        await asyncio.sleep(self.runtime._settle_seconds() + 0.1)  # settle then finalize
 
         self.assertFalse(bool(self.runtime.last_shot["adapt_pi"]))
 
@@ -457,7 +460,7 @@ class ShotPlotPointsTests(RuntimeTestCase):
         self.scale.push_reading(make_reading(weight_g=36.0, flow_g_s=1.0))
         await self.hass.tasks[-1]
         self.assertGreater(len(self.hass.services.calls), calls_before)
-        await asyncio.sleep(3.1)  # settle then finalize
+        await asyncio.sleep(self.runtime._settle_seconds() + 0.1)  # settle then finalize
 
         self.assertIsNone(self.runtime.active_shot)
         frozen = self.runtime._shot_plot_points()
@@ -508,7 +511,9 @@ class ScaleDisconnectTests(RuntimeTestCase):
 
         self.scale.push_connection(False)
         self.assertFalse(self.runtime.scale_connected)
-        await asyncio.wait_for(self.hass.tasks[-1], timeout=5)  # the scheduled best-effort abort
+        await asyncio.wait_for(
+            self.hass.tasks[-1], timeout=self.runtime._settle_seconds() + 2
+        )  # the scheduled best-effort abort
 
         self.assertIsNone(self.runtime.active_shot)
         self.assertEqual(self.runtime.status, ShotPhase.SCALE_DISCONNECTED.value)
@@ -682,11 +687,11 @@ class BrewValidationTests(RuntimeTestCase):
             await self.runtime.async_brew()
         self.assertIsNone(self.runtime.active_shot)
 
-    async def test_rejects_brew_when_stop_compensation_too_large_for_yield(self):
-        # async_brew requires target_yield_g > stop_compensation_g + 1.0.
+    async def test_rejects_brew_when_early_stop_margin_too_large_for_yield(self):
+        # async_brew requires target_yield_g > early_stop_margin_min_g + 1.0.
         # target_yield_g must still be within its own valid range (15-80) so
         # this exercises that check specifically, not bag-creation validation.
-        await self.create_bag(target_yield_g=15.0, stop_compensation_g=14.0)
+        await self.create_bag(target_yield_g=15.0, early_stop_margin_min_g=14.0)
 
         with self.assertRaises(HomeAssistantError):
             await self.runtime.async_brew()
@@ -777,7 +782,7 @@ class SafetyTimeSettingsTests(RuntimeTestCase):
     """machine_max_shot_s/safety_margin_s used to be read-only properties
     sourced live from entry.options (config-flow-only); they're now
     dashboard-editable number entities backed by the runtime's own Store,
-    the same pattern as stop_compensation_g."""
+    the same pattern as early_stop_margin_min_g."""
 
     def _number(self, key: str):
         return next(d for d in self.runtime.definitions.platform("number") if d.key == key)
@@ -825,7 +830,7 @@ class MachinePiSettingTests(RuntimeTestCase):
     """machine_pi_s (the machine's own built-in pre-infusion duration, used
     when Adapt PI is off) must not be a hardcoded constant - it's a
     dashboard-editable number entity, the same pattern as
-    machine_max_shot_s/safety_margin_s/stop_compensation_g, since a real
+    machine_max_shot_s/safety_margin_s/early_stop_margin_min_g, since a real
     Barista Express's own default can differ or be reprogrammed."""
 
     def _number(self, key: str):
@@ -978,6 +983,276 @@ class ShotHistoryTests(RuntimeTestCase):
 
     async def test_delete_shot_returns_false_for_an_unknown_id(self):
         self.assertFalse(await self.runtime.async_delete_shot("does-not-exist"))
+
+
+class AdaptiveStopMarginTests(RuntimeTestCase):
+    """_effective_stop_margin_g replaced a flat early_stop_margin_min_g with a
+    live-flow-projected margin (see docs/DESIGN.md's dynamic stop-time note
+    and the README's "Not implemented yet" -> now-implemented entry)."""
+
+    def test_smoothed_flow_g_s_averages_the_trailing_window_only(self):
+        samples = [
+            ShotSample(0, 0, 0, 0.0, 1.0, 90),
+            ShotSample(1, 100, 100, 0.1, 2.0, 90),
+            ShotSample(2, 600, 600, 1.0, 4.0, 90),
+            ShotSample(3, 700, 700, 1.2, 6.0, 90),
+        ]
+        result = BaristaRuntime._smoothed_flow_g_s(samples, 500)
+        self.assertAlmostEqual(result, 5.0)  # only 600ms/700ms fall in the trailing 500ms
+
+    def test_smoothed_flow_g_s_of_no_samples_is_zero(self):
+        self.assertEqual(BaristaRuntime._smoothed_flow_g_s([], 500), 0.0)
+
+    async def test_margin_never_drops_below_the_floor_regardless_of_flow(self):
+        """early_stop_margin_min_g is a floor, not a reference point to scale
+        from either side - a slow or stalled pour must never get a *smaller*
+        margin than what the user already calibrated and trusts. An earlier
+        version derived an "implied latency" from early_stop_margin_min_g
+        itself and scaled the margin down at low flow, which regressed a
+        real good shot (see _effective_stop_margin_g's docstring)."""
+        await self.start_shot(early_stop_margin_min_g=1.5)
+        shot = self.runtime.active_shot
+
+        for flow_g_s in (0.0, 0.1, 0.3):  # 0.3 * stop_latency_normal_s (3.4) = 1.02g, still under the 1.5g floor
+            shot.samples = [ShotSample(0, 0, 0, 0.0, flow_g_s, 90)]
+            self.assertAlmostEqual(self.runtime._effective_stop_margin_g(shot), 1.5)
+
+    async def test_does_not_regress_a_real_good_shot_at_a_large_early_stop_margin(self):
+        """Regression test for the real bug this design replaced: deriving
+        an implied latency as early_stop_margin_min_g / flow_analysis._EXPECTED_FLOW_G_S
+        produced a physically absurd 6.4s latency for a real installation
+        calibrated with early_stop_margin_min_g=8.0 (flow_analysis._EXPECTED_FLOW_G_S
+        is a generic cross-installation placeholder, not this bag's actual
+        typical flow rate) - and would have triggered a real good shot's
+        stop at 22g instead of the recorded, correct 28g (see
+        tests/fixtures/real_shots/good_shot_adapt_pi.txt), a 6g/17% early
+        stop with no actual problem to react to."""
+        await self.start_shot(target_yield_g=36.0, early_stop_margin_min_g=8.0)
+        shot = self.runtime.active_shot
+        shot.samples.append(ShotSample(0, 0, 0, 0.0, 2.24, 90))  # this shot's real flow rate there
+
+        self.assertAlmostEqual(self.runtime._effective_stop_margin_g(shot), 8.0)
+
+    async def test_margin_grows_once_flow_times_latency_exceeds_the_floor(self):
+        await self.start_shot(early_stop_margin_min_g=1.5)
+        shot = self.runtime.active_shot
+        # stop_latency_normal_s=3.4s (flow_g_s=1.0 is below the 3.0g/s bucket
+        # cutoff): 1.0 g/s * 3.4s = 3.4g > the 1.5g floor.
+        shot.samples.append(ShotSample(0, 0, 0, 0.0, 1.0, 90))
+
+        self.assertAlmostEqual(self.runtime._effective_stop_margin_g(shot), 3.4)
+
+    async def test_margin_is_clamped_to_the_ceiling(self):
+        await self.start_shot(early_stop_margin_min_g=1.5)
+        shot = self.runtime.active_shot
+        shot.samples.append(ShotSample(0, 0, 0, 0.0, 50.0, 90))  # an extreme spike
+
+        # 50.0 g/s * stop_latency_elevated_s (4.3s) = 215g, far past the
+        # default early_stop_margin_max_g (20.0) - the ceiling wins.
+        self.assertAlmostEqual(self.runtime._effective_stop_margin_g(shot), 20.0)
+
+    async def test_ceiling_is_independent_of_the_floor(self):
+        """early_stop_margin_max_g is a standalone, explicitly-tunable
+        setting, not a multiple of early_stop_margin_min_g - raising the
+        floor for a conservative baseline must not silently raise the
+        ceiling too, and vice versa. Set a ceiling here that isn't any
+        round multiple of the floor to prove that."""
+        await self.start_shot(early_stop_margin_min_g=1.5)
+        self.runtime.early_stop_margin_max_g = 10.0
+        shot = self.runtime.active_shot
+        shot.samples.append(ShotSample(0, 0, 0, 0.0, 50.0, 90))  # an extreme spike
+
+        self.assertAlmostEqual(self.runtime._effective_stop_margin_g(shot), 10.0)
+
+    async def test_a_fast_pour_schedules_the_stop_before_the_old_flat_threshold_would_have(self):
+        """Regression scenario for the real overshoot the README describes:
+        flow running well above the expected rate must schedule the stop
+        well before weight reaches the old flat
+        target_yield_g - early_stop_margin_min_g threshold (34.5g here), not
+        only once weight catches up to it."""
+        await self.start_shot(target_yield_g=36.0, early_stop_margin_min_g=1.5)
+        await self.wait_for_extracting()
+        await asyncio.sleep(1.05)
+
+        self.scale.push_reading(make_reading(weight_g=32.0, flow_g_s=8.67))
+        await self.hass.tasks[-1]
+
+        self.assertTrue(self.runtime.active_shot.stop_scheduled)
+
+
+class StopLatencyCalibrationTests(RuntimeTestCase):
+    """stop_latency_normal_s/stop_latency_elevated_s (see the comment above
+    their definitions in runtime.py for how their seed values were derived -
+    back-solved from real "healthy" shots' own recorded tails, bucketed by
+    each shot's own flow rate, not picked from reasoning alone) are checked
+    here against real shots directly, not just synthetic values - so a
+    future change to the margin formula or either constant gets caught if it
+    stops reproducing these real, already-correct outcomes."""
+
+    def _replay_stop_trigger(self, fixture_name: str, early_stop_margin_min_g: float):
+        """Feed a real fixture's samples through the live margin formula one
+        at a time, exactly as _handle_reading would during a real shot, and
+        return (elapsed_ms, weight_g) at the point it would have triggered."""
+        shot_data = load_real_shot(fixture_name)
+        fake_shot = types.SimpleNamespace(
+            early_stop_margin_min_g=early_stop_margin_min_g, samples=[]
+        )
+        for sample in shot_data.samples:
+            fake_shot.samples.append(sample)
+            if sample.elapsed_ms <= 1000:
+                continue
+            margin = self.runtime._effective_stop_margin_g(fake_shot)
+            if sample.weight_g >= shot_data.target_yield_g - margin:
+                return (sample.elapsed_ms, sample.weight_g)
+        return None
+
+    async def test_reproduces_a_real_good_shot_s_exact_recorded_stop_point(self):
+        trigger = self._replay_stop_trigger("good_shot_adapt_pi", early_stop_margin_min_g=8.0)
+        self.assertEqual(trigger, (27789, 28.0))
+
+    async def test_reproduces_another_real_good_shot_s_exact_recorded_stop_point(self):
+        """This shot's own flow at the decision point falls into the
+        elevated bucket, so it triggers earlier/lower than a single shared
+        latency would have (see stop_latency_elevated_s's comment) - 24.2g
+        here rather than the flat-threshold-adjacent 28.0g the normal bucket
+        alone would give."""
+        trigger = self._replay_stop_trigger(
+            "good_but_flagged_machine_pi", early_stop_margin_min_g=8.0
+        )
+        self.assertEqual(trigger, (19185, 24.2))
+
+    async def test_still_triggers_meaningfully_earlier_for_the_flagship_overshoot_shot(self):
+        """Not an exact-reproduction case (that shot's real recorded stop
+        point was itself part of the problem this feature exists to fix) -
+        just confirms the calibrated latencies still provide a real,
+        substantial improvement for it, not just for the two clean shots
+        above."""
+        trigger = self._replay_stop_trigger("too_fast_machine_pi", early_stop_margin_min_g=8.0)
+        self.assertIsNotNone(trigger)
+        elapsed_ms, weight_g = trigger
+        self.assertLess(weight_g, 25.0)  # vs. the real recorded 28.2g
+
+
+class LearnedStopLatencyTests(RuntimeTestCase):
+    """stop_latency_normal_s/stop_latency_elevated_s are learned from every
+    completed shot's own tail (_update_learned_stop_latency), not fixed
+    constants - see the comment near their definitions for why a single
+    hand-fit value kept failing to generalize, and why splitting into two
+    buckets by the shot's own flow rate at the decision moment fixed that."""
+
+    async def test_learning_nudges_the_normal_bucket_toward_the_observed_latency(self):
+        await self.start_shot(early_stop_margin_min_g=1.5)
+        shot = self.runtime.active_shot
+        shot.samples = [
+            ShotSample(0, 0, 0, 20.0, 2.0, 90),
+            ShotSample(1, 100, 100, 20.2, 2.0, 90),
+        ]
+        shot.stop_command_elapsed_ms = 100  # decision at the 2nd sample: weight=20.2, flow=2.0 (normal bucket, <3.0)
+        seed_normal = self.runtime.stop_latency_normal_s
+        seed_elevated = self.runtime.stop_latency_elevated_s
+
+        self.runtime._update_learned_stop_latency(shot, final_weight=26.2)
+
+        # observed_latency = (26.2 - 20.2) / 2.0 = 3.0s
+        expected = seed_normal + 0.15 * (3.0 - seed_normal)
+        self.assertAlmostEqual(self.runtime.stop_latency_normal_s, expected, places=4)
+        self.assertEqual(self.runtime.stop_latency_elevated_s, seed_elevated)  # other bucket untouched
+
+    async def test_learning_nudges_the_elevated_bucket_toward_the_observed_latency(self):
+        await self.start_shot(early_stop_margin_min_g=1.5)
+        shot = self.runtime.active_shot
+        shot.samples = [
+            ShotSample(0, 0, 0, 20.0, 5.0, 90),
+            ShotSample(1, 100, 100, 20.5, 5.0, 90),
+        ]
+        shot.stop_command_elapsed_ms = 100  # decision at the 2nd sample: weight=20.5, flow=5.0 (elevated bucket, >=3.0)
+        seed_normal = self.runtime.stop_latency_normal_s
+        seed_elevated = self.runtime.stop_latency_elevated_s
+
+        self.runtime._update_learned_stop_latency(shot, final_weight=30.5)
+
+        # observed_latency = (30.5 - 20.5) / 5.0 = 2.0s
+        expected = seed_elevated + 0.15 * (2.0 - seed_elevated)
+        self.assertAlmostEqual(self.runtime.stop_latency_elevated_s, expected, places=4)
+        self.assertEqual(self.runtime.stop_latency_normal_s, seed_normal)  # other bucket untouched
+
+    async def test_learning_is_skipped_without_a_recorded_stop_decision(self):
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.stop_command_elapsed_ms = None
+        seed_normal = self.runtime.stop_latency_normal_s
+        seed_elevated = self.runtime.stop_latency_elevated_s
+
+        self.runtime._update_learned_stop_latency(shot, final_weight=36.0)
+
+        self.assertEqual(self.runtime.stop_latency_normal_s, seed_normal)
+        self.assertEqual(self.runtime.stop_latency_elevated_s, seed_elevated)
+
+    async def test_learning_is_skipped_when_flow_at_decision_is_too_slow(self):
+        """Dividing by a near-zero flow rate would produce a wildly unstable
+        observed latency from essentially no signal - must be skipped, not
+        fed into either bucket's estimate."""
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = [ShotSample(0, 0, 0, 34.0, 0.1, 90)]
+        shot.stop_command_elapsed_ms = 0
+        seed_normal = self.runtime.stop_latency_normal_s
+        seed_elevated = self.runtime.stop_latency_elevated_s
+
+        self.runtime._update_learned_stop_latency(shot, final_weight=36.0)
+
+        self.assertEqual(self.runtime.stop_latency_normal_s, seed_normal)
+        self.assertEqual(self.runtime.stop_latency_elevated_s, seed_elevated)
+
+    async def test_learned_estimate_never_exceeds_the_maximum(self):
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = [ShotSample(0, 0, 0, 0.0, 1.0, 90)]  # normal bucket
+        shot.stop_command_elapsed_ms = 0
+
+        for _ in range(50):  # enough steps for the EMA to converge near this extreme observation
+            self.runtime._update_learned_stop_latency(shot, final_weight=1000.0)
+
+        self.assertLessEqual(self.runtime.stop_latency_normal_s, 8.0)
+
+    async def test_learned_estimate_never_drops_below_the_minimum(self):
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = [ShotSample(0, 0, 0, 34.0, 2.0, 90)]  # normal bucket
+        shot.stop_command_elapsed_ms = 0
+
+        for _ in range(50):
+            self.runtime._update_learned_stop_latency(shot, final_weight=34.0)  # zero tail
+
+        self.assertGreaterEqual(self.runtime.stop_latency_normal_s, 0.5)
+
+    async def test_a_completed_shot_updates_its_bucket_end_to_end(self):
+        """_async_finalize's gating no longer depends on flow_analysis's
+        classification at all (an earlier design only learned from healthy
+        shots, gating out anything else including this kind of fast/atypical
+        test shot) - any shot flow_analysis can classify at all now updates
+        whichever bucket its own flow rate at the stop decision falls into.
+        Builds the shot directly (matching FlowAnalysisWiringTests'
+        approach: evenly time-spaced samples spanning more than the 500ms
+        smoothing window, then _async_finalize called directly) rather than
+        through a live threshold-triggered stop, so the test isn't at the
+        mercy of real-time scheduling for how many samples land before an
+        auto-stop task would fire."""
+        await self.start_shot(target_yield_g=79.0, early_stop_margin_min_g=1.5)
+        await self.wait_for_extracting()
+        shot = self.runtime.active_shot
+        seed_normal = self.runtime.stop_latency_normal_s
+
+        for weight in (4.0, 9.0, 14.0, 19.0, 24.0, 30.0, 36.0):
+            self.scale.push_reading(make_reading(weight_g=weight, flow_g_s=2.0))
+            await asyncio.sleep(0.09)
+        # Decision at the second-to-last sample: weight=30.0, flow=2.0 (normal bucket, <3.0).
+        shot.stop_command_elapsed_ms = shot.samples[-2].elapsed_ms
+
+        await self.runtime._async_finalize("complete")
+
+        self.assertNotEqual(self.runtime.last_shot["classification"], "invalid_measurement")
+        self.assertNotEqual(self.runtime.stop_latency_normal_s, seed_normal)
 
 
 if __name__ == "__main__":
