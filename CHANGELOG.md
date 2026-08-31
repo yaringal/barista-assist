@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.21
+
+### Changed
+
+- **Adapt PI's meaning was inverted from what its name promised, and has been corrected.** "Adapt PI" now means what it says: enabled (the default) means the app adapts pre-infusion itself, holding the button for the active bag's own Pre-infusion recipe value; disabled means the Barista Express's own built-in pre-infusion runs instead, via a single short tap. This is the reverse of the old `auto_pi` switch (renamed to `adapt_pi`), where enabling it switched to the machine's own default - a real, live-hardware-affecting bug, not just a naming issue. The switch's on/off dashboard labels are now "App-controlled"/"Machine-controlled" to make the direction unambiguous.
+- **The machine's own pre-infusion duration is no longer a hardcoded 8-second assumption.** It's now a "Machine pre-infusion" number entity (System view → Connection and control, shown only while Adapt PI is off) that you set to whatever your machine is actually programmed with, and update if you reprogram it.
+- **Every shot now logs the pre-infusion duration that was actually used, not always the bag's recipe value.** With Adapt PI off, the export used to show the bag's `preinfusion_s` even though the machine's own (different) pre-infusion is what really ran - "Copy all shot data" and the stored shot record now reflect the true value either way, alongside a new `adapt_pi` field recording which mode the shot ran in.
+- **"Barista Express programmed maximum shot duration" and "Stop safety margin" are no longer set from Settings.** They moved to the Barista Assist dashboard's "Connection and control" card as ordinary number entities (matching Stop compensation), so all three brew-safety settings live in one place; existing values already saved via Settings carry over automatically. The Settings dialog now only asks you to confirm the machine limit.
+
+### Fixed
+
+- **A shot with a single noisy scale reading during pre-infusion could be wrongly flagged `invalid_measurement`.** The scale only reports weight in 0.1g steps, so a negligible trickle could occasionally produce one sample whose instantaneous flow rate spiked past the "has flow started?" threshold, even though it immediately dropped back down and no real flow had begun. `t_first_flow_ms` now requires the crossing to hold for at least 300ms before counting it, rather than triggering on a single sample.
+- **A shot could be wrongly flagged `disturbance_left_too_few_samples` because of stale leftover scale data, not an actual disturbance.** A live shot's first two samples carried a leftover BLE notification from before the scale's own clock had been reset for this shot (recognizable because its `scale_ms` ran tens of seconds ahead of the shot's own elapsed time) - the drop from that stale reading down to a real 0g then looked like a cup/scale disturbance and truncated the shot down to just those two garbage samples. Leading samples whose scale clock is out of sync with the shot are now recognized and dropped before disturbance detection runs, the same way an implausible negative leading weight already was.
+- **A violent, splashy shot could be wrongly classified `too_restrictive` instead of reflecting what actually happened.** Turbulent flow can bounce the scale reading down by a few grams for a sample or two (droplets, crema settling, the cup rocking) before recovering and climbing further - a real shot's very first such bounce was previously enough to trip disturbance detection and truncate everything that followed, hiding a huge overshoot and leaving too little data to ever reach 90% of yield (silently falling back to `too_restrictive`). A drop must now hold for at least a second before it's treated as a genuine disturbance, rather than triggering on the first instantaneous dip.
+
+### Docs
+
+- Corrected the README's Adapt PI section and DESIGN.md's flow-analysis notes for the inverted-semantics fix and the sustained-crossing/sustained-disturbance fixes above.
+- Added a "Not implemented yet" note on dynamic, flow-projection-based stop-time adjustment, prompted by a real shot that overshot from 36g to 47.9g because flow was still accelerating when the fixed stop-compensation threshold fired.
+
+### Testing
+
+- Added 8 real, hand-annotated shot exports as regression fixtures (previously 0), covering healthy, too-fast, too-restrictive, channeling, and multiple previously-misclassified-invalid shots, plus direct unit tests for each of the three classifier fixes above.
+- Full suite: 141 tests, all passing.
+
 ## 0.2.20
 
 ### Fixed

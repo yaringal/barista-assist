@@ -1280,12 +1280,17 @@ without repeating the shot.
 
 `analyze_shot` also detects the cup or scale being disturbed (lifted,
 bumped, moved) at any point in the trace: raw weight can only rise while
-coffee is actually being collected, so any meaningful drop below its own
-running peak so far is unambiguous interference, not flow. Everything from
-that point on is discarded before classification runs, on whatever prefix
-remains - the user never needs to be told when it's "safe" to touch the
-cup. This is a more general replacement for an earlier idea of truncating
-at the stop command's timestamp: it also catches a bump mid-pour, doesn't
+coffee is actually being collected, so a meaningful drop below its own
+running peak so far that holds for at least `_DISTURBANCE_SUSTAIN_MS` is
+unambiguous interference, not flow - a violent, turbulent gush can bounce a
+sample or two below the running peak (droplets, crema settling, the cup
+rocking) without any real interference, recovering within a couple hundred
+ms and continuing to climb, so only a drop that holds for the full sustain
+window (or runs out the rest of the shot without recovering) counts.
+Everything from that point on is discarded before classification runs, on
+whatever prefix remains - the user never needs to be told when it's "safe"
+to touch the cup. This is a more general replacement for an earlier idea of
+truncating at the stop command's timestamp: it also catches a bump mid-pour, doesn't
 discard genuinely undisturbed settle-tail data, and needs no `runtime.py`
 signature changes. Every `invalid_measurement` shot now also carries an
 `invalid_reason` (too few samples, near-zero final weight, no detected

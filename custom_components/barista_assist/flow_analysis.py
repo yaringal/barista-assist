@@ -67,6 +67,13 @@ FIRST_FLOW_THRESHOLD_G_S = 0.3
 SMOOTHING_WINDOW_MS = 500
 SUSPICION_THRESHOLD = 0.6
 
+# A single sample's derivative can spike past FIRST_FLOW_THRESHOLD_G_S purely
+# from scale quantization (e.g. a 0.1g-resolution reading landing right at a
+# sample boundary) even during a genuine low/no-flow trickle - real flow
+# stays above the threshold for a run of samples, not just one, so
+# "first flow" requires the crossing to hold for at least this long.
+_FIRST_FLOW_SUSTAIN_MS = 300
+
 # Rough expected total-flow rate (beverage mass / total shot time, including
 # pre-infusion), used as the starting point before any bag-specific history
 # exists. Anchored against docs/DESIGN.md section 25's Example A (18g -> 38g
@@ -110,6 +117,17 @@ _MAX_PLAUSIBLE_WEIGHT_DROP_G = 0.5
 # interference, exactly as before.
 _DISTURBANCE_DETECTION_FLOOR_G = 2.0
 
+# A drop past _MAX_PLAUSIBLE_WEIGHT_DROP_G must hold for at least this long
+# to count as a genuine disturbance rather than a splash/settle bounce - a
+# real shot with a violent, turbulent gush saw repeated multi-gram dips
+# (droplets, crema settling, the cup rocking on the scale) that each
+# recovered and kept climbing within a few hundred ms, but the first one hit
+# _first_disturbance_index's old instantaneous check and truncated the shot
+# down to its first ~9s, hiding the huge overshoot that followed and turning
+# an obviously too-fast shot into a false too_restrictive (t90 never reached
+# in the truncated data). A genuine cup-lift stays low far longer than this.
+_DISTURBANCE_SUSTAIN_MS = 1000
+
 # A leading weight reading this far below zero is scale noise before it's
 # settled/tared, not real data - weight is never meaningfully negative, at
 # any point in a shot (ordinary scale jitter near a true zero baseline stays
@@ -122,6 +140,17 @@ _DISTURBANCE_DETECTION_FLOOR_G = 2.0
 # real samples that only start once a pour is already well underway) is not
 # implausible the same way and must never be discarded.
 _LEADING_GARBAGE_THRESHOLD_G = 2.0
+
+# A leading sample whose scale_ms (the BOOKOO scale's own onboard clock) runs
+# this many ms ahead of our own elapsed_ms is a stale BLE notification queued
+# from before our tare-and-start-timer command reset the scale's clock, not
+# real data for this shot - a live shot's first two samples read
+# scale_ms=19200 while elapsed_ms was still under 200, carrying a stale,
+# unrelated 12g reading left over from whatever the scale was doing before
+# this shot. Once the scale's own clock is reset, its readings drop back to
+# roughly tracking elapsed_ms, so this only ever rejects genuinely stale
+# leading samples, not real ones. See _first_synced_clock_index.
+_STALE_SCALE_CLOCK_THRESHOLD_MS = 2000
 
 
 class ShotClassification(str, Enum):
@@ -214,23 +243,39 @@ def _invalid(reason: InvalidReason) -> ShotAnalysis:
     )
 
 
-def _first_disturbance_index(raw_weights: list[float]) -> int | None:
+def _first_disturbance_index(times_ms: list[int], raw_weights: list[float]) -> int | None:
     """First index where weight drops meaningfully below its own running
-    peak - physically implausible during a real pour (weight only rises
-    while coffee is being collected), so this reliably flags cup/scale
-    interference rather than genuine flow, however and whenever it happens.
+    peak AND stays there for at least _DISTURBANCE_SUSTAIN_MS - physically
+    implausible during a real pour (weight only rises while coffee is being
+    collected), so a drop that never recovers reliably flags cup/scale
+    interference. A violent, splashy gush can bounce a sample or two below
+    the running peak (droplets, crema settling, the cup rocking) without any
+    real interference - that recovers within a couple hundred ms and keeps
+    climbing, unlike a genuine disturbance, so only a drop that holds for the
+    full sustain window (or runs out the rest of the shot without
+    recovering) counts.
 
     Only armed once the running peak clears _DISTURBANCE_DETECTION_FLOOR_G -
     see that constant for why.
     """
+    n = len(raw_weights)
     running_max = raw_weights[0]
-    for i, weight in enumerate(raw_weights):
-        if (
-            running_max >= _DISTURBANCE_DETECTION_FLOOR_G
-            and weight < running_max - _MAX_PLAUSIBLE_WEIGHT_DROP_G
-        ):
-            return i
+    i = 0
+    while i < n:
+        weight = raw_weights[i]
+        if running_max >= _DISTURBANCE_DETECTION_FLOOR_G and weight < running_max - _MAX_PLAUSIBLE_WEIGHT_DROP_G:
+            drop_level = running_max - _MAX_PLAUSIBLE_WEIGHT_DROP_G
+            start_t = times_ms[i]
+            j = i
+            while j < n and raw_weights[j] < drop_level:
+                j += 1
+            if j == n or times_ms[j - 1] - start_t >= _DISTURBANCE_SUSTAIN_MS:
+                return i
+            running_max = max(running_max, max(raw_weights[i:j]))
+            i = j
+            continue
         running_max = max(running_max, weight)
+        i += 1
     return None
 
 
@@ -253,6 +298,20 @@ def _first_plausible_index(raw_weights: list[float]) -> int:
         if weight >= -_LEADING_GARBAGE_THRESHOLD_G:
             return i
     return len(raw_weights)
+
+
+def _first_synced_clock_index(times_ms: list[int], scale_ms_values: list[int]) -> int:
+    """First index whose scale_ms is plausibly in sync with our own
+    elapsed_ms - i.e. how many leading samples to skip as stale BLE
+    notifications left over from before the scale's clock was reset. See
+    _STALE_SCALE_CLOCK_THRESHOLD_MS.
+
+    Returns len(times_ms) if every sample's clock is out of sync.
+    """
+    for i, (t, scale_ms) in enumerate(zip(times_ms, scale_ms_values)):
+        if scale_ms - t <= _STALE_SCALE_CLOCK_THRESHOLD_MS:
+            return i
+    return len(times_ms)
 
 
 def _moving_average(times_ms: list[int], values: list[float], window_ms: int) -> list[float]:
@@ -295,6 +354,30 @@ def _first_crossing_ms(times_ms: list[int], values: list[float], threshold: floa
     for t, v in zip(times_ms, values):
         if v >= threshold:
             return t
+    return None
+
+
+def _first_sustained_crossing_ms(
+    times_ms: list[int], values: list[float], threshold: float, sustain_ms: int
+) -> int | None:
+    """Like _first_crossing_ms, but ignores a run that drops back below
+    threshold before holding for sustain_ms - filters out a single noisy
+    spike from being mistaken for the true start of flow. A run still
+    touching the last sample counts even if it hasn't reached sustain_ms yet,
+    since there's no later data to prove it wouldn't have held."""
+    n = len(times_ms)
+    i = 0
+    while i < n:
+        if values[i] < threshold:
+            i += 1
+            continue
+        start_t = times_ms[i]
+        j = i
+        while j < n and values[j] >= threshold:
+            j += 1
+        if times_ms[j - 1] - start_t >= sustain_ms or j == n:
+            return start_t
+        i = j
     return None
 
 
@@ -392,9 +475,14 @@ def analyze_shot(
     raw_weights = [sample.weight_g for sample in samples]
 
     # Drop leading pre-tare/pre-connect scale noise (e.g. a stray -48g first
-    # reading) before it can poison the smoothing/derivative computation
-    # below - see _first_plausible_index and _LEADING_GARBAGE_THRESHOLD_G.
-    leading_garbage = _first_plausible_index(raw_weights)
+    # reading, or a stale reading whose scale_ms shows it's left over from
+    # before the scale's clock was reset) before it can poison the
+    # smoothing/derivative computation below - see _first_plausible_index,
+    # _first_synced_clock_index, and their respective threshold constants.
+    leading_garbage = max(
+        _first_plausible_index(raw_weights),
+        _first_synced_clock_index(times_ms, [sample.scale_ms for sample in samples]),
+    )
     if leading_garbage:
         samples = samples[leading_garbage:]
         times_ms = times_ms[leading_garbage:]
@@ -409,7 +497,7 @@ def analyze_shot(
     # told when it's "safe" to touch the cup, because whatever happens after
     # a real disturbance is simply discarded rather than contaminating the
     # rest of the shot's stats.
-    disturbance_index = _first_disturbance_index(raw_weights)
+    disturbance_index = _first_disturbance_index(times_ms, raw_weights)
     disturbed = disturbance_index is not None
     if disturbed:
         samples = samples[:disturbance_index]
@@ -431,7 +519,9 @@ def analyze_shot(
     flow = _derivative(times_ms, smoothed)
     times_s = [t / 1000.0 for t in times_ms]
 
-    t_first_flow_ms = _first_crossing_ms(times_ms, flow, FIRST_FLOW_THRESHOLD_G_S)
+    t_first_flow_ms = _first_sustained_crossing_ms(
+        times_ms, flow, FIRST_FLOW_THRESHOLD_G_S, _FIRST_FLOW_SUSTAIN_MS
+    )
     # Was time to first flow plausible? (docs/DESIGN.md section 13). Either the
     # scale never registered real flow despite a meaningful final weight, or
     # flow started well before the configured pre-infusion soak should have

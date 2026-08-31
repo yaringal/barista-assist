@@ -204,11 +204,12 @@ class FlowAnalysisTests(unittest.TestCase):
         _DISTURBANCE_DETECTION_FLOOR_G (real pre-infusion settling noise),
         but the identical-sized drop is still flagged once the running peak
         has cleared that floor, exactly as before this fix."""
+        times_ms = [0, 100, 200, 300]
         below_floor = [0.0, 0.4, -0.2, 0.0]  # peak 0.4g, well under the floor
-        self.assertIsNone(flow_analysis._first_disturbance_index(below_floor))
+        self.assertIsNone(flow_analysis._first_disturbance_index(times_ms, below_floor))
 
         above_floor = [0.0, 1.0, 3.0, 2.0]  # peak 3.0g; the 1.0g drop exceeds the threshold
-        self.assertEqual(flow_analysis._first_disturbance_index(above_floor), 3)
+        self.assertEqual(flow_analysis._first_disturbance_index(times_ms, above_floor), 3)
 
     def test_disturbance_leaving_too_few_samples_is_invalid_with_a_distinct_reason(self) -> None:
         """A disturbance early enough to leave under MIN_SAMPLES of trustworthy
@@ -460,6 +461,100 @@ class FlowAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(escalated.classification, ShotClassification.PUCK_PREP_ISSUE)
         self.assertGreater(escalated.channeling_suspicion, unflagged.channeling_suspicion)
+
+
+class FirstSustainedCrossingTests(unittest.TestCase):
+    """Direct tests for _first_sustained_crossing_ms, the helper that keeps a
+    single noisy/quantization-driven derivative spike from being mistaken for
+    the true start of flow (see test_flow_analysis_real_shots.py's
+    GoodButFlaggedMachinePiTests for the real-shot regression this fixed).
+    Tested in isolation from the smoothing pipeline since the crossing rule
+    itself is what's being verified here, not curve-shaping."""
+
+    def test_a_single_sample_spike_does_not_count(self) -> None:
+        times_ms = [0, 100, 200, 300, 400]
+        values = [0.0, 0.0, 1.0, 0.0, 0.0]
+        result = flow_analysis._first_sustained_crossing_ms(times_ms, values, 0.3, 300)
+        self.assertIsNone(result)
+
+    def test_a_sustained_run_counts_from_its_start(self) -> None:
+        times_ms = [0, 100, 200, 300, 400, 500]
+        values = [0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+        result = flow_analysis._first_sustained_crossing_ms(times_ms, values, 0.3, 300)
+        self.assertEqual(result, 200)
+
+    def test_a_run_still_rising_at_the_last_sample_counts_even_if_short(self) -> None:
+        """No later data to prove a still-rising run wouldn't have held -
+        treat it as real rather than discarding a shot that simply ended
+        while genuinely mid-pour."""
+        times_ms = [0, 100, 200]
+        values = [0.0, 0.0, 1.0]
+        result = flow_analysis._first_sustained_crossing_ms(times_ms, values, 0.3, 300)
+        self.assertEqual(result, 200)
+
+    def test_an_earlier_spike_is_skipped_in_favor_of_the_real_sustained_run(self) -> None:
+        times_ms = [0, 100, 200, 300, 400, 500, 600]
+        values = [0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+        result = flow_analysis._first_sustained_crossing_ms(times_ms, values, 0.3, 300)
+        self.assertEqual(result, 400)
+
+
+class FirstSyncedClockIndexTests(unittest.TestCase):
+    """Direct tests for _first_synced_clock_index, the helper that drops
+    leading samples whose scale_ms shows they're stale BLE notifications from
+    before the scale's clock was reset for this shot (see
+    test_flow_analysis_real_shots.py's StaleScaleClockMachinePiTests for the
+    real-shot regression this fixed)."""
+
+    def test_no_stale_samples_returns_zero(self) -> None:
+        times_ms = [0, 100, 200, 300]
+        scale_ms = [0, 100, 200, 300]
+        self.assertEqual(flow_analysis._first_synced_clock_index(times_ms, scale_ms), 0)
+
+    def test_leading_stale_samples_are_counted(self) -> None:
+        times_ms = [26, 116, 235, 330]
+        scale_ms = [19200, 19200, 0, 0]
+        self.assertEqual(flow_analysis._first_synced_clock_index(times_ms, scale_ms), 2)
+
+    def test_every_sample_stale_returns_the_full_length(self) -> None:
+        times_ms = [26, 116]
+        scale_ms = [19200, 19300]
+        self.assertEqual(flow_analysis._first_synced_clock_index(times_ms, scale_ms), 2)
+
+
+class FirstDisturbanceIndexTests(unittest.TestCase):
+    """Direct tests for _first_disturbance_index, which now requires a drop
+    below the running peak to hold for _DISTURBANCE_SUSTAIN_MS before
+    counting as a genuine cup/scale disturbance, rather than flagging on a
+    single instantaneous dip (see test_flow_analysis_real_shots.py's
+    ViolentGushMachinePiTests for the real-shot regression this fixed)."""
+
+    def test_no_drop_returns_none(self) -> None:
+        times_ms = [0, 100, 200, 300]
+        weights = [0.0, 1.0, 2.0, 3.0]
+        self.assertIsNone(flow_analysis._first_disturbance_index(times_ms, weights))
+
+    def test_a_quickly_recovering_dip_does_not_count(self) -> None:
+        times_ms = [0, 100, 300, 500, 700]
+        weights = [0.0, 3.0, 2.4, 3.5, 4.0]
+        self.assertIsNone(flow_analysis._first_disturbance_index(times_ms, weights))
+
+    def test_a_drop_that_never_recovers_counts(self) -> None:
+        times_ms = [0, 100, 200, 1300, 1400, 1500, 1600]
+        weights = [0.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        self.assertEqual(flow_analysis._first_disturbance_index(times_ms, weights), 2)
+
+    def test_a_drop_sustained_long_enough_counts_even_if_it_later_recovers(self) -> None:
+        times_ms = [0, 100, 200, 1250, 1300]
+        weights = [0.0, 3.0, 1.0, 1.0, 3.5]
+        self.assertEqual(flow_analysis._first_disturbance_index(times_ms, weights), 2)
+
+    def test_a_drop_below_the_detection_floor_does_not_count(self) -> None:
+        """Below _DISTURBANCE_DETECTION_FLOOR_G, settling noise alone can
+        exceed _MAX_PLAUSIBLE_WEIGHT_DROP_G with no real disturbance."""
+        times_ms = [0, 100, 200, 2000]
+        weights = [0.0, 1.0, 0.3, 0.3]
+        self.assertIsNone(flow_analysis._first_disturbance_index(times_ms, weights))
 
 
 if __name__ == "__main__":

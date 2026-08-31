@@ -1,0 +1,114 @@
+# Invalid shot - put cup late, adaptPI=False (machine controlled)
+# NOTE: this shot predates both the adapt_pi export field and the fix that
+# logs a shot's true, effective preinfusion_s - at capture time, the raw
+# export's preinfusion_s would have shown the bag's recipe value (7.0)
+# regardless of Adapt PI, even though this was a machine-controlled shot
+# where the Barista Express's own built-in pre-infusion (now exposed as the
+# configurable "Machine pre-infusion" setting, machine_pi_s) actually ran for
+# about 8.0s. preinfusion_s below has been corrected to that true value so
+# this fixture matches the standard shot log structure.
+
+[SHOT]
+shot_id=18cde69b94d54940aae4e7cc1caa8b9d
+bag_id=27023e947ea94b95b74ea7d3c1d9b2f4
+slot=normal
+coffee_name=Daily (new)
+roaster=Caravan
+roast_date=2026-08-30
+bag_opened_at=2026-08-30T13:49:49.427406+00:00
+started_at=2026-08-31T10:25:44.387768+00:00
+ended_at=2026-08-31T10:25:53.154042+00:00
+status=complete
+classification=invalid_measurement
+channeling_suspicion=
+analysis_json={"classification": "invalid_measurement", "channeling_suspicion": null, "baseline_eligible": false, "invalid_reason": "flow_started_before_preinfusion_end", "t_first_flow_ms": null, "t10_ms": null, "t50_ms": null, "t90_ms": null, "early_flow_g_s": null, "mid_flow_g_s": null, "late_flow_g_s": null, "max_flow_g_s": null, "flow_slope": null, "flow_curvature": null, "flow_variance": null, "mid_accel": null, "late_accel": null}
+dose_g=18.0
+grind=15.5
+target_yield_g=36.0
+actual_yield_g=160.39
+temperature_offset_c=0
+preinfusion_s=8.0
+adapt_pi=False
+stop_compensation_g=8.0
+stop_command_elapsed_ms=4176
+sample_count=76
+
+seq	elapsed_ms	scale_ms	weight_g	flow_g_s	battery_percent	post_stop
+0	37	60400	-146.200	0.0000	70	0
+1	159	0	0.000	0.0000	70	0
+2	246	0	0.000	0.0000	70	0
+3	336	100	0.000	0.0100	70	0
+4	426	200	0.000	0.0200	70	0
+5	546	300	0.000	0.0300	70	0
+6	636	400	0.000	0.0300	70	0
+7	756	500	0.000	0.0200	70	0
+8	846	600	0.000	0.0000	70	0
+9	936	700	0.000	-0.0200	70	0
+10	1056	800	0.000	-0.0300	70	0
+11	1146	900	0.000	-0.0400	70	0
+12	1236	1000	0.000	-0.0400	70	0
+13	1356	1100	0.000	-0.0400	70	0
+14	1446	1200	0.000	-0.0400	70	0
+15	1537	1300	0.000	-0.0500	70	0
+16	1656	1400	0.000	-0.0300	70	0
+17	1746	1500	0.000	-0.0100	70	0
+18	1836	1600	0.000	0.0200	70	0
+19	1986	1700	0.000	0.0400	70	0
+20	2046	1800	0.000	0.0600	70	0
+21	2166	1900	0.000	0.0500	70	0
+22	2256	2000	0.000	0.0200	70	0
+23	2346	2100	0.000	-0.0100	70	0
+24	2466	2200	0.000	-0.0400	70	0
+25	2556	2300	0.000	-0.0500	70	0
+26	2646	2400	0.000	-0.0600	70	0
+27	2766	2500	0.000	-0.0500	70	0
+28	2859	2600	0.000	-0.0300	70	0
+29	2946	2700	0.000	-0.0200	70	0
+30	3066	2800	0.000	-0.0200	70	0
+31	3156	2900	0.000	-0.0100	70	0
+32	3246	3000	0.000	0.0000	70	0
+33	3366	3100	0.000	0.0200	70	0
+34	3456	3200	0.000	0.0400	70	0
+35	3576	3300	0.700	1.2400	70	0
+36	3666	3400	2.000	5.4900	70	0
+37	3756	3500	0.900	4.6000	70	0
+38	3876	3600	0.400	0.1400	70	0
+39	3966	3700	1.400	-2.3500	70	0
+40	4056	3800	6.700	7.8800	70	0
+41	4176	3900	49.300	89.6200	70	1
+42	4266	4000	167.500	403.5200	70	1
+43	4356	4100	205.000	17.8300	70	1
+44	4476	4200	118.200	426.8400	70	1
+45	4590	4300	39.000	-198.8000	70	1
+46	4656	4400	18.700	-616.8400	70	1
+47	4776	4500	84.900	-344.6700	70	1
+48	4866	4600	109.700	157.5200	70	1
+49	4986	4700	51.600	178.2000	70	1
+50	5076	4800	81.300	24.6900	70	1
+51	5166	4900	115.800	-22.5400	70	1
+52	5286	5000	115.200	153.4400	70	1
+53	5376	5100	130.200	206.5500	70	1
+54	5466	5200	132.100	73.9100	70	1
+55	5586	5300	142.390	84.7800	70	1
+56	5677	5400	146.000	65.4200	70	1
+57	5766	5500	136.200	33.3300	70	1
+58	5886	5600	143.500	-1.3600	70	1
+59	5976	5700	172.200	47.8900	70	1
+60	6066	5800	188.000	145.8300	70	1
+61	6187	5900	189.900	174.4100	70	1
+62	6281	6000	176.400	74.3000	70	1
+63	6366	6100	154.000	-71.6000	70	1
+64	6486	6200	146.300	-139.1200	70	1
+65	6576	6300	145.300	-127.9300	70	1
+66	6734	6400	142.500	-58.3500	70	1
+67	6791	6500	140.300	-25.8800	70	1
+68	6876	6600	151.200	-0.1200	70	1
+69	6996	6700	171.900	65.2200	70	1
+70	7086	6800	185.500	137.0300	70	1
+71	7176	6900	185.500	136.3700	70	1
+72	7296	7000	178.500	59.3600	70	1
+73	7416	7100	171.200	-25.7300	70	1
+74	7506	7200	160.390	-69.6800	70	1
+75	7597	7300	148.300	-97.4300	70	1
+
+[END_SHOT]
