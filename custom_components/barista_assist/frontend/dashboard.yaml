@@ -302,3 +302,19 @@ views:
                 row:
                   entity: __MACHINE_PI_SECONDS__
                   name: Machine pre-infusion
+
+  - title: Shots
+    path: shots
+    icon: mdi:history
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Shot history
+            heading_style: title
+            icon: mdi:history
+
+          - type: custom:barista-assist-shot-history-card
+            title: All shots

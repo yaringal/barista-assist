@@ -20,7 +20,9 @@ class DashboardTests(unittest.TestCase):
     def test_dashboard_yaml_is_valid_and_has_expected_views(self):
         data = yaml.safe_load(DASHBOARD.read_text(encoding="utf-8"))
         self.assertEqual(data["title"], "Barista Assist")
-        self.assertEqual([view["path"] for view in data["views"]], ["brew", "bags", "system"])
+        self.assertEqual(
+            [view["path"] for view in data["views"]], ["brew", "bags", "system", "shots"]
+        )
 
     def test_every_placeholder_is_declared(self):
         text = DASHBOARD.read_text(encoding="utf-8")
@@ -33,6 +35,10 @@ class DashboardTests(unittest.TestCase):
         text = DASHBOARD.read_text(encoding='utf-8')
         self.assertIn('custom:barista-assist-export-card', text)
         self.assertIn('Copy all shot data', text)
+
+    def test_dashboard_has_shot_history_card(self):
+        text = DASHBOARD.read_text(encoding='utf-8')
+        self.assertIn('custom:barista-assist-shot-history-card', text)
 
     def test_dashboard_documents_new_default_yield(self):
         text = DASHBOARD.read_text(encoding="utf-8")

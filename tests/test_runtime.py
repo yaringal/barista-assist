@@ -935,5 +935,50 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         )
 
 
+class ShotHistoryTests(RuntimeTestCase):
+    """async_list_shots/async_shot_samples/async_delete_shot back the
+    shot-history dashboard tab."""
+
+    async def test_list_shots_includes_a_finished_shot(self):
+        shot_id = await self.start_shot()
+        await self.runtime._async_finalize("complete")
+
+        shots = await self.runtime.async_list_shots()
+
+        self.assertEqual([shot["id"] for shot in shots], [shot_id])
+
+    async def test_shot_samples_returns_the_recorded_time_series(self):
+        shot_id = await self.start_shot()
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))
+        await self.runtime._async_finalize("complete")
+
+        samples = await self.runtime.async_shot_samples(shot_id)
+
+        self.assertTrue(samples)
+        self.assertEqual(samples[-1]["weight_g"], 36.0)
+
+    async def test_delete_shot_refuses_while_it_is_still_brewing(self):
+        shot_id = await self.start_shot()
+
+        with self.assertRaises(HomeAssistantError):
+            await self.runtime.async_delete_shot(shot_id)
+
+        self.assertIsNotNone(self.runtime.active_shot)
+
+    async def test_delete_shot_removes_a_finished_shot_and_refreshes_the_cache(self):
+        shot_id = await self.start_shot()
+        await self.runtime._async_finalize("complete")
+        self.assertIsNotNone(self.runtime.last_shot)
+
+        deleted = await self.runtime.async_delete_shot(shot_id)
+
+        self.assertTrue(deleted)
+        self.assertIsNone(self.runtime.last_shot)
+
+    async def test_delete_shot_returns_false_for_an_unknown_id(self):
+        self.assertFalse(await self.runtime.async_delete_shot("does-not-exist"))
+
+
 if __name__ == "__main__":
     unittest.main()

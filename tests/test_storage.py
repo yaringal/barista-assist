@@ -195,6 +195,89 @@ class StorageTests(unittest.TestCase):
         self.assertAlmostEqual(features["median_late_accel"], 0.1)
         self.assertAlmostEqual(features["median_flow_g_s"], 1.5)
 
+    def test_recent_shots_with_no_limit_returns_every_shot(self) -> None:
+        bag = self.new_bag()
+        for _ in range(3):
+            self.db.create_shot(
+                bag=bag,
+                started_at="2026-08-16T17:00:00+00:00",
+                stop_compensation_g=1.5,
+                preinfusion_s=7.0,
+                adapt_pi=False,
+            )
+        self.assertEqual(len(self.db.recent_shots(limit=2)), 2)
+        self.assertEqual(len(self.db.recent_shots(limit=None)), 3)
+
+    def test_shot_samples_returns_the_raw_time_series_in_order(self) -> None:
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        samples = [
+            storage.ShotSample(0, 0, 0, 0.0, 0.0, 90),
+            storage.ShotSample(1, 1000, 1000, 1.5, 1.5, 90),
+        ]
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=1.5,
+            status="complete",
+            stop_command_elapsed_ms=None,
+            samples=samples,
+        )
+        result = self.db.shot_samples(shot_id)
+        self.assertEqual([row["seq"] for row in result], [0, 1])
+        self.assertAlmostEqual(result[1]["weight_g"], 1.5)
+
+    def test_delete_shot_removes_it_and_cascades_to_its_samples(self) -> None:
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=36.2,
+            status="complete",
+            stop_command_elapsed_ms=None,
+            samples=[storage.ShotSample(0, 0, 0, 0.0, 0.0, 90)],
+        )
+        self.assertTrue(self.db.delete_shot(shot_id))
+        self.assertIsNone(self.db.last_shot())
+        self.assertEqual(self.db.shot_samples(shot_id), [])
+
+    def test_delete_shot_updates_the_bag_remaining_estimate(self) -> None:
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=36.2,
+            status="complete",
+            stop_command_elapsed_ms=None,
+            samples=[storage.ShotSample(0, 0, 0, 0.0, 0.0, 90)],
+        )
+        self.assertAlmostEqual(self.db.bag_remaining_g(bag.id), 232.0)
+        self.db.delete_shot(shot_id)
+        self.assertAlmostEqual(self.db.bag_remaining_g(bag.id), 250.0)
+
+    def test_delete_shot_returns_false_for_an_unknown_id(self) -> None:
+        self.assertFalse(self.db.delete_shot("does-not-exist"))
+
     def test_v1_database_migrates_preinfusion_and_legacy_slot(self) -> None:
         legacy_path = Path(self.tmp.name) / "legacy.sqlite3"
         legacy_db = storage.BaristaDatabase(legacy_path)

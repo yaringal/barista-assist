@@ -1081,3 +1081,22 @@ class BaristaRuntime:
     async def async_export_shots_text(self) -> str:
         """Return every stored shot and raw time series as paste-friendly text."""
         return await self.hass.async_add_executor_job(self.db.export_shots_text)
+
+    async def async_list_shots(self) -> list[dict[str, Any]]:
+        """Every stored shot, most recent first, for the shot-history view."""
+        return await self.hass.async_add_executor_job(lambda: self.db.recent_shots(limit=None))
+
+    async def async_shot_samples(self, shot_id: str) -> list[dict[str, Any]]:
+        """One shot's raw scale time series, for the shot-history view's graph."""
+        return await self.hass.async_add_executor_job(self.db.shot_samples, shot_id)
+
+    async def async_delete_shot(self, shot_id: str) -> bool:
+        """Delete one stored shot. Refuses to delete the shot currently
+        being brewed - that would corrupt its in-flight sample writes and
+        the runtime's own active-shot state - everything else is fair game."""
+        if self.active_shot is not None and self.active_shot.id == shot_id:
+            raise HomeAssistantError("Cannot delete the shot that is currently brewing")
+        deleted = await self.hass.async_add_executor_job(self.db.delete_shot, shot_id)
+        if deleted:
+            await self.async_refresh_cache()
+        return deleted

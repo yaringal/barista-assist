@@ -22,6 +22,7 @@ Barista Assist is installed and updated as one HACS package.
   reprogramming the Bot back to an instant tap once extraction begins, so the stop/abort press itself is quick.
 
 - Stores physical bags, recipes, shots, and raw samples in SQLite.
+- Lists every stored shot in a Shots view, each expandable into full details and a weight/flow graph, with a delete option per shot.
 - Classifies every finished shot's flow curve (`healthy`, `too_fast`, `too_restrictive`, `puck_prep_issue`, `invalid_measurement`) with a channeling-suspicion score, comparing against each bag's own recent healthy-shot history.
 - Maintains separate **Normal** and **Decaf** active physical-bag slots.
 - Tracks estimated remaining beans from logged doses.
@@ -414,6 +415,10 @@ With Adapt PI disabled:
 - **No direct BLE connection is used at all.** Both the start and stop presses go through Home Assistant's own SwitchBot integration (`switch.turn_on`) - Barista Assist never opens its own BLE session to reprogram the Bot's long-press duration, since there's no hold duration to configure.
 - **The Pre-infusion tile is hidden** from the Recipe section of the dashboard as soon as you flip the toggle off, since the duration is fixed by the machine rather than something Barista Assist controls per bag.
 - The single tap starts what Breville's manuals describe as "Pre-Programmed Shot Volume" mode, which has its own auto-stop at whatever volume is currently programmed into the CUP button - Barista Assist's own stop press is meant to land well before that, but if it's ever late, the same safety-margin/`manual_stop_required` logic as the normal mode still applies (see above), and the machine's programmed volume becomes the backstop instead of its water-only volume-based cutoff.
+
+## Shot history
+
+The **Shots** view lists every stored shot, most recent first. Click a row to expand it into full recipe/result details and a weight/flow graph of that shot's raw samples. Each row also has a delete button (with a confirmation prompt) for removing shots you don't want kept - a bad bench test, a duplicate, or anything else cluttering your history. Deleting a shot also removes its raw samples and updates that bag's estimated remaining beans accordingly. The shot currently brewing can't be deleted.
 
 ## Shot-data export
 

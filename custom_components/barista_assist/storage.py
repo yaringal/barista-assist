@@ -287,18 +287,40 @@ class BaristaDatabase:
             ).fetchone()
         return dict(row) if row else None
 
-    def recent_shots(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Retained as a small repository API for future diagnostics/history UI."""
+    def recent_shots(self, limit: int | None = 10) -> list[dict[str, Any]]:
+        """Shots most-recent-first. Pass limit=None for every stored shot
+        (the shot-history view's list)."""
+        query = """
+            SELECT s.*, b.coffee_name, b.slot
+            FROM shots s JOIN bags b ON b.id=s.bag_id
+            ORDER BY s.started_at DESC
+        """
+        with self._connect() as db:
+            if limit is None:
+                rows = db.execute(query).fetchall()
+            else:
+                rows = db.execute(query + " LIMIT ?", (int(limit),)).fetchall()
+        return [dict(row) for row in rows]
+
+    def shot_samples(self, shot_id: str) -> list[dict[str, Any]]:
+        """One shot's raw scale time series, in order - what the shot-history
+        view's graph plots."""
         with self._connect() as db:
             rows = db.execute(
                 """
-                SELECT s.*, b.coffee_name, b.slot
-                FROM shots s JOIN bags b ON b.id=s.bag_id
-                ORDER BY s.started_at DESC LIMIT ?
+                SELECT seq, elapsed_ms, weight_g, flow_g_s
+                FROM samples WHERE shot_id=? ORDER BY seq ASC
                 """,
-                (int(limit),),
+                (shot_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def delete_shot(self, shot_id: str) -> bool:
+        """Delete one shot; its samples go with it via ON DELETE CASCADE.
+        Returns whether a shot was actually found and deleted."""
+        with self._connect() as db:
+            cursor = db.execute("DELETE FROM shots WHERE id=?", (shot_id,))
+        return cursor.rowcount > 0
 
     def export_shots_text(self) -> str:
         """Export every stored shot and raw scale sample as paste-friendly text."""

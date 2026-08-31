@@ -11,6 +11,7 @@ import yaml
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
 from .const import DASHBOARD_FILENAME, DOMAIN
@@ -82,6 +83,16 @@ async def async_write_dashboard_file(hass: HomeAssistant, runtime) -> None:
 @callback
 def async_setup(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_export_shots_text)
+    websocket_api.async_register_command(hass, ws_list_shots)
+    websocket_api.async_register_command(hass, ws_shot_samples)
+    websocket_api.async_register_command(hass, ws_delete_shot)
+
+
+def _get_runtime(hass: HomeAssistant, connection: ActiveConnection, msg_id: int):
+    runtime = hass.data.get(DOMAIN, {}).get("runtime")
+    if runtime is None:
+        connection.send_error(msg_id, "not_loaded", "Barista Assist is not loaded")
+    return runtime
 
 
 @websocket_api.websocket_command({vol.Required("type"): "barista_assist/export_shots_text"})
@@ -90,9 +101,8 @@ async def ws_export_shots_text(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Return all persisted shot data as plain text for diagnosis/pasting."""
-    runtime = hass.data.get(DOMAIN, {}).get("runtime")
+    runtime = _get_runtime(hass, connection, msg["id"])
     if runtime is None:
-        connection.send_error(msg["id"], "not_loaded", "Barista Assist is not loaded")
         return
     try:
         text = await runtime.async_export_shots_text()
@@ -100,3 +110,64 @@ async def ws_export_shots_text(
         connection.send_error(msg["id"], "export_failed", str(err))
         return
     connection.send_result(msg["id"], {"text": text})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "barista_assist/list_shots"})
+@websocket_api.async_response
+async def ws_list_shots(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return every stored shot, most recent first, for the shot-history view."""
+    runtime = _get_runtime(hass, connection, msg["id"])
+    if runtime is None:
+        return
+    try:
+        shots = await runtime.async_list_shots()
+    except Exception as err:
+        connection.send_error(msg["id"], "list_failed", str(err))
+        return
+    connection.send_result(msg["id"], {"shots": shots})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "barista_assist/shot_samples", vol.Required("shot_id"): str}
+)
+@websocket_api.async_response
+async def ws_shot_samples(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return one shot's raw scale time series, for the shot-history graph."""
+    runtime = _get_runtime(hass, connection, msg["id"])
+    if runtime is None:
+        return
+    try:
+        samples = await runtime.async_shot_samples(msg["shot_id"])
+    except Exception as err:
+        connection.send_error(msg["id"], "samples_failed", str(err))
+        return
+    connection.send_result(msg["id"], {"samples": samples})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "barista_assist/delete_shot", vol.Required("shot_id"): str}
+)
+@websocket_api.async_response
+async def ws_delete_shot(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Delete one stored shot and its raw samples."""
+    runtime = _get_runtime(hass, connection, msg["id"])
+    if runtime is None:
+        return
+    try:
+        deleted = await runtime.async_delete_shot(msg["shot_id"])
+    except HomeAssistantError as err:
+        connection.send_error(msg["id"], "delete_refused", str(err))
+        return
+    except Exception as err:
+        connection.send_error(msg["id"], "delete_failed", str(err))
+        return
+    if not deleted:
+        connection.send_error(msg["id"], "not_found", "Shot not found")
+        return
+    connection.send_result(msg["id"], {"deleted": True})
