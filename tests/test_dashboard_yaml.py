@@ -39,7 +39,7 @@ class RenderDashboardYamlTests(unittest.TestCase):
 
 class TokenSubstitutionInNestedKeysTests(unittest.TestCase):
     def test_substitutes_tokens_inside_visibility_conditions(self):
-        """visibility conditions (e.g. the Pre-infusion tile's Auto PI check)
+        """visibility conditions (e.g. the Pre-infusion tile's Adapt PI check)
         reference entities by token just like `entity:` does - _replace_tokens
         must substitute them too, since it walks arbitrary nested keys."""
         template = {
@@ -50,7 +50,7 @@ class TokenSubstitutionInNestedKeysTests(unittest.TestCase):
                             "type": "tile",
                             "entity": "__PREINFUSION__",
                             "visibility": [
-                                {"condition": "state", "entity": "__AUTO_PI__", "state": "off"}
+                                {"condition": "state", "entity": "__ADAPT_PI__", "state": "off"}
                             ],
                         }
                     ]
@@ -59,12 +59,12 @@ class TokenSubstitutionInNestedKeysTests(unittest.TestCase):
         }
         entity_map = {
             "__PREINFUSION__": "number.barista_assist_preinfusion",
-            "__AUTO_PI__": "switch.barista_assist_auto_pi",
+            "__ADAPT_PI__": "switch.barista_assist_adapt_pi",
         }
         text = websocket.render_dashboard_yaml(template, entity_map)
         data = yaml.safe_load(text)
         condition = data["views"][0]["cards"][0]["visibility"][0]
-        self.assertEqual(condition["entity"], "switch.barista_assist_auto_pi")
+        self.assertEqual(condition["entity"], "switch.barista_assist_adapt_pi")
 
 
 if __name__ == "__main__":

@@ -110,6 +110,19 @@ _MAX_PLAUSIBLE_WEIGHT_DROP_G = 0.5
 # interference, exactly as before.
 _DISTURBANCE_DETECTION_FLOOR_G = 2.0
 
+# A leading weight reading this far below zero is scale noise before it's
+# settled/tared, not real data - weight is never meaningfully negative, at
+# any point in a shot (ordinary scale jitter near a true zero baseline stays
+# within a couple tenths of a gram either way). A live shot hit a single
+# -48 g first sample (elapsed_ms=22, one reading before the scale had
+# connected/tared) that dragged the whole smoothing/derivative computation
+# with it, misclassifying an otherwise perfectly normal (if too-fast) shot as
+# invalid_measurement. This must only ever reject on the negative side - a
+# legitimately high leading *positive* reading (e.g. synthetic test data, or
+# real samples that only start once a pour is already well underway) is not
+# implausible the same way and must never be discarded.
+_LEADING_GARBAGE_THRESHOLD_G = 2.0
+
 
 class ShotClassification(str, Enum):
     """Stage-1 validation outcome for one shot (docs/DESIGN.md section 13)."""
@@ -135,6 +148,7 @@ class InvalidReason(str, Enum):
     NO_DETECTED_FLOW = "no_detected_flow"
     FLOW_STARTED_BEFORE_PREINFUSION_END = "flow_started_before_preinfusion_end"
     DISTURBANCE_LEFT_TOO_FEW_SAMPLES = "disturbance_left_too_few_samples"
+    LEADING_GARBAGE_LEFT_TOO_FEW_SAMPLES = "leading_garbage_left_too_few_samples"
 
     def __str__(self) -> str:
         return self.value
@@ -218,6 +232,27 @@ def _first_disturbance_index(raw_weights: list[float]) -> int | None:
             return i
         running_max = max(running_max, weight)
     return None
+
+
+def _first_plausible_index(raw_weights: list[float]) -> int:
+    """First index whose weight isn't implausibly negative (more than
+    _LEADING_GARBAGE_THRESHOLD_G below zero) - i.e. how many leading samples
+    to skip as pre-tare/pre-connect scale noise. Only ever rejects on the
+    negative side: a legitimately high leading positive reading (e.g. real
+    samples that only start once a pour is already underway) is left alone.
+
+    Unlike _first_disturbance_index (a genuine mid-shot problem, judged
+    relative to the shot's own running peak), this looks for implausible
+    readings before any real peak has been established at all, so it can't
+    use the same running-peak comparison - a garbage first sample would just
+    become the (garbage) running peak itself.
+
+    Returns len(raw_weights) if every sample is implausible.
+    """
+    for i, weight in enumerate(raw_weights):
+        if weight >= -_LEADING_GARBAGE_THRESHOLD_G:
+            return i
+    return len(raw_weights)
 
 
 def _moving_average(times_ms: list[int], values: list[float], window_ms: int) -> list[float]:
@@ -355,6 +390,17 @@ def analyze_shot(
 
     times_ms = [sample.elapsed_ms for sample in samples]
     raw_weights = [sample.weight_g for sample in samples]
+
+    # Drop leading pre-tare/pre-connect scale noise (e.g. a stray -48g first
+    # reading) before it can poison the smoothing/derivative computation
+    # below - see _first_plausible_index and _LEADING_GARBAGE_THRESHOLD_G.
+    leading_garbage = _first_plausible_index(raw_weights)
+    if leading_garbage:
+        samples = samples[leading_garbage:]
+        times_ms = times_ms[leading_garbage:]
+        raw_weights = raw_weights[leading_garbage:]
+        if len(samples) < MIN_SAMPLES:
+            return _invalid(InvalidReason.LEADING_GARBAGE_LEFT_TOO_FEW_SAMPLES)
 
     # Cup or scale disturbed (lifted, bumped, moved) at any point: weight can
     # only rise while coffee is actually being collected, so a meaningful

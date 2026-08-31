@@ -242,6 +242,51 @@ class FlowAnalysisTests(unittest.TestCase):
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, InvalidReason.DISTURBANCE_LEFT_TOO_FEW_SAMPLES)
 
+    def test_a_garbage_leading_sample_does_not_derail_classification(self) -> None:
+        """Regression test: a real shot's very first sample (before the
+        scale had connected/settled) read -48g, one reading before returning
+        to a normal ~0g baseline. Left in, that single outlier poisoned the
+        smoothing/derivative computation enough to spuriously cross the
+        first-flow threshold at t=22ms - long before pre-infusion could have
+        plausibly ended - misclassifying an otherwise ordinary too-fast shot
+        as invalid_measurement/flow_started_before_preinfusion_end."""
+        garbage_first_sample = ShotSample(
+            seq=0, elapsed_ms=22, scale_ms=0, weight_g=-48.0, flow_g_s=0.06, battery_percent=90
+        )
+        expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
+        real_pour = _steady_flow_samples(duration_s=expected_s * 0.3)
+        shifted_pour = [
+            ShotSample(
+                seq=s.seq + 1,
+                elapsed_ms=s.elapsed_ms + 100,
+                scale_ms=s.elapsed_ms + 100,
+                weight_g=s.weight_g,
+                flow_g_s=s.flow_g_s,
+                battery_percent=90,
+            )
+            for s in real_pour
+        ]
+        result = analyze_shot(
+            [garbage_first_sample] + shifted_pour,
+            target_yield_g=TARGET_YIELD_G,
+            preinfusion_s=0.0,
+            baseline=HEALTHY_BASELINE,
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.TOO_FAST)
+
+    def test_first_plausible_index_skips_only_implausibly_negative_leading_readings(self) -> None:
+        """Direct unit test for _first_plausible_index: ordinary near-zero
+        noise (including small negative dips) is never skipped, and neither
+        is a legitimately high leading *positive* reading (e.g. real samples
+        that only start once a pour is already underway) - only readings
+        clearly beyond real scale noise on the negative side are."""
+        self.assertEqual(flow_analysis._first_plausible_index([0.0, 0.1, -0.1, 0.2]), 0)
+        self.assertEqual(flow_analysis._first_plausible_index([-48.0, 0.0, 0.1]), 1)
+        self.assertEqual(flow_analysis._first_plausible_index([-48.0, 30.0, 0.0]), 1)
+        self.assertEqual(flow_analysis._first_plausible_index([30.0, 99.0]), 0)
+        self.assertEqual(flow_analysis._first_plausible_index([-48.0, -30.0]), 2)  # all implausible
+
     def test_reaching_target_far_faster_than_expected_is_too_fast(self) -> None:
         expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
         samples = _steady_flow_samples(duration_s=expected_s * 0.3)

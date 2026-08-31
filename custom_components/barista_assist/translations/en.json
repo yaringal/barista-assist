@@ -41,11 +41,9 @@
         "title": "Barista Assist settings",
         "data": {
           "brew_entity": "Brew SwitchBot",
-          "machine_max_shot_seconds": "Barista Express programmed maximum shot duration (seconds)",
-          "safety_margin_seconds": "Stop safety margin (seconds)",
           "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express"
         },
-        "description": "Set the physical shot limit programmed into the Barista Express. Determine this by testing with a real coffee puck (not just water, which flows much faster and can trip the machine's own cutoff far sooner) and holding the button through a full bench-test shot to see how long it takes before the machine stops itself. Barista Assist will stop before this limit and will never press the brew button after the protected window because that could start a new shot - but always supervise the shot yourself, since Barista Assist can't guarantee the machine's own cutoff will land in time."
+        "description": "Confirm the physical shot limit programmed into the Barista Express. Determine this by testing with a real coffee puck (not just water, which flows much faster and can trip the machine's own cutoff far sooner) and holding the button through a full bench-test shot to see how long it takes before the machine stops itself. The maximum shot duration and stop safety margin themselves are edited from the Barista Assist dashboard's \"Connection and control\" card, not here. Barista Assist will stop before that limit and will never press the brew button after the protected window because that could start a new shot - but always supervise the shot yourself, since Barista Assist can't guarantee the machine's own cutoff will land in time."
       }
     },
     "error": {
@@ -122,6 +120,15 @@
       "stop_compensation": {
         "name": "Stop compensation"
       },
+      "machine_max_shot_seconds": {
+        "name": "Machine max shot duration"
+      },
+      "safety_margin_seconds": {
+        "name": "Stop safety margin"
+      },
+      "machine_pi_seconds": {
+        "name": "Machine pre-infusion"
+      },
       "new_bag_starting_mass": {
         "name": "New bag starting mass"
       }
@@ -135,8 +142,12 @@
       }
     },
     "switch": {
-      "auto_pi": {
-        "name": "Auto pre-infusion"
+      "adapt_pi": {
+        "name": "Adapt pre-infusion",
+        "state": {
+          "on": "App-controlled",
+          "off": "Machine-controlled"
+        }
       }
     },
     "text": {

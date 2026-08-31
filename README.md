@@ -290,6 +290,7 @@ Automatic stopping is convenience logic, not a substitute for supervision or the
 
 ## Not implemented yet
 
+- **High priority: dynamic stop-time adjustment based on live flow-rate/acceleration projection during the shot**, instead of relying on the fixed `stop_compensation_g` alone. A real shot overshot from a 36g target to 47.9g because flow was still accelerating (~4 → 8.67 g/s) at the exact moment the stop threshold fired - a static compensation margin can't account for that, but projecting the flow trend forward could stop closer to target regardless of how fast flow happens to be changing at that instant.
 - adaptive/predictive tail compensation;
 - data-driven thresholds for flow-curve diagnostics, once enough shot history exists to derive them instead of using placeholder constants;
 - automatic DF54 recommendations;
@@ -392,22 +393,26 @@ An ESPHome Bluetooth proxy is a small, cheap ESP32-based device that gives Home 
 
 ## Barista Express shot-duration safety requirement
 
-**Barista Assist always drives the 1-CUP/2-CUP button by holding it down** (that's how it programs your configured pre-infusion time), which Breville's own instruction books ([BES875](https://assets.breville.com/BES875/BES875_ANZ_IB_F22_FA_LR.pdf), [BES878](https://www.manualslib.com/manual/1580178/Breville-The-Barista-Pro-Bes878.html?page=15)) describe as a distinct "Manual Pre-Infusion & Extraction" mode - not the same as a plain single tap, which extracts to a pre-set volume and stops itself automatically.
+**Barista Assist drives the 1-CUP/2-CUP button by holding it down** (that's how it programs your configured pre-infusion time), which Breville's own instruction books ([BES875](https://assets.breville.com/BES875/BES875_ANZ_IB_F22_FA_LR.pdf), [BES878](https://www.manualslib.com/manual/1580178/Breville-The-Barista-Pro-Bes878.html?page=15)) describe as a distinct "Manual Pre-Infusion & Extraction" mode - not the same as a plain single tap, which extracts to a pre-set volume and stops itself automatically.
 
-The machine still has its own cutoff in this manual/held mode - live testing confirms this, and it lines up with reports elsewhere that these machines track shot **volume** via an internal flow meter rather than pure elapsed time (e.g. a shot pulled with no portafilter/no grounds - i.e. almost no flow resistance - is reported to cut off after roughly 30 seconds too). A water-only bench test (no coffee) hit that cutoff at about 30 seconds total, including a 7 s pre-infusion hold. Whether that's a fixed, generic safety timer, or tied to whatever volume is *currently programmed* into that CUP button - the BES875 manual lists 30ml/60ml as the 1-CUP/2-CUP **defaults** for single-tap mode, suspiciously close to that 30-second water result - isn't confirmed; either way, **how long it takes depends on how fast liquid is actually flowing**, so a real shot through a resistive coffee puck should take meaningfully longer to reach the same cutoff than a fast, unrestricted water test did. Do not assume the exact number from a water test carries over to a real coffee shot.
+The machine still has its own cutoff in this held mode - live testing confirms this, and it lines up with reports elsewhere that these machines track shot **volume** via an internal flow meter rather than pure elapsed time (e.g. a shot pulled with no portafilter/no grounds - i.e. almost no flow resistance - is reported to cut off after roughly 30 seconds too). A water-only bench test (no coffee) reproduced that cutoff at about 30 seconds total, including a 7 s pre-infusion hold. However do not assume the exact number from a water test carries over to a real coffee shot.
 
 Given that, **you must still determine your own machine's real cutoff by testing it yourself, with a real coffee puck in the portafilter, not just water** - hold the button through a full bench-test shot (see "Safety / bench test" below) and time how long it takes before the machine stops itself. Program the relevant CUP button (1-CUP or 2-CUP) on the Barista Express with that duration, then confirm it in Barista Assist. Barista Assist treats that value as a hard ceiling for its own logic: past a safety margin (3 s by default) before it, Barista Assist stops sending stop/abort button presses entirely and enters `manual_stop_required` instead, because pressing too close to when a shot would naturally end risks starting a **new** shot instead of stopping the current one. In `manual_stop_required`, Barista Assist keeps logging the shot but takes no further automatic action - treat the machine's own cutoff as a last-resort backstop, not a substitute for watching the shot, since its exact timing (and whether it behaves identically for every recipe/dose) isn't something documented publicly with full confidence.
 
 Do not use automatic brew control unless you're prepared to supervise every shot closely enough to intervene manually, and until this machine limit has been physically programmed and confirmed in the integration options.
 
-## Auto PI
+## Adapt PI
 
-Auto PI is a toggle switch (System view → Connection and control) that switches brewing from holding the button (the "Manual Pre-Infusion & Extraction" mode described above) to a single short tap, letting the Barista Express run its own built-in pre-infusion (assumed to be 8 s) before ramping to full pressure. Barista Assist still taps the button a second time to stop the pour once the target weight is reached, exactly as it does in the normal mode.
+Adapt PI is a toggle switch (System view → Connection and control) that controls whether Barista Assist **adapts the pre-infusion duration itself**, per bag, or leaves pre-infusion entirely to the machine's own built-in default.
 
-With Auto PI enabled:
+**Adapt PI enabled (default, "App-controlled"):** Barista Assist holds the button for the active bag's own Pre-infusion recipe value (the "Manual Pre-Infusion & Extraction" mode described above), so the pre-infusion duration follows whatever's set per bag/recipe. Barista Assist still taps the button a second time to stop the pour once the target weight is reached.
+
+**Adapt PI disabled ("Machine-controlled"):** Barista Assist sends a single short tap instead, letting the Barista Express run its own built-in pre-infusion - whatever duration is physically programmed into that CUP button - before ramping to full pressure. Barista Assist can't observe or control that duration, so the **Machine pre-infusion** setting (System view → Connection and control, shown only while Adapt PI is off) is where you tell it what your machine's own pre-infusion actually is, so shot records log the true value used instead of a guess; update it if you reprogram the machine's own pre-infusion timing.
+
+With Adapt PI disabled:
 
 - **No direct BLE connection is used at all.** Both the start and stop presses go through Home Assistant's own SwitchBot integration (`switch.turn_on`) - Barista Assist never opens its own BLE session to reprogram the Bot's long-press duration, since there's no hold duration to configure.
-- **The Pre-infusion tile is hidden** from the Recipe section of the dashboard as soon as you flip the toggle, since the duration is fixed by the machine rather than something Barista Assist controls per bag.
+- **The Pre-infusion tile is hidden** from the Recipe section of the dashboard as soon as you flip the toggle off, since the duration is fixed by the machine rather than something Barista Assist controls per bag.
 - The single tap starts what Breville's manuals describe as "Pre-Programmed Shot Volume" mode, which has its own auto-stop at whatever volume is currently programmed into the CUP button - Barista Assist's own stop press is meant to land well before that, but if it's ever late, the same safety-margin/`manual_stop_required` logic as the normal mode still applies (see above), and the machine's programmed volume becomes the backstop instead of its water-only volume-based cutoff.
 
 ## Shot-data export

@@ -62,6 +62,8 @@ class StorageTests(unittest.TestCase):
             bag=bag,
             started_at="2026-08-16T17:00:00+00:00",
             stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
         )
         samples = [
             storage.ShotSample(0, 0, 0, 0.0, 0.0, 90),
@@ -87,6 +89,8 @@ class StorageTests(unittest.TestCase):
             bag=bag,
             started_at='2026-08-16T17:00:00+00:00',
             stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
         )
         samples = [
             storage.ShotSample(0, 0, 0, 0.0, 0.0, 90),
@@ -108,6 +112,26 @@ class StorageTests(unittest.TestCase):
         self.assertIn('1\t29000\t29000\t34.000\t1.5000\t90\t1', text)
         self.assertIn('0\t0\t0\t0.000\t0.0000\t90\t0', text)
 
+    def test_export_includes_adapt_pi_flag(self) -> None:
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=8.0,
+            adapt_pi=True,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=36.2,
+            status="complete",
+            stop_command_elapsed_ms=29000,
+            samples=[storage.ShotSample(0, 0, 0, 0.0, 0.0, 90)],
+        )
+        text = self.db.export_shots_text()
+        self.assertIn("adapt_pi=True", text)
+
     def test_export_includes_flow_analysis_fields(self) -> None:
         bag = self.new_bag()
         self.finalize_with_analysis(bag, classification="puck_prep_issue", late_accel=1.2, t90_ms=15000)
@@ -122,7 +146,11 @@ class StorageTests(unittest.TestCase):
         """Finalize a shot carrying just enough analysis_json for
         recent_healthy_features to compute a flow rate and late_accel from."""
         shot_id = self.db.create_shot(
-            bag=bag, started_at="2026-08-16T17:00:00+00:00", stop_compensation_g=1.5
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
         )
         samples = [storage.ShotSample(0, 0, 0, 0.0, 0.0, 90)]
         self.db.finalize_shot(

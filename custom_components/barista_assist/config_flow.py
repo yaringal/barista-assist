@@ -55,41 +55,56 @@ def _confirmation_selector() -> selector.BooleanSelector:
     return selector.BooleanSelector()
 
 
-def _settings_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+def _settings_schema(
+    defaults: dict[str, Any] | None = None, *, include_machine_settings: bool = True
+) -> vol.Schema:
+    """Shared by every flow that edits brew_entity/machine_limit_confirmed.
+
+    include_machine_settings controls whether machine_max_shot_seconds/
+    safety_margin_seconds are part of the form: initial setup still needs
+    them (there's no dashboard yet to edit them on), but the options flow no
+    longer does - those two are dashboard-editable number entities now (see
+    BaristaRuntime.machine_max_shot_s/safety_margin_s), the same as
+    stop_compensation_g, so editing them here would just be a second,
+    disconnected copy of the same setting.
+    """
     defaults = defaults or {}
     brew_key = (
         vol.Required(CONF_BREW_ENTITY, default=defaults[CONF_BREW_ENTITY])
         if defaults.get(CONF_BREW_ENTITY)
         else vol.Required(CONF_BREW_ENTITY)
     )
-    machine_limit = defaults.get(CONF_MACHINE_MAX_SHOT_SECONDS)
-    margin = defaults.get(
-        CONF_SAFETY_MARGIN_SECONDS,
-        load_definitions().defaults["controller"]["safety_margin_s"],
-    )
     confirmation = defaults.get(CONF_MACHINE_LIMIT_CONFIRMED, False)
-    machine_key = (
-        vol.Required(CONF_MACHINE_MAX_SHOT_SECONDS, default=machine_limit)
-        if machine_limit is not None
-        else vol.Required(CONF_MACHINE_MAX_SHOT_SECONDS)
+    schema: dict[Any, Any] = {brew_key: _brew_selector()}
+    if include_machine_settings:
+        machine_limit = defaults.get(CONF_MACHINE_MAX_SHOT_SECONDS)
+        margin = defaults.get(
+            CONF_SAFETY_MARGIN_SECONDS,
+            load_definitions().defaults["controller"]["safety_margin_s"],
+        )
+        machine_key = (
+            vol.Required(CONF_MACHINE_MAX_SHOT_SECONDS, default=machine_limit)
+            if machine_limit is not None
+            else vol.Required(CONF_MACHINE_MAX_SHOT_SECONDS)
+        )
+        schema[machine_key] = _machine_limit_selector()
+        schema[vol.Required(CONF_SAFETY_MARGIN_SECONDS, default=margin)] = _margin_selector()
+    schema[vol.Required(CONF_MACHINE_LIMIT_CONFIRMED, default=confirmation)] = (
+        _confirmation_selector()
     )
-    return vol.Schema(
-        {
-            brew_key: _brew_selector(),
-            machine_key: _machine_limit_selector(),
-            vol.Required(CONF_SAFETY_MARGIN_SECONDS, default=margin): _margin_selector(),
-            vol.Required(CONF_MACHINE_LIMIT_CONFIRMED, default=confirmation): _confirmation_selector(),
-        }
-    )
+    return vol.Schema(schema)
 
 
 def _validate_machine_settings(
     user_input: dict[str, Any], errors: dict[str, str]
 ) -> None:
-    # machine_limit - margin can never be <= 5 given the selector bounds below
-    # (min 20 - max 10 = 10), so that check is not duplicated here; the real
-    # enforcement (needed because options aren't bound this way after saving)
-    # lives in BaristaRuntime.async_brew's safe_shot_deadline_s check.
+    # Only checks the confirmation checkbox: machine_max_shot_seconds/
+    # safety_margin_seconds aren't part of every form this validates (the
+    # options flow no longer includes them - see _settings_schema), and even
+    # where they are, machine_limit - margin can never be <= 5 given the
+    # selector bounds (min 20 - max 10 = 10). The real enforcement (needed
+    # because dashboard-entered values aren't bound this way) lives in
+    # BaristaRuntime.async_brew's safe_shot_deadline_s check.
     if not user_input.get(CONF_MACHINE_LIMIT_CONFIRMED, False):
         errors[CONF_MACHINE_LIMIT_CONFIRMED] = "machine_limit_must_be_confirmed"
 
@@ -232,5 +247,7 @@ class BaristaAssistOptionsFlow(OptionsFlow):
                 return self.async_create_entry(title="", data=user_input)
         current = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(
-            step_id="init", data_schema=_settings_schema(current), errors=errors
+            step_id="init",
+            data_schema=_settings_schema(current, include_machine_settings=False),
+            errors=errors,
         )

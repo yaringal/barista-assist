@@ -11,7 +11,7 @@ import statistics
 from typing import Any, Iterable
 from uuid import uuid4
 
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 BAG_RECIPE_FIELDS = frozenset(
     {"dose_g", "grind", "target_yield_g", "temperature_offset_c", "preinfusion_s"}
 )
@@ -182,15 +182,27 @@ class BaristaDatabase:
                 (value, bag_id),
             )
 
-    def create_shot(self, *, bag: Bag, started_at: str, stop_compensation_g: float) -> str:
+    def create_shot(
+        self,
+        *,
+        bag: Bag,
+        started_at: str,
+        stop_compensation_g: float,
+        preinfusion_s: float,
+        adapt_pi: bool,
+    ) -> str:
+        """preinfusion_s is the shot's actual effective pre-infusion duration
+        (whichever of bag.preinfusion_s / the machine's own default was truly
+        used - see BaristaRuntime.async_brew), not necessarily bag.preinfusion_s
+        itself: a bag's recipe field only applies when Adapt PI is on."""
         shot_id = uuid4().hex
         with self._connect() as db:
             db.execute(
                 """
                 INSERT INTO shots(
                     id, bag_id, started_at, dose_g, grind, target_yield_g,
-                    temperature_offset_c, preinfusion_s, stop_compensation_g, status
-                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    temperature_offset_c, preinfusion_s, stop_compensation_g, status, adapt_pi
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     shot_id,
@@ -200,9 +212,10 @@ class BaristaDatabase:
                     bag.grind,
                     bag.target_yield_g,
                     bag.temperature_offset_c,
-                    bag.preinfusion_s,
+                    float(preinfusion_s),
                     float(stop_compensation_g),
                     "running",
+                    int(adapt_pi),
                 ),
             )
         return shot_id
@@ -295,7 +308,7 @@ class BaristaDatabase:
                 SELECT
                     s.*,
                     b.coffee_name, b.slot, b.roaster, b.roast_date,
-                    b.opened_at, b.starting_mass_g, b.preinfusion_s AS bag_preinfusion_s
+                    b.opened_at, b.starting_mass_g
                 FROM shots s
                 JOIN bags b ON b.id=s.bag_id
                 ORDER BY s.started_at ASC
@@ -322,6 +335,9 @@ class BaristaDatabase:
             '# One metadata block + raw scale time series per shot.',
             '# Sample columns: seq\telapsed_ms\tscale_ms\tweight_g\tflow_g_s\tbattery_percent\tpost_stop',
             '# post_stop=1 means the sample was recorded after the stop command.',
+            '# preinfusion_s is the shot\'s actual effective pre-infusion duration - the bag\'s',
+            '# own preinfusion_s recipe field when adapt_pi=True, the machine\'s own',
+            '# configured default (machine_pi_s) when adapt_pi=False.',
             '',
         ]
 
@@ -347,7 +363,8 @@ class BaristaDatabase:
                 f"target_yield_g={shot['target_yield_g']}",
                 f"actual_yield_g={shot['actual_yield_g'] if shot['actual_yield_g'] is not None else ''}",
                 f"temperature_offset_c={shot['temperature_offset_c']}",
-                f"preinfusion_s={shot['bag_preinfusion_s']}",
+                f"preinfusion_s={shot['preinfusion_s']}",
+                f"adapt_pi={bool(shot['adapt_pi'])}",
                 f"stop_compensation_g={shot['stop_compensation_g']}",
                 f"stop_command_elapsed_ms={shot['stop_command_elapsed_ms'] if shot['stop_command_elapsed_ms'] is not None else ''}",
                 f"sample_count={shot['sample_count']}",

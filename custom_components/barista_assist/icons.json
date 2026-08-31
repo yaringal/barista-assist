@@ -14,6 +14,9 @@
       "target_yield": {"default": "mdi:cup"},
       "preinfusion": {"default": "mdi:timer-sand"},
       "stop_compensation": {"default": "mdi:target"},
+      "machine_max_shot_seconds": {"default": "mdi:timer-alert"},
+      "safety_margin_seconds": {"default": "mdi:shield-alert"},
+      "machine_pi_seconds": {"default": "mdi:timer-sand"},
       "new_bag_starting_mass": {"default": "mdi:weight-gram"}
     },
     "select": {
@@ -21,7 +24,7 @@
       "temperature_offset": {"default": "mdi:thermometer"}
     },
     "switch": {
-      "auto_pi": {"default": "mdi:gesture-tap"}
+      "adapt_pi": {"default": "mdi:gesture-tap"}
     },
     "text": {
       "new_bag_coffee": {"default": "mdi:sack"},

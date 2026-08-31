@@ -16,7 +16,9 @@ defaults:
   controller:
     stop_compensation_g: 1.5
     safety_margin_s: 3
-    auto_pi: false
+    machine_max_shot_s: 50
+    machine_pi_s: 8.0
+    adapt_pi: true
   new_bag:
     starting_mass_g: 250.0
 
@@ -168,6 +170,39 @@ entities:
       unit: g
       mode: box
 
+    machine_max_shot_seconds:
+      source: controller
+      field: machine_max_shot_s
+      translation_key: machine_max_shot_seconds
+      token: __MACHINE_MAX_SHOT_SECONDS__
+      min: 20
+      max: 120
+      step: 1
+      unit: s
+      mode: box
+
+    safety_margin_seconds:
+      source: controller
+      field: safety_margin_s
+      translation_key: safety_margin_seconds
+      token: __SAFETY_MARGIN_SECONDS__
+      min: 1
+      max: 10
+      step: 0.5
+      unit: s
+      mode: box
+
+    machine_pi_seconds:
+      source: controller
+      field: machine_pi_s
+      translation_key: machine_pi_seconds
+      token: __MACHINE_PI_SECONDS__
+      min: 1
+      max: 20
+      step: 0.5
+      unit: s
+      mode: box
+
     new_bag_starting_mass:
       source: draft
       field: starting_mass_g
@@ -210,11 +245,11 @@ entities:
           value: 2
 
   switch:
-    auto_pi:
+    adapt_pi:
       source: controller
-      field: auto_pi
-      translation_key: auto_pi
-      token: __AUTO_PI__
+      field: adapt_pi
+      translation_key: adapt_pi
+      token: __ADAPT_PI__
 
   text:
     new_bag_coffee:

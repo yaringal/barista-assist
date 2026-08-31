@@ -87,8 +87,8 @@ views:
             features_position: bottom
             visibility:
               - condition: state
-                entity: __AUTO_PI__
-                state: "off"
+                entity: __ADAPT_PI__
+                state: "on"
 
       - type: grid
         cards:
@@ -289,5 +289,16 @@ views:
                 name: Scale battery
               - entity: __STOP_COMPENSATION__
                 name: Stop compensation
-              - entity: __AUTO_PI__
-                name: Auto PI
+              - entity: __MACHINE_MAX_SHOT_SECONDS__
+                name: Machine max shot duration
+              - entity: __SAFETY_MARGIN_SECONDS__
+                name: Stop safety margin
+              - entity: __ADAPT_PI__
+                name: Adapt PI
+              - type: conditional
+                conditions:
+                  - entity: __ADAPT_PI__
+                    state: "off"
+                row:
+                  entity: __MACHINE_PI_SECONDS__
+                  name: Machine pre-infusion

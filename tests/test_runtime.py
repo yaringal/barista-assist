@@ -81,6 +81,7 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             lambda hass, entity_id: "AA:BB:CC:DD:EE:FF"
         )
         FakeBotConfigurator.reset()
+        ha_stubs.reset_stores()
 
         self._temp_dir = make_temp_dir()
         self.hass = FakeHass(self._temp_dir)
@@ -285,47 +286,78 @@ class InstantTapTests(RuntimeTestCase):
         self.assertTrue(phase_task.done())
 
 
-class AutoPiTests(RuntimeTestCase):
-    """Auto PI: a single short tap starts the Barista Express's own built-in
-    pre-infusion instead of Barista Assist holding the button for a per-bag
-    duration - so the direct-BLE Bot-configure step (SwitchBotBotConfigurator)
-    must never be used at all, only Home Assistant's switchbot integration
-    (switch.turn_on)."""
+class AdaptPiTests(RuntimeTestCase):
+    """Adapt PI *off* (machine-controlled): a single short tap starts the
+    Barista Express's own built-in pre-infusion (machine_pi_s) instead of
+    Barista Assist holding the button for the bag's configured
+    preinfusion_s - so the direct-BLE Bot-configure step
+    (SwitchBotBotConfigurator) must never be used at all, only Home
+    Assistant's switchbot integration (switch.turn_on).
+
+    Adapt PI *on* (the default - the app adapts/holds for the bag's own
+    preinfusion_s) is exercised implicitly by nearly every other test in
+    this file, since it's what RuntimeTestCase's default config produces."""
 
     async def test_start_press_never_reprograms_the_bot(self):
-        self.runtime.auto_pi = True
-        with mock.patch.object(runtime_module, "AUTO_PI_DURATION_S", 0.05):
-            await self.start_shot(preinfusion_s=1.0)
-            self.assertTrue(self.runtime.active_shot.quick_press_ready)
-            self.assertEqual(FakeBotConfigurator.calls, [])
-            await self.wait_for_extracting()
-            self.assertEqual(FakeBotConfigurator.calls, [])
+        self.runtime.adapt_pi = False
+        self.runtime.machine_pi_s = 0.05
+        await self.start_shot(preinfusion_s=1.0)
+        self.assertTrue(self.runtime.active_shot.quick_press_ready)
+        self.assertEqual(FakeBotConfigurator.calls, [])
+        await self.wait_for_extracting()
+        self.assertEqual(FakeBotConfigurator.calls, [])
 
-    async def test_uses_the_fixed_auto_pi_duration_not_the_bag_value(self):
-        """Regression test: Auto PI must use AUTO_PI_DURATION_S regardless of
-        the bag's configured preinfusion_s, since the machine (not Barista
-        Assist) controls the pre-infusion length in this mode."""
-        self.runtime.auto_pi = True
-        with mock.patch.object(runtime_module, "AUTO_PI_DURATION_S", 0.05):
-            await self.start_shot(preinfusion_s=1.0)
-            await asyncio.sleep(0.15)
-            self.assertEqual(self.runtime.status, ShotPhase.EXTRACTING.value)
+    async def test_uses_the_machine_pi_duration_not_the_bag_value(self):
+        """Regression test: a machine-controlled shot must use machine_pi_s
+        regardless of the bag's configured preinfusion_s, since the machine
+        (not Barista Assist) controls the pre-infusion length in this mode."""
+        self.runtime.adapt_pi = False
+        self.runtime.machine_pi_s = 0.05
+        await self.start_shot(preinfusion_s=1.0)
+        await asyncio.sleep(0.15)
+        self.assertEqual(self.runtime.status, ShotPhase.EXTRACTING.value)
 
     async def test_stop_press_also_uses_only_the_switchbot_integration(self):
-        self.runtime.auto_pi = True
-        with mock.patch.object(runtime_module, "AUTO_PI_DURATION_S", 0.05):
-            await self.start_shot(preinfusion_s=1.0)
-            await self.wait_for_extracting()
-            # _handle_reading only schedules the target-weight stop once the
-            # shot has run for over 1s since press_monotonic (see runtime.py).
-            await asyncio.sleep(1.05)
-            calls_before = len(self.hass.services.calls)
-            self.scale.push_reading(make_reading(weight_g=35.0))
-            await self.hass.tasks[-1]
+        self.runtime.adapt_pi = False
+        self.runtime.machine_pi_s = 0.05
+        await self.start_shot(preinfusion_s=1.0)
+        await self.wait_for_extracting()
+        # _handle_reading only schedules the target-weight stop once the
+        # shot has run for over 1s since press_monotonic (see runtime.py).
+        await asyncio.sleep(1.05)
+        calls_before = len(self.hass.services.calls)
+        self.scale.push_reading(make_reading(weight_g=35.0))
+        await self.hass.tasks[-1]
 
-            self.assertGreater(len(self.hass.services.calls), calls_before)
-            self.assertEqual(self.runtime.status, ShotPhase.SETTLING.value)
-            self.assertEqual(FakeBotConfigurator.calls, [])
+        self.assertGreater(len(self.hass.services.calls), calls_before)
+        self.assertEqual(self.runtime.status, ShotPhase.SETTLING.value)
+        self.assertEqual(FakeBotConfigurator.calls, [])
+
+    async def test_shot_record_persists_the_adapt_pi_flag(self):
+        """Regression test: shots didn't record whether Adapt PI was on,
+        making it impossible to tell from an exported shot whether the
+        machine or the app actually controlled pre-infusion for that shot."""
+        self.runtime.adapt_pi = False
+        self.runtime.machine_pi_s = 0.05
+        await self.start_shot(preinfusion_s=1.0)
+        await self.wait_for_extracting()
+        await asyncio.sleep(1.05)
+        self.scale.push_reading(make_reading(weight_g=35.0))
+        await self.hass.tasks[-1]
+        await asyncio.sleep(3.1)  # settle then finalize
+
+        self.assertFalse(bool(self.runtime.last_shot["adapt_pi"]))
+
+    async def test_app_controlled_shot_does_reprogram_the_bot(self):
+        """The default (adapt_pi=True): the app holds the button for the
+        bag's own preinfusion_s, which does require the direct-BLE
+        Bot-configure step - the inverse of every test above."""
+        self.assertTrue(self.runtime.adapt_pi)
+        await self.start_shot(preinfusion_s=1.0)
+        self.assertFalse(self.runtime.active_shot.quick_press_ready)
+        self.assertEqual(FakeBotConfigurator.calls, [1])
+        await self.wait_for_extracting()
+        self.assertEqual(FakeBotConfigurator.calls, [1, 0])
 
 
 class ButtonAvailabilityTests(RuntimeTestCase):
@@ -725,9 +757,10 @@ class ShotTimeoutTests(RuntimeTestCase):
         timeout_task = self.hass.tasks[-1]  # _shot_timeout(), scheduled by async_brew()
 
         # Shrink the deadline live instead of waiting out the real ~8s
-        # default - properties re-read entry.options on every access.
-        self.entry.options[CONF_MACHINE_MAX_SHOT_SECONDS] = 0.3
-        self.entry.options[CONF_SAFETY_MARGIN_SECONDS] = 0.1
+        # default - dashboard-editable runtime attributes, not properties
+        # re-read from entry.options.
+        self.runtime.machine_max_shot_s = 0.3
+        self.runtime.safety_margin_s = 0.1
 
         await timeout_task
 
@@ -738,6 +771,93 @@ class ShotTimeoutTests(RuntimeTestCase):
         # already covered elsewhere by stops triggered well before it).
         self.assertEqual(self.runtime.status, ShotPhase.MANUAL_STOP_REQUIRED.value)
         self.assertIsNotNone(self.runtime.active_shot)
+
+
+class SafetyTimeSettingsTests(RuntimeTestCase):
+    """machine_max_shot_s/safety_margin_s used to be read-only properties
+    sourced live from entry.options (config-flow-only); they're now
+    dashboard-editable number entities backed by the runtime's own Store,
+    the same pattern as stop_compensation_g."""
+
+    def _number(self, key: str):
+        return next(d for d in self.runtime.definitions.platform("number") if d.key == key)
+
+    async def test_seeded_from_entry_options_on_first_load(self):
+        """asyncSetUp's FakeConfigEntry seeds machine_max_shot_seconds=10.0/
+        safety_margin_seconds=2.0 - since nothing has ever been saved to the
+        Store yet, async_initialize (already run in asyncSetUp) must have
+        migrated those in as the starting values."""
+        self.assertEqual(self.runtime.machine_max_shot_s, 10.0)
+        self.assertEqual(self.runtime.safety_margin_s, 2.0)
+
+    async def test_editable_via_the_declarative_entity_interface(self):
+        machine_max = self._number("machine_max_shot_seconds")
+        margin = self._number("safety_margin_seconds")
+        self.assertEqual(self.runtime.entity_value(machine_max), 10.0)
+        self.assertEqual(self.runtime.entity_value(margin), 2.0)
+
+        await self.runtime.async_set_entity_value(machine_max, 45.0)
+        await self.runtime.async_set_entity_value(margin, 4.0)
+
+        self.assertEqual(self.runtime.machine_max_shot_s, 45.0)
+        self.assertEqual(self.runtime.safety_margin_s, 4.0)
+        self.assertEqual(self.runtime.entity_value(machine_max), 45.0)
+        self.assertEqual(self.runtime.entity_value(margin), 4.0)
+
+    async def test_persisted_value_wins_over_entry_options_on_next_load(self):
+        """Once a value has been saved to the Store (e.g. via the dashboard),
+        it must take priority over entry.options on a later reload - entry.
+        options only seeds the very first migration, it isn't re-consulted
+        forever."""
+        machine_max = self._number("machine_max_shot_seconds")
+        await self.runtime.async_set_entity_value(machine_max, 45.0)
+
+        self.entry.options[CONF_MACHINE_MAX_SHOT_SECONDS] = 999.0  # must be ignored now
+        reloaded = BaristaRuntime(self.hass, self.entry)
+        await reloaded.async_initialize()
+        try:
+            self.assertEqual(reloaded.machine_max_shot_s, 45.0)
+        finally:
+            await reloaded.async_close()
+
+
+class MachinePiSettingTests(RuntimeTestCase):
+    """machine_pi_s (the machine's own built-in pre-infusion duration, used
+    when Adapt PI is off) must not be a hardcoded constant - it's a
+    dashboard-editable number entity, the same pattern as
+    machine_max_shot_s/safety_margin_s/stop_compensation_g, since a real
+    Barista Express's own default can differ or be reprogrammed."""
+
+    def _number(self, key: str):
+        return next(d for d in self.runtime.definitions.platform("number") if d.key == key)
+
+    async def test_editable_via_the_declarative_entity_interface(self):
+        machine_pi = self._number("machine_pi_seconds")
+        self.assertEqual(self.runtime.entity_value(machine_pi), self.runtime.machine_pi_s)
+
+        await self.runtime.async_set_entity_value(machine_pi, 12.0)
+
+        self.assertEqual(self.runtime.machine_pi_s, 12.0)
+        self.assertEqual(self.runtime.entity_value(machine_pi), 12.0)
+
+    async def test_shot_record_logs_the_actual_effective_preinfusion_used(self):
+        """Regression test: shots used to always log the bag's own recipe
+        preinfusion_s, regardless of which mode actually controlled the
+        shot - making a machine-controlled shot's logged preinfusion_s
+        wrong (and, since machine_pi_s used to be a hardcoded constant,
+        unrecoverable even by cross-referencing adapt_pi)."""
+        self.runtime.machine_pi_s = 6.0
+        self.runtime.adapt_pi = False
+        await self.start_shot(preinfusion_s=1.0)  # bag's own recipe value - must be ignored
+        self.assertEqual(self.runtime.active_shot.preinfusion_s, 6.0)
+        await self.runtime.async_abort()
+        self.assertEqual(self.runtime.last_shot["preinfusion_s"], 6.0)
+
+        self.runtime.adapt_pi = True
+        await self.start_shot(preinfusion_s=4.0)
+        self.assertEqual(self.runtime.active_shot.preinfusion_s, 4.0)
+        await self.runtime.async_abort()
+        self.assertEqual(self.runtime.last_shot["preinfusion_s"], 4.0)
 
 
 class FinalizeIdempotencyTests(RuntimeTestCase):

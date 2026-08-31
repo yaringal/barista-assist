@@ -79,22 +79,34 @@ def install() -> None:
     storage = _new_module("homeassistant.helpers.storage")
 
     class Store:
-        """In-memory stand-in for homeassistant.helpers.storage.Store."""
+        """In-memory stand-in for homeassistant.helpers.storage.Store.
+
+        Keyed by `key` in a module-level dict (not per-instance) - real HA
+        Store instances persist to a JSON file keyed by the same string, so
+        two Store(...) objects constructed with the same key (e.g. a second
+        BaristaRuntime built against the same config entry, simulating a
+        reload) must see each other's saved data, the same as production.
+        """
+
+        _by_key: dict[str, object] = {}
 
         def __init__(self, hass, version, key) -> None:
             self.hass = hass
             self.version = version
             self.key = key
-            self._data = None
 
         def __class_getitem__(cls, item):
             return cls
 
         async def async_load(self):
-            return self._data
+            return self._by_key.get(self.key)
 
         async def async_save(self, data) -> None:
-            self._data = data
+            self._by_key[self.key] = data
+
+        @classmethod
+        def reset_all(cls) -> None:
+            cls._by_key.clear()
 
     storage.Store = Store
 
@@ -214,3 +226,11 @@ def import_barista_module(name: str) -> types.ModuleType:
 def import_runtime_module() -> types.ModuleType:
     """Import custom_components.barista_assist.runtime (see import_barista_module)."""
     return import_barista_module("runtime")
+
+
+def reset_stores() -> None:
+    """Clear the fake Store's cross-instance data (see install()'s Store) -
+    call this in asyncSetUp so state saved by one test (e.g. under the same
+    FakeConfigEntry.entry_id every RuntimeTestCase subclass reuses) can never
+    leak into another."""
+    sys.modules["homeassistant.helpers.storage"].Store.reset_all()

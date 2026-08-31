@@ -46,10 +46,6 @@ _QUICK_STOP_BOT_WAIT_TIMEOUT_S = 3.0
 # without it anyway (see _async_press_brew_bot) - it must never be blocked
 # indefinitely behind a slow/stuck prepare call.
 _BOT_PRESS_LOCK_TIMEOUT_S = 2.0
-# The Barista Express's own built-in pre-infusion duration when the brew
-# button is single-tapped rather than held (see BaristaRuntime.auto_pi) -
-# fixed by the machine itself, not something Barista Assist can configure.
-AUTO_PI_DURATION_S = 8.0
 # Cap on points returned by _shot_plot_points, regardless of how many raw
 # samples a shot has - keeps the `shot_plot` attribute payload bounded for an
 # unusually long shot instead of growing without limit.
@@ -154,7 +150,10 @@ class BaristaRuntime:
         self.stop_compensation_g = float(
             defaults["controller"]["stop_compensation_g"]
         )
-        self.auto_pi = bool(defaults["controller"].get("auto_pi", False))
+        self.adapt_pi = bool(defaults["controller"]["adapt_pi"])
+        self.machine_pi_s = float(defaults["controller"]["machine_pi_s"])
+        self.machine_max_shot_s = float(defaults["controller"]["machine_max_shot_s"])
+        self.safety_margin_s = float(defaults["controller"]["safety_margin_s"])
         self.draft = BagDraft(
             roast_date=date.today(),
             starting_mass_g=float(defaults["new_bag"]["starting_mass_g"]),
@@ -198,19 +197,6 @@ class BaristaRuntime:
     @property
     def brew_entity(self) -> str:
         return str(self.entry.options.get(CONF_BREW_ENTITY, self.entry.data.get(CONF_BREW_ENTITY, "")))
-
-    @property
-    def machine_max_shot_s(self) -> float:
-        return float(self.entry.options[CONF_MACHINE_MAX_SHOT_SECONDS])
-
-    @property
-    def safety_margin_s(self) -> float:
-        return float(
-            self.entry.options.get(
-                CONF_SAFETY_MARGIN_SECONDS,
-                self.definitions.defaults["controller"]["safety_margin_s"],
-            )
-        )
 
     @property
     def safe_shot_deadline_s(self) -> float:
@@ -258,8 +244,27 @@ class BaristaRuntime:
         self.stop_compensation_g = float(
             state.get("stop_compensation_g", legacy_stop)
         )
-        self.auto_pi = bool(
-            state.get("auto_pi", self.definitions.defaults["controller"].get("auto_pi", False))
+        self.adapt_pi = bool(
+            state.get("adapt_pi", self.definitions.defaults["controller"]["adapt_pi"])
+        )
+        self.machine_pi_s = float(
+            state.get("machine_pi_s", self.definitions.defaults["controller"]["machine_pi_s"])
+        )
+        # machine_max_shot_s/safety_margin_s used to live only in entry.options
+        # (config-flow-managed) - now dashboard-editable like stop_compensation_g,
+        # seeded once from whatever was last saved there.
+        legacy_machine_max_shot_s = self.entry.options.get(
+            CONF_MACHINE_MAX_SHOT_SECONDS,
+            self.definitions.defaults["controller"]["machine_max_shot_s"],
+        )
+        self.machine_max_shot_s = float(
+            state.get("machine_max_shot_s", legacy_machine_max_shot_s)
+        )
+        legacy_safety_margin_s = self.entry.options.get(
+            CONF_SAFETY_MARGIN_SECONDS, self.definitions.defaults["controller"]["safety_margin_s"]
+        )
+        self.safety_margin_s = float(
+            state.get("safety_margin_s", legacy_safety_margin_s)
         )
         await self._async_save_state()
         await self.async_refresh_cache()
@@ -279,7 +284,8 @@ class BaristaRuntime:
             {
                 "selected_slot": self.selected_slot,
                 "stop_compensation_g": self.stop_compensation_g,
-                "auto_pi": self.auto_pi,
+                "adapt_pi": self.adapt_pi,
+                "machine_pi_s": self.machine_pi_s,
                 "machine_max_shot_s": self.machine_max_shot_s,
                 "safety_margin_s": self.safety_margin_s,
                 "safe_shot_deadline_s": self.safe_shot_deadline_s,
@@ -407,8 +413,23 @@ class BaristaRuntime:
                 await self._async_save_state()
                 self._notify(force=True)
                 return
-            if field == "auto_pi":
-                self.auto_pi = bool(value)
+            if field == "adapt_pi":
+                self.adapt_pi = bool(value)
+                await self._async_save_state()
+                self._notify(force=True)
+                return
+            if field == "machine_pi_s":
+                self.machine_pi_s = float(value)
+                await self._async_save_state()
+                self._notify(force=True)
+                return
+            if field == "machine_max_shot_s":
+                self.machine_max_shot_s = float(value)
+                await self._async_save_state()
+                self._notify(force=True)
+                return
+            if field == "safety_margin_s":
+                self.safety_margin_s = float(value)
                 await self._async_save_state()
                 self._notify(force=True)
                 return
@@ -686,7 +707,7 @@ class BaristaRuntime:
                 raise HomeAssistantError(
                     "Machine maximum shot duration must exceed the safety margin by at least 5 seconds"
                 )
-            preinfusion_s = AUTO_PI_DURATION_S if self.auto_pi else bag.preinfusion_s
+            preinfusion_s = bag.preinfusion_s if self.adapt_pi else self.machine_pi_s
             if preinfusion_s >= self.safe_shot_deadline_s:
                 raise HomeAssistantError(
                     "Pre-infusion must be shorter than the protected shot window"
@@ -704,6 +725,8 @@ class BaristaRuntime:
                     bag=bag,
                     started_at=started_at,
                     stop_compensation_g=self.stop_compensation_g,
+                    preinfusion_s=preinfusion_s,
+                    adapt_pi=self.adapt_pi,
                 )
             )
             self.active_shot = ActiveShot(
@@ -715,32 +738,36 @@ class BaristaRuntime:
                 stop_compensation_g=self.stop_compensation_g,
                 preinfusion_s=preinfusion_s,
                 samples=[],
-                # Auto PI never holds the button, so the Bot is never
-                # reprogrammed away from its default instant tap - the stop
-                # press can go out immediately whenever it's needed.
-                quick_press_ready=self.auto_pi,
+                # With Adapt PI off, the machine runs its own pre-infusion on
+                # a single short tap - the Bot is never reprogrammed away
+                # from its default instant tap, so the stop press can go out
+                # immediately whenever it's needed.
+                quick_press_ready=not self.adapt_pi,
             )
             _LOGGER.info(
-                "Shot %s started: bag=%s dose=%sg target_yield=%sg preinfusion=%ss (auto_pi=%s)",
+                "Shot %s started: bag=%s dose=%sg target_yield=%sg preinfusion=%ss (adapt_pi=%s)",
                 shot_id,
                 bag.coffee_name,
                 bag.dose_g,
                 bag.target_yield_g,
                 preinfusion_s,
-                self.auto_pi,
+                self.adapt_pi,
             )
             self._set_phase(ShotPhase.PREINFUSION)
 
             try:
-                if self.auto_pi:
-                    # The Barista Express runs its own pre-infusion on a
-                    # single short tap - no hold duration to program, so
-                    # this skips the direct-BLE Bot-configure step entirely
-                    # and presses through Home Assistant's switchbot
-                    # integration only.
+                if self.adapt_pi:
+                    # The app adapts pre-infusion itself: hold the button for
+                    # this bag's configured preinfusion_s rather than using
+                    # the machine's own fixed default.
+                    await self._async_prepare_brew_bot(int(preinfusion_s))
                     await self._async_press_brew_bot()
                 else:
-                    await self._async_prepare_brew_bot(int(preinfusion_s))
+                    # Machine-controlled: the Barista Express runs its own
+                    # pre-infusion on a single short tap - no hold duration
+                    # to program, so this skips the direct-BLE Bot-configure
+                    # step entirely and presses through Home Assistant's
+                    # switchbot integration only.
                     await self._async_press_brew_bot()
             except Exception:
                 await self._async_finalize(ShotPhase.ERROR.value)
@@ -791,9 +818,10 @@ class BaristaRuntime:
             if shot is None or shot.id != shot_id or shot.stop_scheduled:
                 return
             self._set_phase(ShotPhase.EXTRACTING)
-            if self.auto_pi:
-                # Never held the button in the first place (see async_brew),
-                # so there's nothing to reprogram back to an instant tap.
+            if not self.adapt_pi:
+                # Never held the button in the first place (see async_brew) -
+                # machine-controlled shots are always a short tap, so there's
+                # nothing to reprogram back to an instant tap.
                 return
             # Reprogram the Bot to an instant tap now, off the time-critical stop
             # path, so the eventual stop/abort press doesn't also hold for
@@ -964,7 +992,7 @@ class BaristaRuntime:
             # single-tap/programmed-volume shot naturally ended would start a
             # new one instead of stopping anything. Barista Assist always
             # holds the button for pre-infusion, which Breville's own manual
-            # documents as a distinct "manual" mode from that single-tap one -
+            # documents as a distinct held mode from that single-tap one -
             # so the current shot may in fact still be running rather than
             # having ended, and there's no reliable way to tell those two
             # situations apart from software alone, so this stays
