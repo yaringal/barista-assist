@@ -102,6 +102,12 @@
       },
       "beans_remaining": {
         "name": "Estimated beans remaining"
+      },
+      "stop_latency_normal": {
+        "name": "Learned stop latency (normal flow)"
+      },
+      "stop_latency_elevated": {
+        "name": "Learned stop latency (fast flow)"
       }
     },
     "number": {
@@ -118,10 +124,10 @@
         "name": "Pre-infusion"
       },
       "early_stop_margin_min": {
-        "name": "Minimum early stop margin (stop at weight = target yield - margin)"
+        "name": "Minimum early stop margin"
       },
       "early_stop_margin_max": {
-        "name": "Maximum early stop margin (stop at weight = target yield - margin)"
+        "name": "Maximum early stop margin"
       },
       "machine_max_shot_seconds": {
         "name": "Machine max shot duration"

@@ -1,24 +1,27 @@
-# Barista Assist v0.2.22
+# Barista Assist v0.2.23
 
-A live, flow-adaptive automatic stop that learns from your own machine's shots instead of a hand-tuned constant, plus a new Shots view for reviewing and cleaning up past brews.
+Dashboard polish and fixes following up on last release's adaptive stop margin and Shots view: a frozen live-shot graph that no longer disappears, a cleaner "Yield Prediction" settings section, more detail in shot history, and an automatic fix for the orphaned entity 0.2.22 left behind.
 
 ## Added
 
-- **A new Shots view lists every stored shot**, most recent first - click one to see its full recipe/result details and a weight/flow graph, or delete it (with confirmation). Deleting a shot updates that bag's estimated remaining beans.
-- **Automatic stop now adapts to how fast a shot is actually pouring.** It still stops at `target yield - margin`, but the margin is now the larger of your calibrated minimum or a live projection from the shot's own current flow rate, capped at a separately-tunable maximum - so a fast-running shot gets stopped earlier (in grams-so-far) instead of overshooting the way a flat margin could. A real shot had overshot from 36g to 47.9g this way before this change. The projection's underlying stop-latency estimate is learned from your own shots (split into two buckets, for normal and fast-flowing shots, since a shot's own flow rate turns out to predict almost perfectly how much extra latency it needs), not a fixed number - see the README's "Adaptive stop margin" section for the full design.
+- **A new "Yield Prediction" section** on the System view's "Connection and control" card groups Minimum/Maximum early stop margin together with two new read-only sensors showing the learned stop-latency estimates for normal- and fast-flowing shots.
+- **Shot-history entries now show Total duration, Effective stop margin, and Roaster.** Total duration measures from the first brew press to the stop press. Effective stop margin is the actual live-projected margin used at that shot's own stop decision (can be higher than your configured minimum for a fast pour), replacing the old flat "Stop compensation" value.
 
 ## Changed
 
-- **"Stop compensation" is now two settings: "Minimum early stop margin" and "Maximum early stop margin"**, both on the System view's "Connection and control" card. The maximum used to be a fixed 3x multiple of the minimum; it's now independently tunable. Your existing calibrated value carries over automatically under the new name.
+- **"Machine pre-infusion" is now always visible on the dashboard**, not just while Adapt PI is off, so you can set it up in advance.
 
-## Docs
+## Fixed
 
-- Updated the README's "Adaptive stop margin" section and DESIGN.md for the two-bucket latency model and the independent minimum/maximum settings.
+- **The Live shot graph's frozen last-shot view used to scroll out of sight and disappear after about a minute.** It's now kept in view indefinitely.
+- **The old `number.barista_assist_stop_compensation` entity, orphaned by last release's rename, is now automatically migrated to the new "Minimum early stop margin" entity on startup** - no manual cleanup needed (supersedes last release's "safe to delete" note).
+- The Shots view's "Started" column no longer overflows and hides the time.
+- The Minimum/Maximum early stop margin entity names no longer overflow their dashboard row.
 
 ## Testing
 
-- Full suite: 170 tests, all passing (up from 141).
+- Full suite: 178 tests, all passing (up from 170).
 
 ## Upgrade
 
-Renaming the stop-compensation setting creates its Home Assistant entity fresh; your calibrated value carries over automatically (a legacy-key fallback reads the old stored value), but the old `number.barista_assist_stop_compensation` entity is left behind, unavailable, in the entity registry - safe to delete once you've confirmed the new "Minimum early stop margin" entity shows the right value. A full Home Assistant restart is needed to pick up this release.
+Includes a database migration (adds an `effective_stop_margin_g` column to the shots table) and an entity-registry migration (remaps the old stop-compensation entity) - both applied automatically on first load. A full Home Assistant restart is needed to pick up this release.

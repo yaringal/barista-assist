@@ -173,6 +173,63 @@ class StorageTests(unittest.TestCase):
         self.assertAlmostEqual(last["channeling_suspicion"], 0.1)
         self.assertEqual(json.loads(last["analysis_json"]), {"late_accel": 0.05, "t90_ms": 20000})
 
+    def test_finalize_shot_persists_effective_stop_margin(self) -> None:
+        """effective_stop_margin_g records the live-projected margin actually
+        used at this shot's own stop decision (see ActiveShot.
+        effective_stop_margin_g) - distinct from stop_compensation_g, the
+        floor the user configured, which a fast-flowing shot can exceed."""
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=30.0,
+            status="complete",
+            stop_command_elapsed_ms=25000,
+            samples=[],
+            effective_stop_margin_g=6.8,
+        )
+        self.assertAlmostEqual(self.db.last_shot()["effective_stop_margin_g"], 6.8)
+
+    def test_finalize_shot_effective_stop_margin_defaults_to_none(self) -> None:
+        """A manually aborted/timed-out shot never had a weight-triggered
+        margin computed for it - must persist as None, not 0.0 or missing."""
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=20.0,
+            status="aborted",
+            stop_command_elapsed_ms=12000,
+            samples=[],
+        )
+        self.assertIsNone(self.db.last_shot()["effective_stop_margin_g"])
+
+    def test_recent_shots_and_last_shot_include_the_bag_s_roaster(self) -> None:
+        bag = self.new_bag()  # new_bag() sets roaster="Test Roaster"
+        self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.assertEqual(self.db.last_shot()["roaster"], "Test Roaster")
+        self.assertEqual(self.db.recent_shots(limit=None)[0]["roaster"], "Test Roaster")
+
     def test_recent_healthy_features_is_none_with_no_history(self) -> None:
         bag = self.new_bag()
         self.assertIsNone(self.db.recent_healthy_features(bag.id))

@@ -11,7 +11,7 @@ import statistics
 from typing import Any, Iterable
 from uuid import uuid4
 
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 BAG_RECIPE_FIELDS = frozenset(
     {"dose_g", "grind", "target_yield_g", "temperature_offset_c", "preinfusion_s"}
 )
@@ -232,7 +232,13 @@ class BaristaDatabase:
         classification: str | None = None,
         channeling_suspicion: float | None = None,
         analysis_json: str | None = None,
+        effective_stop_margin_g: float | None = None,
     ) -> None:
+        """effective_stop_margin_g is the live-projected margin actually used
+        at this shot's own automatic target-weight stop decision (see
+        ActiveShot.effective_stop_margin_g) - None for a shot ended by manual
+        abort/timeout instead, since no weight-triggered margin was ever
+        computed for it."""
         sample_list = list(samples)
         with self._connect() as db:
             db.execute(
@@ -240,7 +246,8 @@ class BaristaDatabase:
                 UPDATE shots
                 SET ended_at=?, actual_yield_g=?, status=?,
                     stop_command_elapsed_ms=?, sample_count=?,
-                    classification=?, channeling_suspicion=?, analysis_json=?
+                    classification=?, channeling_suspicion=?, analysis_json=?,
+                    effective_stop_margin_g=?
                 WHERE id=?
                 """,
                 (
@@ -252,6 +259,7 @@ class BaristaDatabase:
                     classification,
                     channeling_suspicion,
                     analysis_json,
+                    effective_stop_margin_g,
                     shot_id,
                 ),
             )
@@ -280,7 +288,7 @@ class BaristaDatabase:
         with self._connect() as db:
             row = db.execute(
                 """
-                SELECT s.*, b.coffee_name, b.slot
+                SELECT s.*, b.coffee_name, b.slot, b.roaster
                 FROM shots s JOIN bags b ON b.id=s.bag_id
                 ORDER BY s.started_at DESC LIMIT 1
                 """
@@ -291,7 +299,7 @@ class BaristaDatabase:
         """Shots most-recent-first. Pass limit=None for every stored shot
         (the shot-history view's list)."""
         query = """
-            SELECT s.*, b.coffee_name, b.slot
+            SELECT s.*, b.coffee_name, b.slot, b.roaster
             FROM shots s JOIN bags b ON b.id=s.bag_id
             ORDER BY s.started_at DESC
         """

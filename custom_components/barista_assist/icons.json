@@ -6,7 +6,9 @@
       "shot_classification": {"default": "mdi:stethoscope"},
       "shot_channeling_suspicion": {"default": "mdi:gauge"},
       "flow_rate": {"default": "mdi:waves-arrow-right"},
-      "beans_remaining": {"default": "mdi:sack-percent"}
+      "beans_remaining": {"default": "mdi:sack-percent"},
+      "stop_latency_normal": {"default": "mdi:timer-outline"},
+      "stop_latency_elevated": {"default": "mdi:timer-alert-outline"}
     },
     "number": {
       "dose": {"default": "mdi:scale"},

@@ -178,11 +178,19 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
   _formatDate(iso) {
     if (!iso) return "—";
     const date = new Date(iso);
-    return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+    if (Number.isNaN(date.getTime())) return iso;
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${pad(date.getHours())}:${pad(
+      date.getMinutes()
+    )}:${pad(date.getSeconds())}`;
   }
 
   _formatNumber(value, digits = 1) {
     return typeof value === "number" ? value.toFixed(digits) : "—";
+  }
+
+  _formatDuration(ms) {
+    return typeof ms === "number" ? `${(ms / 1000).toFixed(1)}s` : "—";
   }
 
   _renderChart(samples) {
@@ -229,13 +237,14 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
           <div><b>Dose</b> ${this._formatNumber(shot.dose_g)}g</div>
           <div><b>Grind</b> ${this._formatNumber(shot.grind, 1)}</div>
           <div><b>Pre-infusion</b> ${this._formatNumber(shot.preinfusion_s)}s (${
-            shot.adapt_pi ? "App" : "Machine"
+            shot.adapt_pi ? "Adapt" : "Machine"
           })</div>
-          <div><b>Stop compensation</b> ${this._formatNumber(shot.stop_compensation_g)}g</div>
+          <div><b>Total duration</b> ${this._formatDuration(shot.stop_command_elapsed_ms)}</div>
+          <div><b>Effective stop margin</b> ${this._formatNumber(shot.effective_stop_margin_g)}g</div>
           <div><b>Channeling suspicion</b> ${
             shot.channeling_suspicion != null ? this._formatNumber(shot.channeling_suspicion, 2) : "—"
           }</div>
-          <div><b>Ended</b> ${this._escape(this._formatDate(shot.ended_at))}</div>
+          <div><b>Roaster</b> ${this._escape(shot.roaster || "—")}</div>
         </div>
         ${this._renderChart(samples)}
       </div>`;

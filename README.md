@@ -131,6 +131,8 @@ sensor.barista_assist_last_yield
 sensor.barista_assist_shot_classification
 sensor.barista_assist_shot_channeling_suspicion
 sensor.barista_assist_beans_remaining
+sensor.barista_assist_stop_latency_normal
+sensor.barista_assist_stop_latency_elevated
 
 number.barista_assist_dose
 number.barista_assist_grind
@@ -192,7 +194,7 @@ SQLite contains only durable coffee data:
 - shots;
 - raw timestamped samples.
 
-UI/application state such as selected slot and stop compensation uses Home Assistant's lightweight storage mechanism. Unfinished new-bag form values are intentionally ephemeral.
+UI/application state such as selected slot and the early stop margin settings uses Home Assistant's lightweight storage mechanism. Unfinished new-bag form values are intentionally ephemeral.
 
 Database schema is versioned with SQL migration files:
 
@@ -403,7 +405,9 @@ Do not use automatic brew control unless you're prepared to supervise every shot
 
 ## Adaptive stop margin
 
-**Minimum early stop margin** (System view → Connection and control) is a floor rather than a flat margin applied unconditionally. There's real latency between deciding to stop and the pour actually stopping (BLE connect, the button press itself, the pump physically stopping, residual drips settling) - a fixed margin only lands close to target when the pour happens to be running at roughly the same rate it was calibrated against. A real shot overshot from a 36g target to 47.9g because flow was still accelerating (~4 → 8.67 g/s) right when the fixed margin was crossed - the same latency landed far more beverage than the margin assumed.
+**Minimum early stop margin** and **Maximum early stop margin** live under the "Yield Prediction" subsection of System view → Connection and control, alongside two read-only sensors (**Learned latency (normal flow)**/**Learned latency (fast flow)**) showing the two latency estimates described below.
+
+**Minimum early stop margin** is a floor rather than a flat margin applied unconditionally. There's real latency between deciding to stop and the pour actually stopping (BLE connect, the button press itself, the pump physically stopping, residual drips settling) - a fixed margin only lands close to target when the pour happens to be running at roughly the same rate it was calibrated against. A real shot overshot from a 36g target to 47.9g because flow was still accelerating (~4 → 8.67 g/s) right when the fixed margin was crossed - the same latency landed far more beverage than the margin assumed.
 
 Barista Assist now also projects a margin from the shot's own live, smoothed flow rate (an estimate of that physical stop latency × the current flow rate) and uses **whichever is larger**: your calibrated Minimum early stop margin, or the live projection - clipped so it never exceeds your **Maximum early stop margin** setting, an independent, separately-tunable cap rather than a multiple of the floor, so raising one doesn't silently change how the other behaves. At a normal pour the projection stays below your calibrated minimum, so nothing changes - this is a one-sided adjustment, it can only add extra margin on top of what you've already tuned, never shrink below it. A pour running unusually fast gets the larger, projected margin instead (stopping earlier, in grams-so-far, since more will land before the mechanical stop completes), up to the maximum you've configured.
 
@@ -417,7 +421,7 @@ Adapt PI is a toggle switch (System view → Connection and control) that contro
 
 **Adapt PI enabled (default, "App-controlled"):** Barista Assist holds the button for the active bag's own Pre-infusion recipe value (the "Manual Pre-Infusion & Extraction" mode described above), so the pre-infusion duration follows whatever's set per bag/recipe. Barista Assist still taps the button a second time to stop the pour once the target weight is reached.
 
-**Adapt PI disabled ("Machine-controlled"):** Barista Assist sends a single short tap instead, letting the Barista Express run its own built-in pre-infusion - whatever duration is physically programmed into that CUP button - before ramping to full pressure. Barista Assist can't observe or control that duration, so the **Machine pre-infusion** setting (System view → Connection and control, shown only while Adapt PI is off) is where you tell it what your machine's own pre-infusion actually is, so shot records log the true value used instead of a guess; update it if you reprogram the machine's own pre-infusion timing.
+**Adapt PI disabled ("Machine-controlled"):** Barista Assist sends a single short tap instead, letting the Barista Express run its own built-in pre-infusion - whatever duration is physically programmed into that CUP button - before ramping to full pressure. Barista Assist can't observe or control that duration, so the **Machine pre-infusion** setting (System view → Connection and control) is where you tell it what your machine's own pre-infusion actually is, so shot records log the true value used instead of a guess; update it if you reprogram the machine's own pre-infusion timing. It's always visible there (not just while Adapt PI is off), so you can set it up in advance.
 
 With Adapt PI disabled:
 
@@ -427,7 +431,7 @@ With Adapt PI disabled:
 
 ## Shot history
 
-The **Shots** view lists every stored shot, most recent first. Click a row to expand it into full recipe/result details and a weight/flow graph of that shot's raw samples. Each row also has a delete button (with a confirmation prompt) for removing shots you don't want kept - a bad bench test, a duplicate, or anything else cluttering your history. Deleting a shot also removes its raw samples and updates that bag's estimated remaining beans accordingly. The shot currently brewing can't be deleted.
+The **Shots** view lists every stored shot, most recent first (`dd/mm hh:mm:ss`). Click a row to expand it into full recipe/result details and a weight/flow graph of that shot's raw samples, including its roaster, **Total duration** (from the first brew press to the stop/abort press - not the extra settle time recorded afterward), and **Effective stop margin**: the actual live-projected margin used at that shot's own automatic stop decision (blank for a manually aborted/timed-out shot, since none was ever computed), which can run higher than your configured Minimum early stop margin for a fast-flowing shot - see "Adaptive stop margin" above. Each row also has a delete button (with a confirmation prompt) for removing shots you don't want kept - a bad bench test, a duplicate, or anything else cluttering your history. Deleting a shot also removes its raw samples and updates that bag's estimated remaining beans accordingly. The shot currently brewing can't be deleted.
 
 ## Shot-data export
 

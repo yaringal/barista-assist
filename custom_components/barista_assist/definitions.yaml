@@ -32,7 +32,23 @@ entities:
       field: status
       translation_key: status
       token: __STATUS__
-      attributes: [scale_connected, selected_slot, early_stop_margin_min_g, early_stop_margin_max_g, stop_latency_normal_s, stop_latency_elevated_s, shot_plot]
+      attributes: [scale_connected, selected_slot, early_stop_margin_min_g, early_stop_margin_max_g, shot_plot]
+
+    stop_latency_normal:
+      source: controller
+      field: stop_latency_normal_s
+      translation_key: stop_latency_normal
+      token: __STOP_LATENCY_NORMAL__
+      unit: s
+      precision: 2
+
+    stop_latency_elevated:
+      source: controller
+      field: stop_latency_elevated_s
+      translation_key: stop_latency_elevated
+      token: __STOP_LATENCY_ELEVATED__
+      unit: s
+      precision: 2
 
     scale_weight:
       source: scale

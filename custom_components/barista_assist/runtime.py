@@ -123,6 +123,11 @@ _MIN_FLOW_FOR_LATENCY_LEARNING_G_S = 0.5
 # to learn stop_latency_normal_s/stop_latency_elevated_s in the first place.
 _SETTLE_BUFFER_S = 2.0
 _MIN_SETTLE_S = 4.0
+# How often to re-anchor and re-push the frozen last-shot graph while idle -
+# see _shot_plot_points/_async_idle_shot_plot_refresh. Comfortably below the
+# dashboard's 60s apexcharts-card graph_span, so the shot never drifts close
+# to its edge between refreshes.
+_IDLE_SHOT_PLOT_REFRESH_S = 15.0
 
 
 class ShotPhase(str, Enum):
@@ -196,6 +201,15 @@ class ActiveShot:
     stop_scheduled: bool = False
     stop_triggered: bool = False
     quick_press_ready: bool = False
+    # The actual _effective_stop_margin_g(shot) value at the instant the
+    # automatic target-weight stop was scheduled - None for a shot stopped
+    # by manual abort/timeout instead, since no weight-triggered margin was
+    # ever computed for it. Recorded (not recomputed after the fact) because
+    # early_stop_margin_min_g/the learned latencies keep changing, so a
+    # historical shot's own record would otherwise silently drift to
+    # whatever those settings happen to be *now* instead of what actually
+    # applied when it ran.
+    effective_stop_margin_g: float | None = None
 
 
 class BaristaRuntime:
@@ -244,7 +258,6 @@ class BaristaRuntime:
         # graph can keep showing it (frozen) instead of going blank the
         # instant the shot ends - see _shot_plot_points.
         self._last_shot_samples: list[ShotSample] = []
-        self._last_shot_press_wall_time: str | None = None
         self._bags: dict[str, Bag] = {}
         self._bag_remaining: dict[str, float | None] = {}
         self._last_dispatch = 0.0
@@ -252,6 +265,11 @@ class BaristaRuntime:
         self._settle_task: asyncio.Task[None] | None = None
         self._phase_task: asyncio.Task[None] | None = None
         self._manual_finalize_task: asyncio.Task[None] | None = None
+        # Lives for the runtime's whole lifetime (not per-shot, so it's kept
+        # out of _background_tasks(), which _async_finalize also uses to
+        # cancel in-flight per-shot tasks between shots) - see
+        # _async_idle_shot_plot_refresh.
+        self._idle_shot_plot_task: asyncio.Task[None] | None = None
         self._shot_lock = asyncio.Lock()
         self._actuation_lock = asyncio.Lock()
         # _shot_lock (brew) and _actuation_lock (stop/abort) are intentionally
@@ -374,9 +392,12 @@ class BaristaRuntime:
         await self._async_save_state()
         await self.async_refresh_cache()
         await self.scale.async_start()
+        self._idle_shot_plot_task = self.hass.async_create_background_task(
+            self._async_idle_shot_plot_refresh(), "barista_assist_idle_shot_plot_refresh"
+        )
 
     async def async_close(self) -> None:
-        for task in self._background_tasks():
+        for task in (*self._background_tasks(), self._idle_shot_plot_task):
             if task:
                 task.cancel()
         await self.scale.async_stop()
@@ -470,10 +491,6 @@ class BaristaRuntime:
                 value = self.early_stop_margin_min_g
             elif attribute == "early_stop_margin_max_g":
                 value = self.early_stop_margin_max_g
-            elif attribute == "stop_latency_normal_s":
-                value = round(self.stop_latency_normal_s, 2)
-            elif attribute == "stop_latency_elevated_s":
-                value = round(self.stop_latency_elevated_s, 2)
             elif attribute == "shot_plot":
                 value = self._shot_plot_points()
             elif attribute == "bag_id":
@@ -490,26 +507,58 @@ class BaristaRuntime:
     def _shot_plot_points(self) -> list[list[float]]:
         """[epoch_ms, weight_g, flow_g_s] points for the dashboard's live-shot
         graph: the active shot's own samples while one is running (growing
-        live), or the last completed shot's otherwise (frozen - see
-        _async_finalize) - so the graph shows real data exactly for a shot's
-        actual duration instead of a wall-clock rolling window that drifts
-        away from it. Absolute epoch timestamps let the chart place points on
-        a real time axis despite samples being timestamped in elapsed_ms
-        (monotonic, not wall-clock) - see ActiveShot.press_wall_time.
+        live, anchored to its real press time), or the last completed shot's
+        otherwise - re-anchored to "now" on every call (see below) rather
+        than its real historical press time, so it stays visually frozen in
+        place instead of scrolling out of the apexcharts-card's graph_span
+        window as real time passes.
+
+        apexcharts-card's rolling time window tracks real wall-clock "now",
+        not the timestamp of whatever data it was last given - there's no
+        card-level way to pin it to a fixed/historical window instead (only
+        the live case actually wants a real-time window). Anchoring a frozen
+        shot's own real press_wall_time meant it would render correctly for
+        one graph_span after it finished, then silently scroll off screen as
+        wall-clock time kept moving while the shot's own timestamps didn't -
+        "the shot disappears". Re-anchoring its *last* sample to "now" (so
+        the whole shot appears to have just this instant finished) sidesteps
+        that entirely - _async_idle_shot_plot_refresh keeps nudging the
+        runtime to push this recomputed value out often enough that it never
+        drifts out of view, without needing apexcharts-card to cooperate.
         """
         shot = self.active_shot
         if shot is not None and shot.press_wall_time is not None:
-            samples, press_wall_time = shot.samples, shot.press_wall_time
+            samples = shot.samples
+            if not samples:
+                return []
+            anchor_ms = int(datetime.fromisoformat(shot.press_wall_time).timestamp() * 1000)
         else:
-            samples, press_wall_time = self._last_shot_samples, self._last_shot_press_wall_time
-        if not samples or press_wall_time is None:
-            return []
-        anchor_ms = int(datetime.fromisoformat(press_wall_time).timestamp() * 1000)
+            samples = self._last_shot_samples
+            if not samples:
+                return []
+            anchor_ms = int(time.time() * 1000) - samples[-1].elapsed_ms
         step = max(1, math.ceil(len(samples) / _SHOT_PLOT_MAX_POINTS))
         return [
             [anchor_ms + sample.elapsed_ms, sample.weight_g, round(sample.flow_g_s, 2)]
             for sample in samples[::step]
         ]
+
+    async def _async_idle_shot_plot_refresh(self) -> None:
+        """Runs for the runtime's whole lifetime, re-pushing the frozen
+        last-shot graph often enough that it never drifts out of the
+        dashboard's rolling graph_span window - see _shot_plot_points's
+        docstring. A no-op notify (nothing to show, or a shot is actively
+        running and already pushing its own updates) is cheap, so this just
+        runs unconditionally rather than starting/stopping around each
+        shot's lifecycle.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_IDLE_SHOT_PLOT_REFRESH_S)
+                if self.active_shot is None and self._last_shot_samples:
+                    self._notify(force=True)
+        except asyncio.CancelledError:
+            return
 
     async def async_set_entity_value(
         self, definition: EntityDefinition, value: Any
@@ -874,6 +923,7 @@ class BaristaRuntime:
                 and reading.weight_g >= threshold
             ):
                 shot.stop_scheduled = True
+                shot.effective_stop_margin_g = margin_g
                 _LOGGER.info(
                     "Stop scheduled at %.2fs: weight=%.2fg margin=%.2fg "
                     "(early_stop_margin_min_g=%.2fg) threshold=%.2fg",
@@ -1330,6 +1380,7 @@ class BaristaRuntime:
                 actual_yield_g=last_weight,
                 status=status,
                 stop_command_elapsed_ms=shot.stop_command_elapsed_ms,
+                effective_stop_margin_g=shot.effective_stop_margin_g,
                 samples=shot.samples,
                 classification=str(analysis.classification),
                 channeling_suspicion=analysis.channeling_suspicion,
@@ -1337,7 +1388,6 @@ class BaristaRuntime:
             )
         )
         self._last_shot_samples = shot.samples
-        self._last_shot_press_wall_time = shot.press_wall_time
         self.active_shot = None
         self._set_phase(ShotPhase.IDLE if status == "complete" else ShotPhase(status))
         await self.async_refresh_cache()

@@ -10,6 +10,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from . import services, websocket
 from .const import DASHBOARD_RESOURCE, DOMAIN, STATIC_URL_PATH
@@ -66,6 +67,32 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
 
 
+# Declarative entity keys that were renamed (definitions.yaml key -> old key).
+# A definitions.yaml key rename alone doesn't touch an already-registered
+# entity's unique_id ("{entry_id}_{key}", see entity.py) - left alone, the
+# old unique_id becomes a permanently unavailable, greyed-out orphan while a
+# brand new entity appears under the new key, silently losing whatever the
+# user had it set to. Remapping the registry entry's unique_id in place
+# instead carries its entity_id/history/any automations referencing it
+# forward under the new key, exactly as if it had never been renamed.
+_RENAMED_ENTITY_KEYS = {
+    ("number", "stop_compensation"): "early_stop_margin_min",
+}
+
+
+def _migrate_renamed_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    registry = er.async_get(hass)
+    for (domain, old_key), new_key in _RENAMED_ENTITY_KEYS.items():
+        old_unique_id = f"{entry.entry_id}_{old_key}"
+        old_entity_id = registry.async_get_entity_id(domain, DOMAIN, old_unique_id)
+        if old_entity_id is None:
+            continue
+        new_unique_id = f"{entry.entry_id}_{new_key}"
+        if registry.async_get_entity_id(domain, DOMAIN, new_unique_id) is not None:
+            continue  # already migrated (or somehow both exist) - don't clobber
+        registry.async_update_entity(old_entity_id, new_unique_id=new_unique_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Ensure load_definitions()'s cache is warm (and any reparse it needs -
     # e.g. definitions.yaml changed since Home Assistant started - happens
@@ -77,6 +104,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["runtime"] = runtime
     try:
         await runtime.async_initialize()
+        _migrate_renamed_entities(hass, entry)
         await _async_register_frontend(hass)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         entry.async_on_unload(entry.add_update_listener(_async_reload_entry))

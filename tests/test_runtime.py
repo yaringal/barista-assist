@@ -27,6 +27,7 @@ from datetime import datetime
 import json
 import shutil
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -167,6 +168,28 @@ class AutoStopTests(RuntimeTestCase):
         self.assertGreater(len(self.hass.services.calls), calls_before)
         self.assertEqual(self.runtime.status, ShotPhase.SETTLING.value)
         self.assertTrue(self.runtime.active_shot.stop_triggered)
+
+    async def test_scheduling_the_stop_records_the_effective_margin_used(self):
+        """ActiveShot.effective_stop_margin_g must capture the actual
+        _effective_stop_margin_g(shot) value at the instant the stop was
+        scheduled, not the plain early_stop_margin_min_g floor - shot
+        history's own record of "what margin actually applied" needs to
+        reflect a fast-flowing shot's larger, live-projected margin."""
+        await self.start_shot()  # early_stop_margin_min_g=1.5 (default)
+        await self.wait_for_extracting()
+        await asyncio.sleep(0.05)
+
+        self.scale.push_reading(make_reading(weight_g=35.0, flow_g_s=1.0))
+        await self.hass.tasks[-1]
+
+        # flow=1.0 g/s (normal bucket) * stop_latency_normal_s (3.4s) = 3.4g,
+        # which exceeds the 1.5g floor.
+        self.assertAlmostEqual(self.runtime.active_shot.effective_stop_margin_g, 3.4)
+
+    async def test_effective_stop_margin_is_none_before_any_stop_is_scheduled(self):
+        await self.start_shot()
+        await self.wait_for_extracting()
+        self.assertIsNone(self.runtime.active_shot.effective_stop_margin_g)
 
 
 class StopFailureTests(RuntimeTestCase):
@@ -465,9 +488,31 @@ class ShotPlotPointsTests(RuntimeTestCase):
         self.assertIsNone(self.runtime.active_shot)
         frozen = self.runtime._shot_plot_points()
         self.assertGreater(len(frozen), 0)
-        # Calling again after the shot is long gone must return the exact
-        # same points, not an empty list or a re-derived one.
-        self.assertEqual(self.runtime._shot_plot_points(), frozen)
+        # A frozen shot's weight/flow shape never changes between calls -
+        # only its epoch anchor does (see
+        # test_frozen_shot_is_re_anchored_to_now_on_every_call), so compare
+        # everything but each point's timestamp.
+        again = self.runtime._shot_plot_points()
+        self.assertEqual([point[1:] for point in again], [point[1:] for point in frozen])
+
+    async def test_frozen_shot_is_re_anchored_to_now_on_every_call(self):
+        """apexcharts-card's graph_span window tracks real wall-clock "now",
+        not the timestamp of whatever data it was last given - anchoring a
+        frozen shot to its own real historical press time (as an earlier
+        version did) meant it rendered correctly for one graph_span after it
+        finished, then silently scrolled out of view as real time kept
+        moving while its own timestamps didn't. Re-anchoring its last sample
+        to "now" on every call instead keeps it inside the window
+        regardless of how long ago it actually finished."""
+        await self.start_shot(preinfusion_s=1.0)
+        await self.wait_for_extracting()
+        await asyncio.sleep(1.05)
+        self.scale.push_reading(make_reading(weight_g=36.0, flow_g_s=1.0))
+        await self.hass.tasks[-1]
+        await asyncio.sleep(self.runtime._settle_seconds() + 0.1)
+
+        points = self.runtime._shot_plot_points()
+        self.assertLess(abs(time.time() * 1000 - points[-1][0]), 2000)
 
 
 class BotLockSerializationTests(RuntimeTestCase):
@@ -863,6 +908,34 @@ class MachinePiSettingTests(RuntimeTestCase):
         self.assertEqual(self.runtime.active_shot.preinfusion_s, 4.0)
         await self.runtime.async_abort()
         self.assertEqual(self.runtime.last_shot["preinfusion_s"], 4.0)
+
+
+class LearnedLatencySensorTests(RuntimeTestCase):
+    """stop_latency_normal_s/stop_latency_elevated_s are exposed as their own
+    read-only sensors (Yield Prediction dashboard section) rather than only
+    as sensor.status attributes, so they can be shown as plain rows."""
+
+    def _sensor(self, key: str):
+        return next(d for d in self.runtime.definitions.platform("sensor") if d.key == key)
+
+    def test_reads_the_current_learned_latencies(self):
+        normal = self._sensor("stop_latency_normal")
+        elevated = self._sensor("stop_latency_elevated")
+        self.assertEqual(self.runtime.entity_value(normal), self.runtime.stop_latency_normal_s)
+        self.assertEqual(self.runtime.entity_value(elevated), self.runtime.stop_latency_elevated_s)
+
+    async def test_updates_after_learning(self):
+        normal = self._sensor("stop_latency_normal")
+        shot = types.SimpleNamespace(
+            id="test-shot",
+            stop_command_elapsed_ms=100,
+            samples=[
+                ShotSample(0, 0, 0, 20.0, 2.0, 90),
+                ShotSample(1, 100, 100, 20.2, 2.0, 90),
+            ],
+        )
+        self.runtime._update_learned_stop_latency(shot, final_weight=26.2)
+        self.assertEqual(self.runtime.entity_value(normal), self.runtime.stop_latency_normal_s)
 
 
 class FinalizeIdempotencyTests(RuntimeTestCase):
