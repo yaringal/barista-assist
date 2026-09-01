@@ -237,11 +237,11 @@ After HACS installs Barista Assist:
 5. Select the SwitchBot attached to the brew button.
 6. Set the maximum shot safety timeout.
 
-Recipe, PI and stop compensation are deliberately **not** set in the setup flow; edit them from the Barista Assist entities/dashboard.
+Recipe, PI and the early stop margin settings are deliberately **not** set in the setup flow; edit them from the Barista Assist entities/dashboard.
 
 ### Add the dashboard once
 
-The Brew view's "Live shot" graph uses the [ApexCharts Card](https://github.com/RomRider/apexcharts-card) custom card for a real dual-axis weight/flow-rate chart - install it once via HACS (**HACS → Frontend → search "ApexCharts Card" → Download**) before adding the dashboard below. Everything else in the packaged dashboard uses only Home Assistant's built-in card types.
+Every card in the packaged dashboard, including the Brew view's "Live shot" weight/flow chart, is either a built-in Home Assistant card type or one of Barista Assist's own bundled custom elements - no third-party card needs to be installed separately.
 
 After the integration is set up, it writes its dashboard as a YAML file into your Home Assistant config directory:
 
@@ -452,4 +452,4 @@ This logs every shot-phase transition, brew/stop/abort call (with elapsed time a
 
 ## Troubleshooting
 
-**"Live shot" shows "Configuration error" on the Home Assistant Companion app, but the same dashboard works fine in a desktop browser.** This is a stale cache in the Companion app, not an actual problem with the dashboard config (a working desktop browser proves the YAML itself is valid). The mobile app can keep serving an older cached copy of the ApexCharts Card resource - one that predates a config option Barista Assist's dashboard uses (`data_generator`, `opacity`, `yaxis_id`) - even after HACS has updated it. Fix: force-quit the Companion app, then **Settings → Companion App → Debugging → Reset frontend cache** (or clear the app's storage/cache from your phone's OS settings if that option isn't available), then reopen it.
+**A card shows "Configuration error" on the Home Assistant Companion app, but the same dashboard works fine in a desktop browser.** This is a stale cache in the Companion app, not an actual problem with the dashboard config (a working desktop browser proves the YAML itself is valid) - the mobile app can keep serving an older cached copy of Barista Assist's own bundled `barista-assist-dashboard.js` after an integration update adds a new card type or config option it doesn't recognize yet. Fix: force-quit the Companion app, then **Settings → Companion App → Debugging → Reset frontend cache** (or clear the app's storage/cache from your phone's OS settings if that option isn't available), then reopen it.

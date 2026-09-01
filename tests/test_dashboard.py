@@ -40,6 +40,14 @@ class DashboardTests(unittest.TestCase):
         text = DASHBOARD.read_text(encoding='utf-8')
         self.assertIn('custom:barista-assist-shot-history-card', text)
 
+    def test_dashboard_has_live_shot_card(self):
+        """Replaced an apexcharts-card-based graph (see
+        BaristaRuntime._shot_plot_points's docstring) - assert the plain
+        custom element is wired up instead, not the third-party card."""
+        text = DASHBOARD.read_text(encoding='utf-8')
+        self.assertIn('custom:barista-assist-live-shot-card', text)
+        self.assertNotIn('apexcharts-card', text)
+
     def test_dashboard_documents_new_default_yield(self):
         text = DASHBOARD.read_text(encoding="utf-8")
         self.assertIn("36.0 g yield", text)

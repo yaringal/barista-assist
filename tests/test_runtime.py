@@ -23,11 +23,9 @@ not a real Home Assistant install or real Bluetooth hardware.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 import json
 import shutil
 import sys
-import time
 import types
 import unittest
 from pathlib import Path
@@ -446,10 +444,13 @@ class ButtonAvailabilityTests(RuntimeTestCase):
 
 
 class ShotPlotPointsTests(RuntimeTestCase):
-    """_shot_plot_points feeds the Live shot dashboard graph's data_generator:
-    it must grow live during an active shot, freeze at the last completed
-    shot's data afterward, and translate elapsed_ms into real epoch
-    timestamps anchored to when the shot actually started."""
+    """_shot_plot_points feeds the Live Shot card (barista-assist-live-shot-
+    card): it must grow live during an active shot, freeze at the last
+    completed shot's data afterward, and report elapsed_ms relative to the
+    shot's own start - not real epoch time, so a frozen shot has nothing to
+    do with wall-clock time and can never drift out of view (see the
+    function's own docstring for why an earlier, apexcharts-card-based
+    design needed epoch timestamps and broke because of it)."""
 
     def _status(self):
         return next(d for d in self.runtime.definitions.platform("sensor") if d.key == "status")
@@ -461,9 +462,6 @@ class ShotPlotPointsTests(RuntimeTestCase):
     async def test_grows_live_during_an_active_shot(self):
         await self.start_shot(preinfusion_s=1.0)
         await self.wait_for_extracting()
-        press_wall_ms = int(
-            datetime.fromisoformat(self.runtime.active_shot.press_wall_time).timestamp() * 1000
-        )
         self.scale.push_reading(make_reading(weight_g=5.0, flow_g_s=1.5))
 
         points = self.runtime._shot_plot_points()
@@ -471,7 +469,7 @@ class ShotPlotPointsTests(RuntimeTestCase):
         last = points[-1]
         self.assertEqual(last[1], 5.0)
         self.assertEqual(last[2], 1.5)
-        self.assertGreaterEqual(last[0], press_wall_ms)
+        self.assertGreaterEqual(last[0], 0)  # elapsed_ms since press, not epoch time
 
     async def test_freezes_at_the_last_shot_after_finalizing(self):
         await self.start_shot(preinfusion_s=1.0)
@@ -488,31 +486,10 @@ class ShotPlotPointsTests(RuntimeTestCase):
         self.assertIsNone(self.runtime.active_shot)
         frozen = self.runtime._shot_plot_points()
         self.assertGreater(len(frozen), 0)
-        # A frozen shot's weight/flow shape never changes between calls -
-        # only its epoch anchor does (see
-        # test_frozen_shot_is_re_anchored_to_now_on_every_call), so compare
-        # everything but each point's timestamp.
-        again = self.runtime._shot_plot_points()
-        self.assertEqual([point[1:] for point in again], [point[1:] for point in frozen])
-
-    async def test_frozen_shot_is_re_anchored_to_now_on_every_call(self):
-        """apexcharts-card's graph_span window tracks real wall-clock "now",
-        not the timestamp of whatever data it was last given - anchoring a
-        frozen shot to its own real historical press time (as an earlier
-        version did) meant it rendered correctly for one graph_span after it
-        finished, then silently scrolled out of view as real time kept
-        moving while its own timestamps didn't. Re-anchoring its last sample
-        to "now" on every call instead keeps it inside the window
-        regardless of how long ago it actually finished."""
-        await self.start_shot(preinfusion_s=1.0)
-        await self.wait_for_extracting()
-        await asyncio.sleep(1.05)
-        self.scale.push_reading(make_reading(weight_g=36.0, flow_g_s=1.0))
-        await self.hass.tasks[-1]
-        await asyncio.sleep(self.runtime._settle_seconds() + 0.1)
-
-        points = self.runtime._shot_plot_points()
-        self.assertLess(abs(time.time() * 1000 - points[-1][0]), 2000)
+        # Points are relative to the shot's own start, not real time - calling
+        # again after the shot is long gone must return the exact same
+        # points, not an empty list or a re-derived one.
+        self.assertEqual(self.runtime._shot_plot_points(), frozen)
 
 
 class BotLockSerializationTests(RuntimeTestCase):

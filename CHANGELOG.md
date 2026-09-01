@@ -6,6 +6,7 @@
 
 - **A new "Yield Prediction" subsection on the System view's "Connection and control" card** groups Minimum/Maximum early stop margin under a "Stop at weight = target yield - margin" heading, alongside two new read-only sensors - "Learned latency (normal flow)" and "Learned latency (fast flow)" - showing the two stop-latency estimates that were previously only visible as hidden `status` sensor attributes.
 - **Individual shot-history entries now show Total duration, Effective stop margin, and Roaster.** Total duration (from the first brew press to the stop/abort press, next to Pre-infusion) replaces "Ended". Effective stop margin replaces "Stop compensation" and is a new persisted per-shot field recording the actual live-projected margin used at that shot's own automatic stop decision - which can run higher than the configured minimum for a fast-flowing shot - rather than always showing the flat floor value; it's blank for a manually aborted/timed-out shot, since no such margin was ever computed for it.
+- **Both shot charts (Live Shot and the Shots view's own per-shot detail) now show second-labeled x-axis ticks, and a hover (desktop) / touch-drag (mobile) tooltip** with elapsed time, weight, and flow at the nearest sample, plus a guideline marking it.
 
 ### Changed
 
@@ -13,14 +14,14 @@
 
 ### Fixed
 
-- **The Live shot graph's frozen last-shot view scrolled out of sight and disappeared after about a minute.** apexcharts-card's rolling time window tracks real wall-clock time, not the timestamp of the data it was last given, so a completed shot anchored to its own real press time silently drifted out of the dashboard's graph_span window as time passed. The frozen shot is now re-anchored to "now" on every read and refreshed on a 15s idle heartbeat, so it stays in view indefinitely.
+- **The Live shot graph's frozen last-shot view scrolled out of sight and disappeared after about a minute.** It used the third-party ApexCharts Card, whose rolling time window always tracks real wall-clock time, not the timestamp of the data it was last given - a completed shot anchored to its own real press time silently drifted out of view as time passed. Replaced with a small bundled custom card (`barista-assist-live-shot-card`, sharing its chart rendering with the Shots view's own per-shot chart) that plots elapsed seconds since the shot's own start instead of real time, so a frozen shot has nothing to do with "now" and can never drift out of view. The ApexCharts Card HACS dependency is no longer needed for this dashboard at all.
 - **The "Started" column in the Shots view overflowed and didn't show the time.** Dates there are now formatted as `dd/mm hh:mm:ss` instead of a full locale-dependent string.
 - **The old `number.barista_assist_stop_compensation` entity was left behind, permanently unavailable, after last release's rename.** A one-time migration on startup now remaps it in place to the new `early_stop_margin_min` entity (carrying its entity_id/history forward), instead of leaving a greyed-out orphan next to a freshly-created duplicate.
 - **The Minimum/Maximum early stop margin entity names overflowed their dashboard row.** The explanatory "(stop at weight = target yield - margin)" text is now a section subheading instead of being appended to each entity's name.
 
 ### Testing
 
-- Added tests for the effective-stop-margin recording (including that it's `None` for a manually aborted shot), the roaster/duration fields round-tripping through storage, the frozen shot-plot re-anchoring behavior, and the two new learned-latency sensors.
+- Added tests for the effective-stop-margin recording (including that it's `None` for a manually aborted shot), the roaster/duration fields round-tripping through storage, the elapsed-time-relative shot-plot points, and the two new learned-latency sensors.
 - Full suite: 178 tests, all passing (up from 170).
 
 ## 0.2.22

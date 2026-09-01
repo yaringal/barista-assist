@@ -6,6 +6,7 @@ Dashboard polish and fixes following up on last release's adaptive stop margin a
 
 - **A new "Yield Prediction" section** on the System view's "Connection and control" card groups Minimum/Maximum early stop margin together with two new read-only sensors showing the learned stop-latency estimates for normal- and fast-flowing shots.
 - **Shot-history entries now show Total duration, Effective stop margin, and Roaster.** Total duration measures from the first brew press to the stop press. Effective stop margin is the actual live-projected margin used at that shot's own stop decision (can be higher than your configured minimum for a fast pour), replacing the old flat "Stop compensation" value.
+- **Both shot charts now have second-labeled time ticks and a tooltip** - hover on desktop, touch-and-drag on mobile - showing the exact time/weight/flow at any point.
 
 ## Changed
 
@@ -13,7 +14,7 @@ Dashboard polish and fixes following up on last release's adaptive stop margin a
 
 ## Fixed
 
-- **The Live shot graph's frozen last-shot view used to scroll out of sight and disappear after about a minute.** It's now kept in view indefinitely.
+- **The Live shot graph's frozen last-shot view used to scroll out of sight and disappear after about a minute.** It's now kept in view indefinitely, drawn by a small bundled card instead of the third-party ApexCharts Card - which is no longer a dependency of this dashboard at all.
 - **The old `number.barista_assist_stop_compensation` entity, orphaned by last release's rename, is now automatically migrated to the new "Minimum early stop margin" entity on startup** - no manual cleanup needed (supersedes last release's "safe to delete" note).
 - The Shots view's "Started" column no longer overflows and hides the time.
 - The Minimum/Maximum early stop margin entity names no longer overflow their dashboard row.
@@ -24,4 +25,4 @@ Dashboard polish and fixes following up on last release's adaptive stop margin a
 
 ## Upgrade
 
-Includes a database migration (adds an `effective_stop_margin_g` column to the shots table) and an entity-registry migration (remaps the old stop-compensation entity) - both applied automatically on first load. A full Home Assistant restart is needed to pick up this release.
+Includes a database migration (adds an `effective_stop_margin_g` column to the shots table) and an entity-registry migration (remaps the old stop-compensation entity) - both applied automatically on first load. A full Home Assistant restart is needed to pick up this release. The ApexCharts Card HACS dependency is no longer required for this dashboard - safe to remove via HACS if you don't use it for anything else.

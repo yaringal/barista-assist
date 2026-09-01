@@ -97,51 +97,9 @@ views:
             heading_style: title
             icon: mdi:chart-line
 
-          - type: custom:apexcharts-card
-            header:
-              title: Weight & flow rate
-              show: true
-            # Both series use data_generator, reading the status sensor's
-            # shot_plot attribute (see BaristaRuntime._shot_plot_points)
-            # instead of the recorder - it holds the active shot's own
-            # samples while one is running (so the chart grows live, anchored
-            # to when the shot actually started) and the last completed
-            # shot's otherwise. graph_span still has to be set explicitly
-            # even though data_generator supplies the actual points: without
-            # it, apexcharts-card's default (effectively 24h) x-axis window
-            # makes a ~60s shot's worth of real data an imperceptibly thin
-            # sliver at the right edge - it just reads as one static dot.
-            # This still means a finished shot scrolls out of view after
-            # graph_span rather than staying frozen forever.
-            graph_span: 60s
-            yaxis:
-              - id: flow
-                opposite: true
-                min: -2
-                max: 10
-                decimals: 1
-              - id: weight
-                min: 0
-                max: 60
-                decimals: 0
-            series:
-              - entity: __STATUS__
-                name: Flow rate
-                yaxis_id: flow
-                color: "#00bcd4"
-                opacity: 0.1
-                stroke_width: 2
-                curve: smooth
-                data_generator: |
-                  return (entity.attributes.shot_plot || []).map(p => [p[0], p[2]]);
-              - entity: __STATUS__
-                name: Weight
-                yaxis_id: weight
-                color: "#2196f3"
-                stroke_width: 2
-                curve: smooth
-                data_generator: |
-                  return (entity.attributes.shot_plot || []).map(p => [p[0], p[1]]);
+          - type: custom:barista-assist-live-shot-card
+            entity: __STATUS__
+            title: Weight & flow rate
 
           - type: heading
             heading: Controls

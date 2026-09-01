@@ -123,11 +123,6 @@ _MIN_FLOW_FOR_LATENCY_LEARNING_G_S = 0.5
 # to learn stop_latency_normal_s/stop_latency_elevated_s in the first place.
 _SETTLE_BUFFER_S = 2.0
 _MIN_SETTLE_S = 4.0
-# How often to re-anchor and re-push the frozen last-shot graph while idle -
-# see _shot_plot_points/_async_idle_shot_plot_refresh. Comfortably below the
-# dashboard's 60s apexcharts-card graph_span, so the shot never drifts close
-# to its edge between refreshes.
-_IDLE_SHOT_PLOT_REFRESH_S = 15.0
 
 
 class ShotPhase(str, Enum):
@@ -192,11 +187,6 @@ class ActiveShot:
     # the physical machine's own timing - and therefore ours - should
     # actually be measured against.
     press_monotonic: float | None = None
-    # Wall-clock counterpart to press_monotonic, set at the same instant -
-    # samples are timestamped in elapsed_ms (monotonic, not wall-clock), so
-    # this is what lets the live-shot graph convert them back to real
-    # absolute timestamps for charting (see BaristaRuntime._shot_plot_points).
-    press_wall_time: str | None = None
     stop_command_elapsed_ms: int | None = None
     stop_scheduled: bool = False
     stop_triggered: bool = False
@@ -265,11 +255,6 @@ class BaristaRuntime:
         self._settle_task: asyncio.Task[None] | None = None
         self._phase_task: asyncio.Task[None] | None = None
         self._manual_finalize_task: asyncio.Task[None] | None = None
-        # Lives for the runtime's whole lifetime (not per-shot, so it's kept
-        # out of _background_tasks(), which _async_finalize also uses to
-        # cancel in-flight per-shot tasks between shots) - see
-        # _async_idle_shot_plot_refresh.
-        self._idle_shot_plot_task: asyncio.Task[None] | None = None
         self._shot_lock = asyncio.Lock()
         self._actuation_lock = asyncio.Lock()
         # _shot_lock (brew) and _actuation_lock (stop/abort) are intentionally
@@ -392,12 +377,9 @@ class BaristaRuntime:
         await self._async_save_state()
         await self.async_refresh_cache()
         await self.scale.async_start()
-        self._idle_shot_plot_task = self.hass.async_create_background_task(
-            self._async_idle_shot_plot_refresh(), "barista_assist_idle_shot_plot_refresh"
-        )
 
     async def async_close(self) -> None:
-        for task in (*self._background_tasks(), self._idle_shot_plot_task):
+        for task in self._background_tasks():
             if task:
                 task.cancel()
         await self.scale.async_stop()
@@ -505,60 +487,31 @@ class BaristaRuntime:
         return result
 
     def _shot_plot_points(self) -> list[list[float]]:
-        """[epoch_ms, weight_g, flow_g_s] points for the dashboard's live-shot
-        graph: the active shot's own samples while one is running (growing
-        live, anchored to its real press time), or the last completed shot's
-        otherwise - re-anchored to "now" on every call (see below) rather
-        than its real historical press time, so it stays visually frozen in
-        place instead of scrolling out of the apexcharts-card's graph_span
-        window as real time passes.
+        """[elapsed_ms, weight_g, flow_g_s] points for the dashboard's Live
+        Shot card: the active shot's own samples while one is running
+        (growing live), or the last completed shot's otherwise (frozen).
 
-        apexcharts-card's rolling time window tracks real wall-clock "now",
-        not the timestamp of whatever data it was last given - there's no
-        card-level way to pin it to a fixed/historical window instead (only
-        the live case actually wants a real-time window). Anchoring a frozen
-        shot's own real press_wall_time meant it would render correctly for
-        one graph_span after it finished, then silently scroll off screen as
-        wall-clock time kept moving while the shot's own timestamps didn't -
-        "the shot disappears". Re-anchoring its *last* sample to "now" (so
-        the whole shot appears to have just this instant finished) sidesteps
-        that entirely - _async_idle_shot_plot_refresh keeps nudging the
-        runtime to push this recomputed value out often enough that it never
-        drifts out of view, without needing apexcharts-card to cooperate.
+        Deliberately relative to the shot's own start, not real wall-clock
+        time: an earlier version returned absolute epoch timestamps for an
+        apexcharts-card-based graph, but that card's rolling time window
+        always tracks real "now", not the timestamp of whatever data it was
+        last given - a finished shot anchored to its own real press time
+        would render correctly for a while, then silently scroll off screen
+        as wall-clock time kept moving while the shot's own timestamps
+        didn't. barista-assist-live-shot-card (a plain custom element,
+        sharing its rendering with the Shots view's own per-shot chart)
+        plots elapsed seconds on its x-axis instead, so a frozen shot simply
+        has nothing to do with real time and can never drift out of view.
         """
         shot = self.active_shot
-        if shot is not None and shot.press_wall_time is not None:
-            samples = shot.samples
-            if not samples:
-                return []
-            anchor_ms = int(datetime.fromisoformat(shot.press_wall_time).timestamp() * 1000)
-        else:
-            samples = self._last_shot_samples
-            if not samples:
-                return []
-            anchor_ms = int(time.time() * 1000) - samples[-1].elapsed_ms
+        samples = shot.samples if shot is not None and shot.press_monotonic is not None else self._last_shot_samples
+        if not samples:
+            return []
         step = max(1, math.ceil(len(samples) / _SHOT_PLOT_MAX_POINTS))
         return [
-            [anchor_ms + sample.elapsed_ms, sample.weight_g, round(sample.flow_g_s, 2)]
+            [sample.elapsed_ms, sample.weight_g, round(sample.flow_g_s, 2)]
             for sample in samples[::step]
         ]
-
-    async def _async_idle_shot_plot_refresh(self) -> None:
-        """Runs for the runtime's whole lifetime, re-pushing the frozen
-        last-shot graph often enough that it never drifts out of the
-        dashboard's rolling graph_span window - see _shot_plot_points's
-        docstring. A no-op notify (nothing to show, or a shot is actively
-        running and already pushing its own updates) is cheap, so this just
-        runs unconditionally rather than starting/stopping around each
-        shot's lifecycle.
-        """
-        try:
-            while True:
-                await asyncio.sleep(_IDLE_SHOT_PLOT_REFRESH_S)
-                if self.active_shot is None and self._last_shot_samples:
-                    self._notify(force=True)
-        except asyncio.CancelledError:
-            return
 
     async def async_set_entity_value(
         self, definition: EntityDefinition, value: Any
@@ -1080,7 +1033,6 @@ class BaristaRuntime:
                 await self._async_finalize(ShotPhase.ERROR.value)
                 raise
             self.active_shot.press_monotonic = time.monotonic()
-            self.active_shot.press_wall_time = datetime.now(timezone.utc).isoformat()
             connect_delay_s = self.active_shot.press_monotonic - self.active_shot.started_monotonic
             _LOGGER.debug(
                 "Brew Bot engaged %.2fs after brew was requested (BLE connect+program+press)",
