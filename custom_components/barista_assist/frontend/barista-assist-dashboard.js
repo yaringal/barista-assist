@@ -48,6 +48,23 @@ class BaristaAssistExportCard extends HTMLElement {
     this._hass = hass;
   }
 
+  // The Companion app injects window.externalApp (iOS) or window.externalBus
+  // (Android) for its native bridge - the same check Home Assistant's own
+  // frontend uses to detect running inside the app.
+  _isCompanionApp() {
+    return typeof window.externalApp !== "undefined" || typeof window.externalBus !== "undefined";
+  }
+
+  _showManualCopy(text, message) {
+    const status = this.shadowRoot.getElementById("status");
+    const manual = this.shadowRoot.getElementById("manual");
+    manual.value = text;
+    manual.style.display = "block";
+    manual.focus();
+    manual.select();
+    status.textContent = message;
+  }
+
   async _copy() {
     const button = this.shadowRoot.getElementById("copy");
     const status = this.shadowRoot.getElementById("status");
@@ -57,20 +74,30 @@ class BaristaAssistExportCard extends HTMLElement {
     status.textContent = "Preparing export…";
     try {
       const result = await this._hass.callWS({ type: "barista_assist/export_shots_text" });
+      if (this._isCompanionApp()) {
+        // The Companion app's WebView clipboard can silently truncate a
+        // large writeText() call - it doesn't throw, so the try/catch
+        // fallback below would never trigger and "Copied to clipboard"
+        // would lie. Go straight to the manual textarea instead of trusting
+        // it here.
+        this._showManualCopy(
+          result.text,
+          ""
+        );
+        return;
+      }
       try {
         await navigator.clipboard.writeText(result.text);
         status.textContent = "Copied to clipboard.";
       } catch (_clipboardError) {
-        // The Clipboard API can be unavailable in the companion app's webview
-        // as well as some browser contexts. Rather than trying to script a
-        // copy across the shadow-DOM boundary (unreliable), show the text
-        // directly so the user can select and copy it themselves.
-        manual.value = result.text;
-        manual.style.display = "block";
-        manual.focus();
-        manual.select();
-        status.textContent =
-          "Clipboard access isn't available here. The text below is selected — copy it with Ctrl/Cmd+C.";
+        // The Clipboard API can be unavailable in some browser contexts.
+        // Rather than trying to script a copy across the shadow-DOM
+        // boundary (unreliable), show the text directly so the user can
+        // select and copy it themselves.
+        this._showManualCopy(
+          result.text,
+          ""
+        );
       }
     } catch (error) {
       status.textContent = `Export failed: ${error?.message || error}`;
