@@ -82,7 +82,7 @@ class BaristaAssistExportCard extends HTMLElement {
         // it here.
         this._showManualCopy(
           result.text,
-          ""
+          "Please copy manually from the textbox."
         );
         return;
       }
@@ -96,7 +96,7 @@ class BaristaAssistExportCard extends HTMLElement {
         // select and copy it themselves.
         this._showManualCopy(
           result.text,
-          ""
+          "Please copy manually from the textbox."
         );
       }
     } catch (error) {

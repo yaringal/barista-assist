@@ -222,7 +222,7 @@ views:
               - entity: __TEMPERATURE__
                 name: Temperature offset
               - entity: __PREINFUSION__
-                name: Pre-infusion
+                name: Adaptive Pre-infusion
 
   - title: System
     path: system
@@ -261,15 +261,15 @@ views:
               - type: section
                 label: Yield Prediction
               - type: section
-                label: Stop at weight = target yield - margin
+                label: Stop at weight = target yield - margin; margin = latency * current flow
               - entity: __EARLY_STOP_MARGIN_MIN__
                 name: Minimum early stop margin
               - entity: __EARLY_STOP_MARGIN_MAX__
                 name: Maximum early stop margin
               - entity: __STOP_LATENCY_NORMAL__
-                name: Learned latency (normal flow)
+                name: Learned latency (normal flow ~2g/s)
               - entity: __STOP_LATENCY_ELEVATED__
-                name: Learned latency (fast flow)
+                name: Learned latency (fast flow ~4g/s)
 
   - title: Shots
     path: shots
