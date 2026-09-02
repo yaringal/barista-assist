@@ -1,28 +1,20 @@
-# Barista Assist v0.2.23
+# Barista Assist v0.2.24
 
-Dashboard polish and fixes following up on last release's adaptive stop margin and Shots view: a frozen live-shot graph that no longer disappears, a cleaner "Yield Prediction" settings section, more detail in shot history, and an automatic fix for the orphaned entity 0.2.22 left behind.
-
-## Added
-
-- **A new "Yield Prediction" section** on the System view's "Connection and control" card groups Minimum/Maximum early stop margin together with two new read-only sensors showing the learned stop-latency estimates for normal- and fast-flowing shots.
-- **Shot-history entries now show Total duration, Effective stop margin, and Roaster.** Total duration measures from the first brew press to the stop press. Effective stop margin is the actual live-projected margin used at that shot's own stop decision (can be higher than your configured minimum for a fast pour), replacing the old flat "Stop compensation" value.
-- **Both shot charts now have second-labeled time ticks and a tooltip** - hover on desktop, touch-and-drag on mobile - showing the exact time/weight/flow at any point.
+A reliability fix for dashboard cards intermittently failing to load - at the cost of one new manual setup step.
 
 ## Changed
 
-- **"Machine pre-infusion" is now always visible on the dashboard**, not just while Adapt PI is off, so you can set it up in advance.
-
-## Fixed
-
-- **The Live shot graph's frozen last-shot view used to scroll out of sight and disappear after about a minute.** It's now kept in view indefinitely, drawn by a small bundled card instead of the third-party ApexCharts Card - which is no longer a dependency of this dashboard at all.
-- **The old `number.barista_assist_stop_compensation` entity, orphaned by last release's rename, is now automatically migrated to the new "Minimum early stop margin" entity on startup** - no manual cleanup needed (supersedes last release's "safe to delete" note).
-- The Shots view's "Started" column no longer overflows and hides the time.
-- The Minimum/Maximum early stop margin entity names no longer overflow their dashboard row.
-
-## Testing
-
-- Full suite: 178 tests, all passing (up from 170).
+- **Adding Barista Assist's dashboard resource is now a one-time manual step instead of automatic.** The integration previously tried to auto-register its own cards' JavaScript, but that mechanism turned out to be unreliable in practice - cards (especially the Shots view) could show "Configuration error (timeout)" on a restart, on both desktop and mobile, roughly 90% of the time. There's no fully automatic and reliable way to do this from an integration (registering a real Lovelace resource programmatically carries a real risk of wiping out your *other* Lovelace resources, due to a still-open Home Assistant core bug), so the fix is a one-time manual step instead - see the updated "Add the dashboard once" section in the README.
+- The integration's static file server no longer sends cache headers, so browsers reliably pick up new versions of the bundled JS after future updates.
 
 ## Upgrade
 
-Includes a database migration (adds an `effective_stop_margin_g` column to the shots table) and an entity-registry migration (remaps the old stop-compensation entity) - both applied automatically on first load. A full Home Assistant restart is needed to pick up this release. The ApexCharts Card HACS dependency is no longer required for this dashboard - safe to remove via HACS if you don't use it for anything else.
+**Action required**: after upgrading, go to Settings → Dashboards → ⋮ → Resources → Add Resource, and add:
+- URL: `/barista_assist_static/barista-assist-dashboard.js`
+- Resource type: JavaScript Module
+
+Without this, the Shots view, the Live shot graph, and the shot-data export button won't reliably load. A full Home Assistant restart is also needed to pick up this release.
+
+## Testing
+
+- Full suite: 178 tests, all passing. This change lives in `__init__.py`'s integration setup flow, which has no existing automated test harness in this repo.

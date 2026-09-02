@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.24
+
+### Changed
+
+- **Adding Barista Assist's dashboard resource is now a one-time manual step (see the README's "Add the dashboard once" section) instead of automatic.** The integration used to call `frontend.add_extra_js_url` to register its own cards' JavaScript automatically, but that API injects a `<script>` tag into the server-rendered frontend shell HTML - a different, and in practice unreliable, loading path than a real Lovelace resource (which the already-running frontend fetches and injects itself). This caused cards (especially the Shots view) to intermittently show "Configuration error (timeout)" on both desktop and mobile, roughly 90% of the time on a full restart. Registering a real Lovelace resource programmatically from an integration isn't safe either - a still-open Home Assistant core bug means doing so at the wrong moment can silently wipe out every other Lovelace resource on the system - so the reliable fix is a manual, one-time "Add Resource" step instead of another automatic mechanism.
+- **The integration's static file server no longer sends cache headers**, so a browser reload reliably picks up a new version of the bundled JS after an update, without needing to bump a cache-busting query string by hand.
+
+### Testing
+
+- Full suite: 178 tests, all passing. (No new tests: there's no existing harness in this repo for exercising `__init__.py`'s integration setup flow, which is where this fix lives.)
+
 ## 0.2.23
 
 ### Added

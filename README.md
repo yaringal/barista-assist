@@ -241,7 +241,14 @@ Recipe, PI and the early stop margin settings are deliberately **not** set in th
 
 ### Add the dashboard once
 
-Every card in the packaged dashboard, including the Brew view's "Live shot" weight/flow chart, is either a built-in Home Assistant card type or one of Barista Assist's own bundled custom elements - no third-party card needs to be installed separately.
+Every card in the packaged dashboard, including the Brew view's "Live shot" weight/flow chart, is either a built-in Home Assistant card type or one of Barista Assist's own bundled custom elements - no third-party card needs to be installed. Barista Assist's own cards do need their JavaScript registered as a Lovelace resource once, though. This is a manual step because Home Assistant doesn't offer a reliable way for an integration to do this on its own: the `frontend.add_extra_js_url` API some integrations use for this is a different (and, in practice, unreliable - cards can intermittently fail with "Configuration error (timeout)") loading path than a real Lovelace resource, and programmatically registering a real one from Python isn't safe either, since a still-open Home Assistant core bug means doing so at the wrong moment can silently wipe out every other Lovelace resource on the system.
+
+Settings → Dashboards → ⋮ (top-right menu) → **Resources** → **Add Resource**:
+
+- URL: `/barista_assist_static/barista-assist-dashboard.js`
+- Resource type: **JavaScript Module**
+
+(The integration's static file server intentionally sends no cache headers, so a browser reload should always pick up a new version after an update. If a card ever still shows "Configuration error" after upgrading and a hard-refresh doesn't help, edit this resource's URL to add a `?v=2`-style query string as a last resort.)
 
 After the integration is set up, it writes its dashboard as a YAML file into your Home Assistant config directory:
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -13,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 from . import services, websocket
-from .const import DASHBOARD_RESOURCE, DOMAIN, STATIC_URL_PATH
+from .const import DOMAIN, STATIC_URL_PATH
 from .definitions import load_definitions
 from .runtime import BaristaRuntime
 
@@ -42,7 +41,6 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
         {
             "runtime": None,
             "static_registered": False,
-            "dashboard_resource_registered": False,
         },
     )
     await services.async_setup(hass)
@@ -51,16 +49,25 @@ async def async_setup(hass: HomeAssistant, config) -> bool:
 
 
 async def _async_register_frontend(hass: HomeAssistant) -> None:
+    """Serve this integration's bundled frontend assets (the custom Lovelace
+    cards). Deliberately does NOT also call frontend.add_extra_js_url: that
+    injects a <script> tag into the server-rendered frontend shell HTML,
+    which is a different (and, in practice, unreliable - see the setup
+    docs) loading path than a real Lovelace resource, which the
+    already-running frontend fetches and injects itself. Registering a
+    Lovelace resource programmatically from an integration isn't safe
+    either - a still-open Home Assistant core bug means doing so before the
+    frontend has loaded the resource collection can silently wipe out every
+    *other* resource on the system too. So: this only serves the file: the
+    one-time manual "add a Lovelace resource" step in the README's "Add the
+    dashboard once" section is what actually makes it load, reliably."""
     data = hass.data[DOMAIN]
     if not data["static_registered"]:
         frontend_dir = Path(__file__).parent / "frontend"
         await hass.http.async_register_static_paths(
-            [StaticPathConfig(STATIC_URL_PATH, str(frontend_dir), True)]
+            [StaticPathConfig(STATIC_URL_PATH, str(frontend_dir), False)]
         )
         data["static_registered"] = True
-    if not data["dashboard_resource_registered"]:
-        frontend.add_extra_js_url(hass, DASHBOARD_RESOURCE)
-        data["dashboard_resource_registered"] = True
 
 
 async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -130,7 +137,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["runtime"] = None
     if runtime:
         await runtime.async_close()
-    if hass.data[DOMAIN]["dashboard_resource_registered"]:
-        frontend.remove_extra_js_url(hass, DASHBOARD_RESOURCE)
-        hass.data[DOMAIN]["dashboard_resource_registered"] = False
     return True

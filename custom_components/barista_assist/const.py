@@ -32,10 +32,6 @@ def integration_version() -> str:
     return str(json.loads(manifest.read_text(encoding="utf-8"))["version"])
 
 
-DASHBOARD_RESOURCE: Final = (
-    f"{STATIC_URL_PATH}/barista-assist-dashboard.js?v={integration_version()}"
-)
-
 # Written into the Home Assistant config directory as a YAML-mode Lovelace
 # dashboard file (see PUBLISHING.md/README.md for the one-time
 # configuration.yaml block that references it) - regenerated on every
