@@ -5,3 +5,8 @@ __pycache__/
 .DS_Store
 PUBLISHING.md
 scripts/
+docs/*/*.txt
+docs/*.txt
+.gitignore
+CROSS_CREATOR_RULE_CHECK.md
+DIAL_IN_RULES.md

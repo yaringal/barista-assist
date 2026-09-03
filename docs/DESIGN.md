@@ -169,8 +169,12 @@ Example initial operating range:
 Typical increment:
 
 ```text
-0.1 to 0.2 g
+0.5 g
 ```
+
+(Per James Hoffmann's "Understanding Espresso: Dose" video — a ~0.5g nudge
+used only on a shot that's already close to good, not for gross corrections;
+see `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md`.)
 
 Dose is a secondary control because changing it also changes:
 
@@ -197,13 +201,19 @@ Normal recommendations should prefer whole-number changes.
 
 Half-steps are fine adjustments.
 
-Example policy:
+Example policy (mirrored for the coarser/restrictive side; see
+`definitions.yaml`'s `expert_rules.grind_correction` for the full table with
+`duration_ratio` thresholds, and `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md` for
+sourcing):
 
 ```text
-grossly fast        -> 16 to 14
-moderately fast     -> 16 to 15
-slightly fast       -> 16 to 15.5
-healthy             -> no change
+grossly fast            -> 16 to 14
+moderately fast         -> 16 to 15
+slightly fast           -> 16 to 15.5
+healthy                 -> no change
+slightly restrictive    -> 15.5 to 15
+moderately restrictive  -> 15 to 14
+grossly restrictive     -> 14 to 12
 ```
 
 Over time, the system should estimate the local response of the grinder, e.g.:
@@ -223,8 +233,12 @@ Yield is one of the main flavour and strength controls.
 Typical increment:
 
 ```text
-0.5 g
+2 to 3 g
 ```
+
+(Per James Hoffmann's "Understanding Espresso: Ratio" video — his own stated
+ceiling before a yield tweak starts changing the style of the drink rather
+than just fine-tuning it; see `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md`.)
 
 Yield should generally be adjusted only after the shot appears hydraulically healthy.
 
@@ -512,6 +526,22 @@ Such a shot should also be excluded from updates to:
 - normal-shot baseline.
 
 This prevents poor puck preparation from contaminating the model.
+
+**TODO, queued for later:** this section's "repeat the recipe, don't update
+it" response is applied identically no matter how many times in a row it
+happens for the same recipe. An occasional bad shot is exactly what this
+policy is for, but a recipe that keeps landing on `puck_prep_issue` shot
+after shot is no longer just evidence of inconsistent technique — it's
+evidence of something systematic (e.g. a grind set fine enough to channel
+reliably, which per `docs/CROSS_CREATOR_RULE_CHECK.md`'s Lance Hedrick
+cross-check is itself a case for coarsening the grind, not repeating puck
+prep). Nothing today tracks a consecutive run of this classification at an
+unchanged recipe or reacts differently once it's happened several times —
+see the `TODO` comment on `flow_analysis.py`'s classification function.
+Unlike Phase 3b above, this doesn't need to wait on real shot history to
+calibrate against — it's a bookkeeping gap (a per-bag+recipe consecutive
+counter, surfaced past some threshold), not a data one — so it can be picked
+up whenever, independent of the other phases.
 
 ---
 
@@ -1370,18 +1400,37 @@ risking a recurring problem normalizing itself out of detection.
 Implement discrete recommendations:
 
 ```text
+-2
 -1
 -0.5
 0
 +0.5
 +1
++2
 ```
 
-DF54 units.
+DF54 units. (Widened from the original ±1 range to ±2 so a "grossly"
+fast/restrictive shot isn't capped at the same correction as a "moderately"
+fast/restrictive one. Note this range, and which magnitude maps to which
+severity tier, is a project-level implementation choice, not something
+sourced from the videos — none of the nine James Hoffmann transcripts give a
+numeric grind-step size for any grinder; every adjustment he describes is
+qualitative ("a little finer", "way too fast"). §6.2's own `16 to 14` example
+predates this research and is equally a hand-written placeholder, not
+corroborating evidence — see `definitions.yaml`'s `expert_rules.grind_correction`
+table and `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md` for what is and isn't
+actually sourced from the videos.)
 
 Success criterion:
 
 > Gross flow errors are corrected without changing multiple variables at once.
+
+Rule source: `expert_rules.grind_correction` in `definitions.yaml`, derived
+from `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md`. The `duration_ratio` band
+boundaries beyond the existing 0.8/1.6 healthy split (i.e. the
+slightly/moderately/grossly tiers) are placeholder anchors, not derived
+data — same caveat as Phase 3b's thresholds — and should be revisited once
+enough classified shots exist to calibrate them for real.
 
 ---
 

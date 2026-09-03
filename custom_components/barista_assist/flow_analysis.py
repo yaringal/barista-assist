@@ -79,6 +79,16 @@ _FIRST_FLOW_SUSTAIN_MS = 300
 # exists. Anchored against docs/DESIGN.md section 25's Example A (18g -> 38g
 # in 24s, explicitly "clearly fast"): 1.25 g/s puts that shot's t90 just
 # inside the too-fast cutoff, which the previous placeholder (2.0 g/s) did not.
+#
+# KNOWN STALE: definitions.yaml's expert_rules.flow_classification now holds
+# updated values (1.3 / 0.88 / 1.10) checked against real good/bad verdicts
+# from James Hoffmann's dial-in videos (see that key's own comment for the
+# data table and docs/JAMES_HOFFMANN_DIAL_IN_RULES.md for sourcing) - in
+# particular _TOO_RESTRICTIVE_FACTOR here is far looser than that evidence
+# supports (1.6 would call a shot Hoffmann himself diagnosed as "too slow"
+# healthy). These three constants are still what actually runs; nothing
+# reads expert_rules.flow_classification yet. Wire this module up to read
+# from there instead of hardcoding its own values, then delete this note.
 _EXPECTED_FLOW_G_S = 1.25
 _TOO_FAST_FACTOR = 0.8
 _TOO_RESTRICTIVE_FACTOR = 1.6
@@ -573,6 +583,27 @@ def analyze_shot(
     # valid shot?") is judged before the fast/slow hydraulic correction, not
     # after - a shot that both finishes fast and shows a channeling signature
     # is a puck-prep problem to fix before grind is even worth adjusting.
+    #
+    # TODO(revisit - no dependency on real shot data, this could be built now):
+    # every PUCK_PREP_ISSUE shot gets treated identically - "repeat the
+    # recipe, don't learn from it" (DESIGN.md section 12,
+    # definitions.yaml's expert_rules.grind_correction.excludes_classification)
+    # - with nothing tracking whether the SAME recipe keeps landing here
+    # across consecutive shots. That's a meaningful gap: an occasional bad
+    # tamp is exactly what "repeat and don't learn" is for, but a recipe that
+    # produces this classification shot after shot is no longer evidence of
+    # random technique variance - it's evidence of something systematic
+    # (e.g. a genuinely too-fine grind producing a stable channel, which
+    # Lance Hedrick's "Fix Sour Espresso" video treats as a case for
+    # coarsening the grind, not repeating puck prep - see
+    # docs/CROSS_CREATOR_RULE_CHECK.md's "new gap surfaced" note). Nothing
+    # here or in runtime.py/storage.py currently notices a consecutive run of
+    # PUCK_PREP_ISSUE classifications at an unchanged recipe, or does
+    # anything differently because of it - each one is scored independently
+    # of the shots before it. Unlike _baseline_deviation_suspicion's TODO
+    # above, this doesn't need to wait on real recorded shot data - it's a
+    # bookkeeping gap (a per-bag+recipe consecutive-count, surfaced past some
+    # threshold), not a calibration one.
     if t90_ms is None:
         classification = ShotClassification.TOO_RESTRICTIVE
     elif channeling_suspicion >= SUSPICION_THRESHOLD:

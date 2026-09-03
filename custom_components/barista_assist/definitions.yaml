@@ -25,6 +25,192 @@ defaults:
   new_bag:
     starting_mass_g: 250.0
 
+# Expert-system correction rules (DESIGN.md §13-15), consolidated from James
+# Hoffmann's dial-in videos - see docs/JAMES_HOFFMANN_DIAL_IN_RULES.md for the
+# full per-video sourcing and open questions. This encodes *policy* (which
+# lever to pull, in what order, by how much) as data; the diagnostic math
+# that produces a shot's classification/duration_ratio stays in
+# flow_analysis.py, matching this file's own header: algorithms stay in
+# Python, tunable behaviour lives here.
+expert_rules:
+  # Phase 4. The too_fast/too_restrictive/healthy split itself is still
+  # computed in flow_analysis.py (duration_s vs expected_s = target_yield_g /
+  # expected_flow_g_s), and as of this writing that module still hardcodes
+  # its own _EXPECTED_FLOW_G_S/_TOO_FAST_FACTOR/_TOO_RESTRICTIVE_FACTOR
+  # constants rather than reading them from here - flow_classification below
+  # is the intended source of truth those constants should be replaced with
+  # once the runtime is wired to read expert_rules (tracked, not yet done).
+  # Until that migration happens, the two are known to disagree - see
+  # flow_classification's own comment for the specific evidence.
+  flow_classification: 
+    # expected_flow_g_s: the flow rate (target_yield_g / total shot seconds,
+    # t90-ish) a "normal" shot is expected to run at, before any per-bag
+    # history exists (flow_analysis blends this with the bag's own recent
+    # median as shots accumulate - see flow_analysis._blended_expected_flow_g_s,
+    # unaffected by this change). too_fast_factor/too_restrictive_factor
+    # bound how far duration_s may deviate from expected_s (=
+    # target_yield_g / expected_flow_g_s) before a shot leaves "healthy":
+    # too_fast if duration_s < expected_s * too_fast_factor, too_restrictive
+    # if duration_s > expected_s * too_restrictive_factor.
+    #
+    # The values below replace flow_analysis.py's current 1.25 / 0.8 / 1.6
+    # (themselves anchored only to DESIGN.md's own hand-written Example A,
+    # not to anything Hoffmann actually said - see
+    # docs/JAMES_HOFFMANN_DIAL_IN_RULES.md and the "design-doc-is-not-source-
+    # of-truth" lesson from that research). These were checked directly
+    # against every dose/yield/time data point across the dial-in videos
+    # that Hoffmann himself gave an explicit good/bad verdict on -
+    # converted to flow_g_s = yield_g / time_s, then to
+    # duration_ratio = expected_flow_g_s / actual_flow_g_s (equivalent to
+    # duration_s / expected_s for a fixed yield):
+    #
+    #   source                          yield/time      flow_g_s  duration_ratio  verdict
+    #   Dial-In Ep1 shot 1              40g / 34s        1.176      1.105         "too slow" (harsh/muddy/sour)
+    #   Dial-In Ep1 shot 2              38g / 25s        1.520      0.855         "too fast" (under-extracted)
+    #   Dial-In Ep1 shot 3              38g / 27s        1.407      0.924         improving, not flagged as fast/slow
+    #   Dial-In Ep1 shot 4 ("pretty good") 38.5g / 29s    1.328      0.979         accepted
+    #   Grind Size ep's own "good" example 36g / 30s      1.200      1.083         stated as the target to hit
+    #   Dial-In Ep2 baseline             40g / ~29s       1.379      0.943         not flagged as fast/slow (issue was flavour/temp)
+    #   Dial-In Ep2 after adjustment     ~37g / ~30s      1.233      1.054         "hit the numbers", fine
+    #
+    # (expected_flow_g_s = 1.3 used to compute duration_ratio above.) The
+    # bad-verdict points (1.105, 0.855) and every accepted/unflagged point
+    # (0.924-1.083) separate cleanly at roughly 0.88 and 1.10 - notably,
+    # the old 1.6 factor is nowhere close to catching Ep1 shot 1's 1.105,
+    # despite Hoffmann calling that shot too slow outright. This is a small
+    # (7-point), spoken-approximate-timing dataset from one creator's
+    # equipment, not this installation's own instrumented shot history, so
+    # treat it the same way as any other placeholder in this file: a better-
+    # grounded starting point than an invented example, still to be replaced
+    # once Phase 3b/4b's real recorded shots exist.
+    expected_flow_g_s: 1.3
+    too_fast_factor: 0.88
+    too_restrictive_factor: 1.10
+
+  # Corrects a shot's flow-rate deviation by moving grind only, holding
+  # every other recipe variable constant (DESIGN.md §13 Stage 2 - "isolate
+  # variables", from the Grind Size video's rule 3). Never applied to a
+  # puck_prep_issue or invalid_measurement shot: channeling has two distinct
+  # causes in the source videos (bad puck prep vs. grind ground too fine for
+  # the pressure/prep quality being used) and flow_analysis.py can't yet tell
+  # them apart from the weight curve alone, so defaulting to "repeat the
+  # recipe, don't touch grind" is the safe choice until it can.
+  #
+  # TODO, queued: that "repeat, don't touch grind" default is applied the
+  # same way no matter how many consecutive shots at this recipe have come
+  # back puck_prep_issue - nothing tracks the streak or reconsiders the
+  # exclusion once it's happened repeatedly, even though a recurring result
+  # is evidence against "one-off bad tamp" and toward "grind genuinely too
+  # fine for this recipe" (see flow_analysis.py's classification TODO and
+  # docs/DESIGN.md §12).
+  grind_correction:
+    applies_to_classification: [too_fast, too_restrictive]
+    excludes_classification: [puck_prep_issue, invalid_measurement]
+    hold_constant: [dose_g, target_yield_g, temperature_offset_c, preinfusion_s]
+    # duration_ratio = actual shot duration / expected duration for this bag,
+    # using flow_classification's expected_flow_g_s above. Below 1.0 = ran
+    # fast; above 1.0 = ran slow/restrictive. Bands are ordered ascending by
+    # duration_ratio_max; a shot's duration_ratio picks the first band whose
+    # max it is <= to (grossly_restrictive, with no max, catches anything
+    # above moderately_restrictive's). The healthy band's own edges
+    # (0.88/1.10) are the video-sourced values derived above; the finer
+    # slightly/moderately/grossly tiers beyond that boundary are still
+    # placeholder anchors, not derived data - none of the videos give
+    # numeric ratios for "moderately" vs "grossly" off, only qualitative
+    # language ("way too fast" vs "a little bit finer"). Revisit alongside
+    # Phase 3b/4b once real shot history exists to calibrate them.
+    bands:
+      - name: grossly_fast
+        duration_ratio_max: 0.6
+        grind_delta: -2.0
+      - name: moderately_fast
+        duration_ratio_max: 0.75
+        grind_delta: -1.0
+      - name: slightly_fast
+        duration_ratio_max: 0.88
+        grind_delta: -0.5
+      - name: healthy
+        duration_ratio_max: 1.10
+        grind_delta: 0.0
+      - name: slightly_restrictive
+        duration_ratio_max: 1.30
+        grind_delta: 0.5
+      - name: moderately_restrictive
+        duration_ratio_max: 1.60
+        grind_delta: 1.0
+      - name: grossly_restrictive
+        duration_ratio_max: null
+        grind_delta: 2.0
+    # ~5-10g, grinder-dependent (Grind Size ep, rule 4): a shot pulled right
+    # after a grind change is a mix of old- and new-setting grounds until
+    # purged, so it isn't a clean comparison to the pre-change baseline.
+    requires_purge_before_next_comparison: false
+
+  # Phase 5 reference only - not yet consumed by any controller/runtime code.
+  # Tags match DESIGN.md §13's own sensory-tag list, but the lever mapped to
+  # each tag is only as trustworthy as its source: where a James Hoffmann
+  # video independently states the same fix, that's noted below and treated
+  # as the stronger claim; where a mapping only comes from DESIGN.md's own
+  # (pre-video-research, hand-written) examples, that's noted too - DESIGN.md
+  # is not treated as a source of truth here, it's the thing this research
+  # was meant to check. See docs/JAMES_HOFFMANN_DIAL_IN_RULES.md.
+  flavor_correction:
+    lever_order: [yield, temperature, dose, preinfusion]
+    # A single shot's taste tag shouldn't trigger a correction on its own
+    # (Brew Temperature ep: "time and time and time again", not one shot -
+    # shot-to-shot variation and bean heterogeneity can produce a false
+    # signal). Applies to flavour tags; flow-classification-driven grind
+    # corrections above are exempt since duration_ratio is measured directly,
+    # not self-reported.
+    require_persistent_pattern_shots: 2
+    minimum_meaningful_step:
+      temperature_offset_c: 1
+      dose_g: 0.5
+      target_yield_g: 2.5
+    tags:
+      sharp_sour:
+        lever: yield
+        direction: increase
+        delta_g: [2, 3]
+        # Video-sourced (Ratio ep: +2-3g fixes "slightly harsh"/sour; caps
+        # there before it changes the drink's style) and matches the
+        # direction of DESIGN.md's own Example B, though DESIGN.md never
+        # states the 2-3g size - that number comes from the video, not the
+        # design doc.
+        escalation:
+          # Video-sourced (Brew Temperature ep): only escalate to
+          # temperature once the taste issue is confirmed to persist across
+          # shots, not from a single one, and only after ratio has already
+          # been tried. If a milk drink comes out too weak as a result,
+          # DESIGN.md's Example C additionally says to return yield toward
+          # its prior value before trying +1°C rather than stacking both
+          # changes - that sequencing detail is DESIGN.md's own, not
+          # independently stated in the transcripts.
+          condition: persists_after_yield_change
+          lever: temperature
+          direction: increase
+      bitter_harsh:
+        lever: temperature
+        direction: decrease
+        note: "distinguish from dirty-machine bitterness (a lingering, burned flavour) - that is not a recipe fix"
+      thin:
+        lever: dose
+        direction: increase
+        delta_g: 0.5
+        note: "DESIGN.md §13 'good flavour but too weak -> small dose increase' corroborated independently by the Dose video's own 0.5g micro-tweak figure"
+      weak_in_milk:
+        lever: [dose, yield]
+        direction: [increase, decrease]
+        note: "same underlying fix as thin (more concentration) - DESIGN.md doesn't give this tag its own worked example, only 'too_strong' below; this is inferred by symmetry with too_strong, not independently stated by either source, so treat as lower-confidence than the other tags"
+      too_strong:
+        lever: [yield, dose]
+        direction: [increase, decrease]
+        note: "DESIGN.md §13 'too intense in milk -> consider slightly longer yield or small dose reduction' - not independently corroborated by the videos (none of the nine transcripts discuss milk-drink strength; Episode 0's milk-drink mention is about starting dose/volume, not a taste fix)"
+      dry_astringent:
+        note: "no Stage-3 lever identified in DESIGN.md or the source videos for this tag on its own - DESIGN.md only addresses it paired with sour, under suspicious-flow/puck-prep handling (repeat recipe, don't change it). Left unmapped pending more data rather than guessed."
+      balanced:
+        note: "terminal state - no action"
+
 entities:
   sensor:
     status:
@@ -138,7 +324,7 @@ entities:
       token: __DOSE__
       min: 15.0
       max: 22.0
-      step: 0.1
+      step: 0.5
       unit: g
       mode: box
       requires_bag: true
@@ -161,7 +347,7 @@ entities:
       token: __TARGET_YIELD__
       min: 15.0
       max: 80.0
-      step: 0.5
+      step: 2.5
       unit: g
       mode: box
       requires_bag: true
