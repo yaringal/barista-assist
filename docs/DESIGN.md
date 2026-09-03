@@ -174,7 +174,7 @@ Typical increment:
 
 (Per James Hoffmann's "Understanding Espresso: Dose" video — a ~0.5g nudge
 used only on a shot that's already close to good, not for gross corrections;
-see `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md`.)
+see `docs/DIAL_IN_RULES.md`.)
 
 Dose is a secondary control because changing it also changes:
 
@@ -203,7 +203,7 @@ Half-steps are fine adjustments.
 
 Example policy (mirrored for the coarser/restrictive side; see
 `definitions.yaml`'s `expert_rules.grind_correction` for the full table with
-`duration_ratio` thresholds, and `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md` for
+`duration_ratio` thresholds, and `docs/DIAL_IN_RULES.md` for
 sourcing):
 
 ```text
@@ -233,12 +233,18 @@ Yield is one of the main flavour and strength controls.
 Typical increment:
 
 ```text
-2 to 3 g
+5 to 10 g for a sourness correction
+2 to 3 g for general fine-tuning
 ```
 
-(Per James Hoffmann's "Understanding Espresso: Ratio" video — his own stated
-ceiling before a yield tweak starts changing the style of the drink rather
-than just fine-tuning it; see `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md`.)
+James Hoffmann's "Understanding Espresso: Ratio" video states 2-3g as his
+own ceiling before a yield tweak starts changing the style of the drink
+rather than just fine-tuning it — good general guidance, but when
+cross-checked against Lance Hedrick's and Matt Perger's own worked
+sourness-correction examples (5-10g, 25% jumps), all three independently
+use noticeably bigger increments than Hoffmann's stated ceiling for that
+*specific* fix. See `docs/DIAL_IN_RULES.md` and
+`docs/CROSS_CREATOR_RULE_CHECK.md`.
 
 Yield should generally be adjusted only after the shot appears hydraulically healthy.
 
@@ -635,10 +641,22 @@ Examples:
 
 ```text
 healthy flow + slightly sharp
--> try slightly longer yield
+-> try longer yield first (+5 to +10 g), escalate to +1 °C only if it persists across shots
 
 healthy flow + sharp but longer yield makes drink too weak
 -> return yield and try +1 °C
+
+healthy flow + bitter or harsh (watery/drying too)
+-> try shorter yield first, escalate to -1 °C only if it persists across shots
+
+healthy flow + bitter, but NOT watery/drying
+-> do not assume over-extraction - darker roasts especially can taste
+   bitter from fines while actually under-extracted (channeling); check
+   for a puck-prep/channeling cause before touching yield or temperature
+
+healthy flow + dry/astringent (with thin/watery)
+-> try shorter yield first; if the over-extraction traces to a grind
+   pushed too fine rather than a ratio problem, back off the grind instead
 
 healthy flow + too intense in milk
 -> consider slightly longer yield or small dose reduction
@@ -649,6 +667,17 @@ healthy flow + good flavour but too weak
 suspicious flow + sour and dry together
 -> repeat puck prep before changing recipe
 ```
+
+The bitter/harsh and dry/astringent rows, the sourness-yield magnitude
+(+5 to +10 g, up from an earlier +2 to +3 g), and the fines/bitterness
+caveat were added after cross-checking against Lance Hedrick's and Matt
+Perger's videos alongside James Hoffmann's — see
+`docs/CROSS_CREATOR_RULE_CHECK.md` and `expert_rules.flavor_correction` in
+`definitions.yaml` for the full sourcing and reasoning. Not everything from
+that cross-check was incorporated: creator-specific personal preferences
+that conflicted with the wider consensus (or, in one case, with a
+creator's own other videos) were deliberately left out — see that doc's
+"queued decisions" for what was considered and rejected, and why.
 
 This behaviour is intentionally hierarchical.
 
@@ -854,6 +883,26 @@ If there is no exact match:
 ```text
 medium roast normal -> prior from similar normal coffees
 ```
+
+### No similar coffee — fall back to a roast-level ratio prior
+
+If there's no matching or similar coffee to warm-start from at all, the
+coffee's own `roast_level` (already part of the §16 Coffee model, currently
+unused for this) can still seed a starting ratio, cross-checked against two
+independent Lance Hedrick videos which agree closely with each other:
+
+```text
+dark   -> around 1:2
+medium -> around 1:2.5
+light  -> around 1:3 (open-ended - can run longer)
+```
+
+Both sources are explicit these are loose starting points, not fixed
+targets — one dark-roast dial-in ended below 1:2 once actually tasted. This
+should be overridden immediately by the bag's own accepted shots, the same
+way the flow classifier's fixed prior yields to a bag's own history. See
+`expert_rules.roast_level_ratio_prior` in `definitions.yaml` and
+`docs/CROSS_CREATOR_RULE_CHECK.md`.
 
 ### Decaf
 
@@ -1418,7 +1467,7 @@ numeric grind-step size for any grinder; every adjustment he describes is
 qualitative ("a little finer", "way too fast"). §6.2's own `16 to 14` example
 predates this research and is equally a hand-written placeholder, not
 corroborating evidence — see `definitions.yaml`'s `expert_rules.grind_correction`
-table and `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md` for what is and isn't
+table and `docs/DIAL_IN_RULES.md` for what is and isn't
 actually sourced from the videos.)
 
 Success criterion:
@@ -1426,7 +1475,7 @@ Success criterion:
 > Gross flow errors are corrected without changing multiple variables at once.
 
 Rule source: `expert_rules.grind_correction` in `definitions.yaml`, derived
-from `docs/JAMES_HOFFMANN_DIAL_IN_RULES.md`. The `duration_ratio` band
+from `docs/DIAL_IN_RULES.md`. The `duration_ratio` band
 boundaries beyond the existing 0.8/1.6 healthy split (i.e. the
 slightly/moderately/grossly tiers) are placeholder anchors, not derived
 data — same caveat as Phase 3b's thresholds — and should be revisited once

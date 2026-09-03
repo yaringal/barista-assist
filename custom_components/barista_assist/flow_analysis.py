@@ -83,7 +83,7 @@ _FIRST_FLOW_SUSTAIN_MS = 300
 # KNOWN STALE: definitions.yaml's expert_rules.flow_classification now holds
 # updated values (1.3 / 0.88 / 1.10) checked against real good/bad verdicts
 # from James Hoffmann's dial-in videos (see that key's own comment for the
-# data table and docs/JAMES_HOFFMANN_DIAL_IN_RULES.md for sourcing) - in
+# data table and docs/DIAL_IN_RULES.md for sourcing) - in
 # particular _TOO_RESTRICTIVE_FACTOR here is far looser than that evidence
 # supports (1.6 would call a shot Hoffmann himself diagnosed as "too slow"
 # healthy). These three constants are still what actually runs; nothing

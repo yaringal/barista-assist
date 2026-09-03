@@ -26,7 +26,7 @@ defaults:
     starting_mass_g: 250.0
 
 # Expert-system correction rules (DESIGN.md §13-15), consolidated from James
-# Hoffmann's dial-in videos - see docs/JAMES_HOFFMANN_DIAL_IN_RULES.md for the
+# Hoffmann's dial-in videos - see docs/DIAL_IN_RULES.md for the
 # full per-video sourcing and open questions. This encodes *policy* (which
 # lever to pull, in what order, by how much) as data; the diagnostic math
 # that produces a shot's classification/duration_ratio stays in
@@ -56,7 +56,7 @@ expert_rules:
     # The values below replace flow_analysis.py's current 1.25 / 0.8 / 1.6
     # (themselves anchored only to DESIGN.md's own hand-written Example A,
     # not to anything Hoffmann actually said - see
-    # docs/JAMES_HOFFMANN_DIAL_IN_RULES.md and the "design-doc-is-not-source-
+    # docs/DIAL_IN_RULES.md and the "design-doc-is-not-source-
     # of-truth" lesson from that research). These were checked directly
     # against every dose/yield/time data point across the dial-in videos
     # that Hoffmann himself gave an explicit good/bad verdict on -
@@ -153,7 +153,19 @@ expert_rules:
   # as the stronger claim; where a mapping only comes from DESIGN.md's own
   # (pre-video-research, hand-written) examples, that's noted too - DESIGN.md
   # is not treated as a source of truth here, it's the thing this research
-  # was meant to check. See docs/JAMES_HOFFMANN_DIAL_IN_RULES.md.
+  # was meant to check. See docs/DIAL_IN_RULES.md.
+  #
+  # Cross-checked against Lance Hedrick's and Matt Perger's videos too (see
+  # docs/CROSS_CREATOR_RULE_CHECK.md); adjustments below are annotated
+  # "cross-creator". Weighted for genuine consensus/mechanism over any one
+  # creator's personal preference: Lance's self-described personal biases
+  # (e.g. "I always prefer to go coarser", rejecting fixed time windows
+  # despite using them himself in two of his own other videos, changing
+  # grind and contact time together instead of isolating grind) were
+  # deliberately NOT incorporated anywhere in this file - see
+  # docs/CROSS_CREATOR_RULE_CHECK.md's "queued decisions" for why each one
+  # was left out. What did get incorporated below either matches across
+  # multiple independent sources or is a stated mechanism, not an opinion.
   flavor_correction:
     lever_order: [yield, temperature, dose, preinfusion]
     # A single shot's taste tag shouldn't trigger a correction on its own
@@ -171,12 +183,17 @@ expert_rules:
       sharp_sour:
         lever: yield
         direction: increase
-        delta_g: [2, 3]
-        # Video-sourced (Ratio ep: +2-3g fixes "slightly harsh"/sour; caps
-        # there before it changes the drink's style) and matches the
-        # direction of DESIGN.md's own Example B, though DESIGN.md never
-        # states the 2-3g size - that number comes from the video, not the
-        # design doc.
+        delta_g: [5, 10]
+        # Direction matches DESIGN.md's own Example B. Magnitude was
+        # originally 2-3g (Hoffmann's "Ratio" ep - his own stated ceiling
+        # before a yield tweak starts changing the drink's style), but
+        # cross-creator: three independent worked examples (Lance Hedrick's
+        # "Fix Sour Espresso" - "five, eight, maybe ten grams more"; Lance's
+        # "Quick & Easy Guide" - demonstrated +5g; Matt Perger - +10g, a 25%
+        # jump) all use noticeably bigger jumps than Hoffmann's own stated
+        # ceiling, so this was widened to 5-10g. This isn't "trust Lance
+        # over Hoffmann" - Perger's independent +10g example is what tips it;
+        # a 3-source majority against Hoffmann's single stated ceiling.
         escalation:
           # Video-sourced (Brew Temperature ep): only escalate to
           # temperature once the taste issue is confirmed to persist across
@@ -190,26 +207,113 @@ expert_rules:
           lever: temperature
           direction: increase
       bitter_harsh:
-        lever: temperature
+        # Cross-creator reorder: previously mapped straight to temperature.
+        # Lance Hedrick's "Quick & Easy Guide" ("if it's watery, it's
+        # bitter, it's drying... lower [the ratio], that's probably
+        # over-extraction") puts yield/ratio decrease first, with
+        # temperature only mentioned as a secondary aside for machines that
+        # support it ("Understanding Variables": "most people don't have
+        # the capability... I wouldn't sweat it"). This isn't a new
+        # principle - it matches Hoffmann's own stated rule to try ratio
+        # before temperature for any taste issue - this tag just hadn't
+        # been updated to reflect that ordering the way sharp_sour's
+        # escalation already was. Fixing an internal inconsistency, not
+        # adopting a new claim.
+        lever: yield
         direction: decrease
+        # No delta_g on purpose - unlike sharp_sour's increase direction
+        # (2-3g Hoffmann, widened to 5-10g against three independent
+        # worked examples above), nothing in any of the 16 transcripts
+        # states a magnitude for the DECREASE direction: every source that
+        # discusses pulling back yield for bitterness/over-extraction gives
+        # direction only ("lower it", "return yield toward its prior
+        # value"), never a number. Adding one here would be a guess, not a
+        # sourced figure - falls back to this block's own
+        # minimum_meaningful_step.target_yield_g (2.5g) instead of
+        # inventing a dedicated value.
+        escalation:
+          condition: persists_after_yield_change
+          lever: temperature
+          direction: decrease
         note: "distinguish from dirty-machine bitterness (a lingering, burned flavour) - that is not a recipe fix"
+        # Cross-creator qualifier, corroborated independently in two Lance
+        # Hedrick videos ("Dialing In By Taste", "Understanding Variables"):
+        # darker roasts produce more fines, and fines are inherently
+        # bitter - so a shot can taste bitter while actually being
+        # UNDER-extracted (via channeling), which this tag's yield-decrease
+        # fix would make worse, not better. Stated distinguishing signal:
+        # true over-extraction bitterness comes together with
+        # wateriness/dryness; fines-driven bitterness doesn't necessarily.
+        # If bitter appears WITHOUT watery/drying, this may not be the
+        # right tag at all - check for puck_prep_issue/channeling first
+        # rather than assuming over-extraction.
+        fines_caveat: "bitter without accompanying watery/drying mouthfeel may be under-extraction/channeling, not over-extraction - do not apply this tag's fix in that case"
       thin:
         lever: dose
         direction: increase
         delta_g: 0.5
-        note: "DESIGN.md §13 'good flavour but too weak -> small dose increase' corroborated independently by the Dose video's own 0.5g micro-tweak figure"
+        # Sourced from DESIGN.md §13 ("good flavour but too weak -> small
+        # dose increase"), corroborated independently by the Dose video's
+        # own 0.5g micro-tweak figure.
+        note: "a small dose increase (about 0.5g) is the standard fix for a shot that already tastes good but comes across underpowered or weak"
       weak_in_milk:
         lever: [dose, yield]
         direction: [increase, decrease]
-        note: "same underlying fix as thin (more concentration) - DESIGN.md doesn't give this tag its own worked example, only 'too_strong' below; this is inferred by symmetry with too_strong, not independently stated by either source, so treat as lower-confidence than the other tags"
+        # Inferred by symmetry with too_strong below - DESIGN.md doesn't
+        # give this tag its own worked example, and it isn't independently
+        # stated by any source, so treat as lower-confidence than the
+        # other tags here.
+        note: "increase dose slightly or shorten yield slightly to add strength and body when a milk drink tastes weak or diluted"
       too_strong:
         lever: [yield, dose]
         direction: [increase, decrease]
-        note: "DESIGN.md §13 'too intense in milk -> consider slightly longer yield or small dose reduction' - not independently corroborated by the videos (none of the nine transcripts discuss milk-drink strength; Episode 0's milk-drink mention is about starting dose/volume, not a taste fix)"
+        # Sourced from DESIGN.md §13 ("too intense in milk -> consider
+        # slightly longer yield or small dose reduction"); not
+        # independently corroborated by the videos - none of the nine
+        # transcripts discuss milk-drink strength, and Episode 0's
+        # milk-drink mention is about starting dose/volume, not a taste fix.
+        note: "increase yield slightly or reduce dose slightly to soften a shot that tastes too intense or overpowering in a milk drink"
       dry_astringent:
-        note: "no Stage-3 lever identified in DESIGN.md or the source videos for this tag on its own - DESIGN.md only addresses it paired with sour, under suspicious-flow/puck-prep handling (repeat recipe, don't change it). Left unmapped pending more data rather than guessed."
+        # Previously unmapped ("no Stage-3 lever identified... left unmapped
+        # pending more data"). Cross-creator: now has real evidence. Lance
+        # Hedrick's "Quick & Easy Guide" pairs "watery and drying and
+        # bitter" together as the over-extraction signature (fix: lower
+        # ratio); Matt Perger's diminishing-returns finding independently
+        # arrives at the same place from grind - pushing grind past its
+        # peak makes mouthfeel "dry" while extraction and strength both
+        # drop. Two different levers, same diagnosis (over-extraction),
+        # from two independent sources.
+        lever: yield
+        direction: decrease
+        # Same gap as bitter_harsh, and for the same reason: no source
+        # gives a magnitude for this direction, only "lower it"/"back off".
+        # Falls back to minimum_meaningful_step.target_yield_g (2.5g)
+        # rather than a guessed delta_g.
+        note: "when this tag appears alongside thin or watery mouthfeel (true over-extraction): decrease yield first. If the over-extraction is actually caused by a grind pushed too fine rather than a ratio problem, back off the grind instead - this tag alone doesn't distinguish which lever caused it, only that yield or grind should move toward less extraction"
       balanced:
-        note: "terminal state - no action"
+        note: "all good - no action"
+
+  # Phase 5/6 reference only - not yet consumed by any code. DESIGN.md §19's
+  # warm-start logic only matches against a "similar coffee" today; it
+  # doesn't use a new bag's coffee.roast_level (§16 - already modeled,
+  # already collected, just unused for this) as a prior for anything.
+  # Cross-creator: two independent Lance Hedrick videos ("Quick & Easy
+  # Guide" and "Mystery Roast") agree closely on a starting ratio by roast
+  # level, so this is a reasonable candidate warm-start prior once a bag
+  # has no shot history of its own (or no similar-coffee match) to fall
+  # back on.
+  roast_level_ratio_prior:
+    dark: 2.0
+    medium: 2.5
+    light: 3.0
+    # Both sources are explicit these are loose starting points, not fixed
+    # targets: "Mystery Roast" ends its actual dark-roast dial-in below 1:2
+    # once tasted ("we ended up below one to two because that's where it
+    # tasted best"), and "Quick & Easy Guide" gives light roast as "1:3 and
+    # above" (open-ended, not a ceiling). Use only to seed target_yield_g
+    # for a brand-new bag; a bag's own accepted shots should override this
+    # immediately, the same way flow_classification's fixed prior yields to
+    # a bag's own history.
 
 entities:
   sensor:
