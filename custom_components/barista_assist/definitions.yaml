@@ -33,7 +33,8 @@ defaults:
 # flow_analysis.py, matching this file's own header: algorithms stay in
 # Python, tunable behaviour lives here.
 expert_rules:
-  # Phase 4. The too_fast/too_restrictive/healthy split itself is still
+
+  # The too_fast/too_restrictive/healthy split itself (Phase 4) is still
   # computed in flow_analysis.py (duration_s vs expected_s = target_yield_g /
   # expected_flow_g_s), and as of this writing that module still hardcodes
   # its own _EXPECTED_FLOW_G_S/_TOO_FAST_FACTOR/_TOO_RESTRICTIVE_FACTOR
@@ -141,10 +142,6 @@ expert_rules:
       - name: grossly_restrictive
         duration_ratio_max: null
         grind_delta: 2.0
-    # ~5-10g, grinder-dependent (Grind Size ep, rule 4): a shot pulled right
-    # after a grind change is a mix of old- and new-setting grounds until
-    # purged, so it isn't a clean comparison to the pre-change baseline.
-    requires_purge_before_next_comparison: false
 
   # Phase 5 reference only - not yet consumed by any controller/runtime code.
   # Tags match DESIGN.md §13's own sensory-tag list, but the lever mapped to
@@ -180,7 +177,7 @@ expert_rules:
       dose_g: 0.5
       target_yield_g: 2.5
     tags:
-      sharp_sour:
+      sour_sharp:
         lever: yield
         direction: increase
         delta_g: [5, 10]
@@ -216,12 +213,12 @@ expert_rules:
         # the capability... I wouldn't sweat it"). This isn't a new
         # principle - it matches Hoffmann's own stated rule to try ratio
         # before temperature for any taste issue - this tag just hadn't
-        # been updated to reflect that ordering the way sharp_sour's
+        # been updated to reflect that ordering the way sour_sharp's
         # escalation already was. Fixing an internal inconsistency, not
         # adopting a new claim.
         lever: yield
         direction: decrease
-        # No delta_g on purpose - unlike sharp_sour's increase direction
+        # No delta_g on purpose - unlike sour_sharp's increase direction
         # (2-3g Hoffmann, widened to 5-10g against three independent
         # worked examples above), nothing in any of the 16 transcripts
         # states a magnitude for the DECREASE direction: every source that
@@ -248,7 +245,7 @@ expert_rules:
         # right tag at all - check for puck_prep_issue/channeling first
         # rather than assuming over-extraction.
         fines_caveat: "bitter without accompanying watery/drying mouthfeel may be under-extraction/channeling, not over-extraction - do not apply this tag's fix in that case"
-      thin:
+      thin_weak:
         lever: dose
         direction: increase
         delta_g: 0.5
@@ -256,23 +253,6 @@ expert_rules:
         # dose increase"), corroborated independently by the Dose video's
         # own 0.5g micro-tweak figure.
         note: "a small dose increase (about 0.5g) is the standard fix for a shot that already tastes good but comes across underpowered or weak"
-      weak_in_milk:
-        lever: [dose, yield]
-        direction: [increase, decrease]
-        # Inferred by symmetry with too_strong below - DESIGN.md doesn't
-        # give this tag its own worked example, and it isn't independently
-        # stated by any source, so treat as lower-confidence than the
-        # other tags here.
-        note: "increase dose slightly or shorten yield slightly to add strength and body when a milk drink tastes weak or diluted"
-      too_strong:
-        lever: [yield, dose]
-        direction: [increase, decrease]
-        # Sourced from DESIGN.md §13 ("too intense in milk -> consider
-        # slightly longer yield or small dose reduction"); not
-        # independently corroborated by the videos - none of the nine
-        # transcripts discuss milk-drink strength, and Episode 0's
-        # milk-drink mention is about starting dose/volume, not a taste fix.
-        note: "increase yield slightly or reduce dose slightly to soften a shot that tastes too intense or overpowering in a milk drink"
       dry_astringent:
         # Previously unmapped ("no Stage-3 lever identified... left unmapped
         # pending more data"). Cross-creator: now has real evidence. Lance
@@ -289,7 +269,8 @@ expert_rules:
         # gives a magnitude for this direction, only "lower it"/"back off".
         # Falls back to minimum_meaningful_step.target_yield_g (2.5g)
         # rather than a guessed delta_g.
-        note: "when this tag appears alongside thin or watery mouthfeel (true over-extraction): decrease yield first. If the over-extraction is actually caused by a grind pushed too fine rather than a ratio problem, back off the grind instead - this tag alone doesn't distinguish which lever caused it, only that yield or grind should move toward less extraction"
+        
+        # When this tag appears alongside thin or watery mouthfeel (true over-extraction): decrease yield first. If the over-extraction is actually caused by a grind pushed too fine rather than a ratio problem, back off the grind instead - this tag alone doesn't distinguish which lever caused it, only that yield or grind should move toward less extraction.
       balanced:
         note: "all good - no action"
 
@@ -302,18 +283,43 @@ expert_rules:
   # level, so this is a reasonable candidate warm-start prior once a bag
   # has no shot history of its own (or no similar-coffee match) to fall
   # back on.
+  #
+  # Cross-checked against Hoffmann's own actual dial-in results (the only
+  # two videos with both a stated roast level AND a final numeric recipe):
+  # Dial-In Ep1, light roast, ended at 17g -> 42g (1:2.47); Dial-In Ep2,
+  # medium roast, ended at 19g -> 36-38g, which Hoffmann himself calls "the
+  # classic two to one ratio" (~1:1.9-2.0). Lance's medium=2.5 doesn't hold
+  # up against that - Hoffmann's actual medium result sits closer to
+  # Lance's DARK tier than his medium one. medium was lowered from 2.5
+  # toward that result; not moved all the way to 2.0 because that would
+  # collapse it onto the dark tier and lose the ordering (dark < medium <
+  # light) this prior exists to encode, and because a single Hoffmann data
+  # point plus Lance's stated table isn't enough to pin an exact number,
+  # only enough to say 2.5 was too high. light (3.0) hasn't been re-checked
+  # the same way - Hoffmann's light-roast result (2.47) is itself below
+  # Lance's light tier (3.0+, stated as open-ended, not a ceiling), so that
+  # tier may be optimistic too, but with only one Hoffmann light-roast data
+  # point and Lance's own explicit "and above" hedge, there isn't a clear
+  # correction to make there yet - flagging rather than guessing.
+  #
+  # Worth weighing all of this lightly regardless of the exact numbers:
+  # Hoffmann's own "Episode 0" is an extended argument against exactly this
+  # kind of simplification - "not all two-to-ones are created equal" - his
+  # stated position is that ratio depends on dose, basket, grinder, and
+  # water at least as much as roast level. This prior is a low-confidence
+  # fallback for when nothing else is available, not a validated rule.
   roast_level_ratio_prior:
     dark: 2.0
-    medium: 2.5
+    medium: 2.2
     light: 3.0
-    # Both sources are explicit these are loose starting points, not fixed
-    # targets: "Mystery Roast" ends its actual dark-roast dial-in below 1:2
-    # once tasted ("we ended up below one to two because that's where it
-    # tasted best"), and "Quick & Easy Guide" gives light roast as "1:3 and
-    # above" (open-ended, not a ceiling). Use only to seed target_yield_g
-    # for a brand-new bag; a bag's own accepted shots should override this
-    # immediately, the same way flow_classification's fixed prior yields to
-    # a bag's own history.
+    # Both Lance sources are explicit these are loose starting points, not
+    # fixed targets: "Mystery Roast" ends its actual dark-roast dial-in
+    # below 1:2 once tasted ("we ended up below one to two because that's
+    # where it tasted best"), and "Quick & Easy Guide" gives light roast as
+    # "1:3 and above" (open-ended, not a ceiling). Use only to seed
+    # target_yield_g for a brand-new bag; a bag's own accepted shots should
+    # override this immediately, the same way flow_classification's fixed
+    # prior yields to a bag's own history.
 
 entities:
   sensor:

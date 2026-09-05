@@ -97,7 +97,7 @@ _TOO_RESTRICTIVE_FACTOR = 1.6
 # with a bag's own healthy-shot history - shrinks toward the bag-specific
 # median as shot_count grows, rather than switching over abruptly at some
 # threshold. A placeholder like the other constants above.
-_PRIOR_WEIGHT_SHOTS = 5.0
+_PRIOR_WEIGHT_SHOTS = 1.0
 
 # Fixed prior: mid- or late-shot flow accelerating upward by this many g/s
 # per second is treated as maximally suspicious, independent of any baseline.

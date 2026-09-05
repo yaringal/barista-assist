@@ -888,21 +888,40 @@ medium roast normal -> prior from similar normal coffees
 
 If there's no matching or similar coffee to warm-start from at all, the
 coffee's own `roast_level` (already part of the §16 Coffee model, currently
-unused for this) can still seed a starting ratio, cross-checked against two
-independent Lance Hedrick videos which agree closely with each other:
+unused for this) can still seed a starting ratio — Lance Hedrick's stated
+guideline, but checked against and adjusted toward James Hoffmann's own
+actual dial-in results, not taken as-is:
 
 ```text
 dark   -> around 1:2
-medium -> around 1:2.5
+medium -> around 1:2.2
 light  -> around 1:3 (open-ended - can run longer)
 ```
 
-Both sources are explicit these are loose starting points, not fixed
-targets — one dark-roast dial-in ended below 1:2 once actually tasted. This
-should be overridden immediately by the bag's own accepted shots, the same
-way the flow classifier's fixed prior yields to a bag's own history. See
-`expert_rules.roast_level_ratio_prior` in `definitions.yaml` and
-`docs/CROSS_CREATOR_RULE_CHECK.md`.
+Lance's own stated numbers (dark 1:2, **medium 1:2.5**, light 1:3+, from two
+of his videos that agree closely with each other) don't hold up against
+Hoffmann's own two roast-labelled dial-ins: his medium-roast session ended
+at 19g→36-38g, which Hoffmann himself calls "the classic two to one ratio"
+(~1:1.9-2.0) — notably closer to Lance's *dark* tier than his medium one.
+`medium` above was lowered from 2.5 to 2.2 to move toward that result
+without fully collapsing it onto the dark tier (which would lose the
+ordering this prior exists to encode) — a single Hoffmann data point isn't
+enough to pin an exact number, only enough to say 2.5 was too high. `light`
+hasn't been re-checked the same way: Hoffmann's one light-roast result
+(1:2.47) is itself below Lance's light tier, but with only one data point
+and Lance's own explicit "and above" hedge on that number, there's no clear
+correction to make there yet.
+
+Both Lance sources are explicit these are loose starting points, not fixed
+targets — one of his own dark-roast dial-ins ended below 1:2 once actually
+tasted. Worth weighing this whole prior lightly regardless of the exact
+numbers: Hoffmann's own "Episode 0" is an extended argument against exactly
+this kind of simplification ("not all two-to-ones are created equal" —
+ratio depends on dose, basket, grinder, and water at least as much as roast
+level). This should be overridden immediately by the bag's own accepted
+shots, the same way the flow classifier's fixed prior yields to a bag's own
+history. See `expert_rules.roast_level_ratio_prior` in `definitions.yaml`
+and `docs/CROSS_CREATOR_RULE_CHECK.md`.
 
 ### Decaf
 
