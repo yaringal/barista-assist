@@ -384,6 +384,21 @@ def _blended_expected_flow_g_s(baseline: BaselineFeatures | None, config: FlowAn
     unlike mechanical suspicion below, there's nothing to protect against
     here, so the global prior is allowed to fully wash out as real shots
     accumulate rather than only ever being overridden, never replaced.
+
+    TODO(revisit once real, verified shot data exists): fully bidirectional
+    shrinkage has a "boiling frog" risk symmetrical to the one
+    _baseline_deviation_suspicion's TODO describes for channeling. As beans
+    age, true flow rate drifts and grind corrections (Phase 4) chase it back
+    toward config.expected_flow_g_s - but median_flow_g_s is built only from
+    this bag's own recent shots, already reflecting those corrections. Once
+    enough corrected shots accumulate, the blended expected rate just tracks
+    wherever the corrections have settled, so duration_ratio (which this
+    feeds, at the call site below) stops being able to see the underlying
+    drift at all - the classifier and the corrector end up chasing each
+    other's tail instead of one checking the other. Unlike the channeling
+    case there's no independent "healthy" self-labeling loop here (flow rate
+    isn't an evaluative judgment), so this may be an acceptable trade-off in
+    practice - but it hasn't been checked against real multi-week bag data.
     """
     if baseline is None or baseline.shot_count <= 0:
         return config.expected_flow_g_s
