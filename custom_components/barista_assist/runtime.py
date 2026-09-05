@@ -32,7 +32,8 @@ from .const import (
     SIGNAL_UPDATE,
 )
 from .definitions import EntityDefinition, load_definitions
-from .flow_analysis import BaselineFeatures, analyze_shot
+from .flow_analysis import BaselineFeatures, FlowAnalysisConfig, analyze_shot
+from .grind_correction import recommend_grind_delta
 from .protocol import BookooReading
 from .storage import Bag, BaristaDatabase, ShotSample
 from .switchbot import SwitchBotBotConfigurator, resolve_bluetooth_address
@@ -51,9 +52,10 @@ _BOT_PRESS_LOCK_TIMEOUT_S = 2.0
 # unusually long shot instead of growing without limit.
 _SHOT_PLOT_MAX_POINTS = 300
 # How far back _smoothed_flow_g_s averages when projecting the live stop
-# margin - matches flow_analysis.SMOOTHING_WINDOW_MS so "how fast is this
-# shot flowing right now" means the same thing during the shot as it does in
-# the post-shot analysis, rather than reacting to one noisy single reading.
+# margin - matches flow_analysis_constants.smoothing_window_ms so "how fast
+# is this shot flowing right now" means the same thing during the shot as it
+# does in the post-shot analysis, rather than reacting to one noisy single
+# reading.
 _STOP_MARGIN_FLOW_WINDOW_MS = 500
 # BaristaRuntime.stop_latency_normal_s/stop_latency_elevated_s (a rough
 # estimate of the physical latency between the stop decision and the pour
@@ -449,6 +451,8 @@ class BaristaRuntime:
             reading = self.scale.last_reading
             return getattr(reading, str(field)) if reading else None
         if source == "last_shot":
+            if field == "recommended_grind_note":
+                return self._recommended_grind_note()
             return self.last_shot.get(str(field)) if self.last_shot else None
         if source == "bag":
             bag = self.selected_bag
@@ -458,6 +462,23 @@ class BaristaRuntime:
                 return self._bag_remaining.get(self.selected_slot)
             return getattr(bag, str(field))
         raise HomeAssistantError(f"Unsupported entity source: {source}")
+
+    def _recommended_grind_note(self) -> str | None:
+        """"Current -> recommended" text for the last shot's grind
+        (docs/DESIGN.md section 28), e.g. "15.0 -> 14.0". Based on the grind
+        that shot actually ran at (shots.grind, a snapshot taken when the
+        shot was created) rather than the bag's live current grind, which
+        may have since been changed for an unrelated reason and would no
+        longer match what recommended_grind_delta was computed against.
+        None when the last shot has no recommendation at all (healthy, or
+        excluded as puck_prep_issue/invalid_measurement)."""
+        if not self.last_shot:
+            return None
+        delta = self.last_shot.get("recommended_grind_delta")
+        if delta is None:
+            return None
+        current = self.last_shot["grind"]
+        return f"{current:g} → {current + delta:g}"
 
     def entity_attributes(self, definition: EntityDefinition) -> dict[str, Any]:
         if not definition.attributes:
@@ -751,7 +772,7 @@ class BaristaRuntime:
         shot can be cut off, and vice versa).
 
         An earlier version derived an "implied latency" as
-        early_stop_margin_min_g / flow_analysis._EXPECTED_FLOW_G_S (a
+        early_stop_margin_min_g / flow_analysis_constants.expected_flow_g_s (a
         generic, cross-installation placeholder, not this bag's or this
         machine's actual typical flow rate) and multiplied that latency by
         live flow outright, replacing early_stop_margin_min_g entirely. For a
@@ -1309,11 +1330,13 @@ class BaristaRuntime:
         baseline_features = await self.hass.async_add_executor_job(
             self.db.recent_healthy_features, shot.bag.id
         )
+        flow_analysis_config = FlowAnalysisConfig(**self.definitions.flow_analysis_constants)
         analysis = analyze_shot(
             shot.samples,
             target_yield_g=shot.target_yield_g,
             preinfusion_s=shot.preinfusion_s,
             baseline=BaselineFeatures(**baseline_features) if baseline_features else None,
+            config=flow_analysis_config,
         )
         if analysis.invalid_reason is not None:
             _LOGGER.warning(
@@ -1324,6 +1347,16 @@ class BaristaRuntime:
         elif status == "complete" and last_weight is not None:
             self._update_learned_stop_latency(shot, last_weight)
             await self._async_save_state()
+
+        # Phase 4 (docs/DESIGN.md section 28): a recommended DF54 delta for
+        # this shot's flow-rate deviation, or None if this shot isn't a
+        # grind-correction candidate at all (see grind_correction.py and
+        # expert_rules.grind_correction's own comment in definitions.yaml).
+        recommended_grind_delta = recommend_grind_delta(
+            analysis.classification,
+            analysis.duration_ratio,
+            self.definitions.expert_rules["grind_correction"],
+        )
 
         await self.hass.async_add_executor_job(
             lambda: self.db.finalize_shot(
@@ -1337,6 +1370,7 @@ class BaristaRuntime:
                 classification=str(analysis.classification),
                 channeling_suspicion=analysis.channeling_suspicion,
                 analysis_json=json.dumps(asdict(analysis)),
+                recommended_grind_delta=recommended_grind_delta,
             )
         )
         self._last_shot_samples = shot.samples

@@ -22,8 +22,13 @@ import ha_stubs  # noqa: E402
 from real_shot_fixtures import load_real_shot  # noqa: E402
 
 flow_analysis = ha_stubs.import_barista_module("flow_analysis")
+definitions = ha_stubs.import_barista_module("definitions")
 ShotClassification = flow_analysis.ShotClassification
 analyze_shot = flow_analysis.analyze_shot
+
+# The real, sourced config - see test_flow_analysis.py's own CONFIG for why
+# this isn't a hardcoded/default FlowAnalysisConfig.
+CONFIG = flow_analysis.FlowAnalysisConfig(**definitions.load_definitions().flow_analysis_constants)
 
 
 class GoodShotAdaptPiTests(unittest.TestCase):
@@ -43,11 +48,11 @@ class GoodShotAdaptPiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
-        self.assertLess(result.channeling_suspicion, flow_analysis.SUSPICION_THRESHOLD)
+        self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
 
     def test_flow_is_detected_right_after_preinfusion_ends(self) -> None:
         """preinfusion_s=7.0; real flow (per the recorded analysis_json)
@@ -57,7 +62,7 @@ class GoodShotAdaptPiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
         self.assertGreater(result.t_first_flow_ms, self.shot.preinfusion_s * 1000)
 
@@ -92,7 +97,7 @@ class TooFastMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
@@ -123,7 +128,7 @@ class LateCupMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, "flow_started_before_preinfusion_end")
@@ -152,7 +157,7 @@ class ChokedMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
@@ -182,7 +187,7 @@ class TooRestrictiveMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
@@ -191,30 +196,43 @@ class TooRestrictiveMachinePiTests(unittest.TestCase):
 class GoodButFlaggedMachinePiTests(unittest.TestCase):
     """"Seems to be a good shot (not sure why invalid), adaptPI=False
     (machine controlled)" - the main pour (elapsed_ms=9014 onward) does look
-    like a healthy shot, finishing at 35.2g against a 36g target. A small
-    trickle also creeps up to 0.3g between elapsed_ms=2054 and 8924, well
-    inside the 8s machine pre-infusion window, but the scale only reports
-    0.1g steps: a couple of isolated samples land close enough together that
-    the raw derivative spikes past FIRST_FLOW_THRESHOLD_G_S for a single
-    sample, even though the trickle itself is negligible and never sustains.
-    The classification recorded at the time (invalid_measurement) was that
-    bug; _first_sustained_crossing_ms now requires the crossing to hold for
-    _FIRST_FLOW_SUSTAIN_MS before counting it, so this shot correctly comes
-    back healthy, matching the barista's own instinct."""
+    like a coherent shot, finishing at 35.2g against a 36g target in 23.1s
+    (t90). A small trickle also creeps up to 0.3g between elapsed_ms=2054
+    and 8924, well inside the 8s machine pre-infusion window, but the scale
+    only reports 0.1g steps: a couple of isolated samples land close enough
+    together that the raw derivative spikes past first_flow_threshold_g_s
+    for a single sample, even though the trickle itself is negligible and
+    never sustains. The classification recorded at the time
+    (invalid_measurement) was that bug; first_sustained_crossing_ms now
+    requires the crossing to hold for first_flow_sustain_ms before counting
+    it, so this shot is no longer wrongly discarded - matching the
+    barista's actual complaint ("not sure why invalid").
+
+    It classifies as too_fast, not healthy, though: at duration_ratio=0.835
+    (23.1s against an expected ~27.7s for this yield, using
+    flow_analysis_constants' Hoffmann-calibrated expected_flow_g_s/
+    too_fast_factor), it lands a real ~5% below the too_fast_factor=0.88
+    cutoff, not a rounding-error miss. The barista's note was about the
+    wrongly-invalid classification specifically, not a considered
+    healthy-vs-too_fast judgment call - and the sibling fixture right below
+    (StaleScaleClockMachinePiTests) has a barista comment that literally
+    says "seems to be too fast" for an analogous case, confirming too_fast
+    is a normal, expected real-world outcome here, not a sign the
+    classifier regressed."""
 
     def setUp(self) -> None:
         self.shot = load_real_shot("good_but_flagged_machine_pi")
 
-    def test_matches_the_barista_s_own_call(self) -> None:
+    def test_is_no_longer_wrongly_invalid_and_classifies_as_too_fast(self) -> None:
         self.assertEqual(self.shot.recorded_classification, "invalid_measurement")
         result = analyze_shot(
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
-        self.assertIsNone(result.invalid_reason)
-        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertIsNone(result.invalid_reason)  # no longer wrongly discarded
+        self.assertEqual(result.classification, ShotClassification.TOO_FAST)
 
     def test_the_fixture_still_has_its_early_trickle(self) -> None:
         """Confirms the test above is exercising the real early-trickle case
@@ -247,7 +265,7 @@ class StaleScaleClockMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
@@ -292,12 +310,12 @@ class ViolentGushMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertIsNotNone(result.t90_ms)
         self.assertEqual(result.classification, ShotClassification.PUCK_PREP_ISSUE)
-        self.assertGreaterEqual(result.channeling_suspicion, flow_analysis.SUSPICION_THRESHOLD)
+        self.assertGreaterEqual(result.channeling_suspicion, CONFIG.suspicion_threshold)
 
     def test_the_fixture_still_has_its_bouncy_dips(self) -> None:
         """Confirms the test above is exercising the real bouncy-dip case

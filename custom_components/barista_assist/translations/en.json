@@ -97,6 +97,9 @@
       "shot_channeling_suspicion": {
         "name": "Channeling suspicion"
       },
+      "recommended_grind": {
+        "name": "Recommended grind"
+      },
       "flow_rate": {
         "name": "Flow rate"
       },

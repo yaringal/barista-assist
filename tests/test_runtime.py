@@ -989,6 +989,91 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
             log.output,
         )
 
+    @staticmethod
+    def _ramp_samples(*, flat_ms: int, ramp_seconds: float, target_yield_g: float, points: int = 20):
+        """A flat (near-zero-flow) segment - long enough to clear the
+        pre-infusion-plausibility floor - followed by a linear ramp to
+        target_yield_g over ramp_seconds. Built directly (not pushed through
+        the scale in real time) for full control over the resulting
+        duration_ratio, matching test_a_completed_shot_updates_its_bucket_
+        end_to_end's approach above."""
+        samples = [
+            ShotSample(0, 0, 0, 0.0, 0.0, 90),
+            ShotSample(1, flat_ms, flat_ms, 0.0, 0.0, 90),
+        ]
+        for i in range(1, points + 1):
+            t_s = i * ramp_seconds / points
+            elapsed_ms = flat_ms + int(t_s * 1000)
+            samples.append(
+                ShotSample(
+                    i + 1,
+                    elapsed_ms,
+                    elapsed_ms,
+                    target_yield_g * t_s / ramp_seconds,
+                    target_yield_g / ramp_seconds,
+                    90,
+                )
+            )
+        return samples
+
+    async def test_finalized_shot_persists_a_grind_recommendation_for_a_fast_shot(self):
+        """Phase 4 (docs/DESIGN.md section 28): a shot classified too_fast
+        gets a real (non-None) recommended_grind_delta from grind_correction.
+        recommend_grind_delta, driven by expert_rules.grind_correction
+        (definitions.yaml) - not left as a placeholder. Default target_yield_g
+        is 36g and expert_rules.flow_classification.expected_flow_g_s is
+        1.3, so the ~27.7s expected duration makes a 15s shot clearly fast."""
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=15.0, target_yield_g=36.0)
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+
+        await self.runtime._async_finalize("complete")
+
+        self.assertEqual(self.runtime.last_shot["classification"], "too_fast")
+        recommended = self.runtime.last_shot["recommended_grind_delta"]
+        self.assertIsNotNone(recommended)
+        self.assertLess(recommended, 0.0)
+
+    async def test_finalized_shot_has_no_grind_recommendation_when_healthy(self):
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=26.0, target_yield_g=36.0)
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+
+        await self.runtime._async_finalize("complete")
+
+        self.assertEqual(self.runtime.last_shot["classification"], "healthy")
+        self.assertIsNone(self.runtime.last_shot["recommended_grind_delta"])
+
+    async def test_recommended_grind_note_shows_current_and_target(self):
+        """The dashboard-facing note (source: last_shot, field:
+        recommended_grind_note - docs/DESIGN.md section 28) is built from
+        the grind the shot actually ran at (shots.grind) plus its
+        recommended_grind_delta, not the bag's live current grind."""
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=15.0, target_yield_g=36.0)
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+
+        recommended_grind = self.runtime.definitions.entity("sensor", "recommended_grind")
+        note = self.runtime.entity_value(recommended_grind)
+
+        current_grind = self.runtime.last_shot["grind"]
+        delta = self.runtime.last_shot["recommended_grind_delta"]
+        self.assertEqual(note, f"{current_grind:g} → {current_grind + delta:g}")
+
+    async def test_recommended_grind_note_is_none_when_healthy(self):
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=26.0, target_yield_g=36.0)
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+
+        recommended_grind = self.runtime.definitions.entity("sensor", "recommended_grind")
+        self.assertIsNone(self.runtime.entity_value(recommended_grind))
+
 
 class ShotHistoryTests(RuntimeTestCase):
     """async_list_shots/async_shot_samples/async_delete_shot back the
@@ -1069,9 +1154,9 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
 
     async def test_does_not_regress_a_real_good_shot_at_a_large_early_stop_margin(self):
         """Regression test for the real bug this design replaced: deriving
-        an implied latency as early_stop_margin_min_g / flow_analysis._EXPECTED_FLOW_G_S
+        an implied latency as early_stop_margin_min_g / flow_analysis_constants.expected_flow_g_s
         produced a physically absurd 6.4s latency for a real installation
-        calibrated with early_stop_margin_min_g=8.0 (flow_analysis._EXPECTED_FLOW_G_S
+        calibrated with early_stop_margin_min_g=8.0 (expected_flow_g_s
         is a generic cross-installation placeholder, not this bag's actual
         typical flow rate) - and would have triggered a real good shot's
         stop at 22g instead of the recorded, correct 28g (see
@@ -1288,7 +1373,7 @@ class LearnedStopLatencyTests(RuntimeTestCase):
         through a live threshold-triggered stop, so the test isn't at the
         mercy of real-time scheduling for how many samples land before an
         auto-stop task would fire."""
-        await self.start_shot(target_yield_g=79.0, early_stop_margin_min_g=1.5)
+        await self.start_shot(target_yield_g=78.0, early_stop_margin_min_g=1.5)
         await self.wait_for_extracting()
         shot = self.runtime.active_shot
         seed_normal = self.runtime.stop_latency_normal_s

@@ -5,11 +5,16 @@ Pure computation, no Home Assistant or database dependency, so it can be
 unit-tested against synthetic mass curves. See docs/DESIGN.md sections 8-13
 for the feature set and diagnostic-architecture rationale this implements.
 
-The "too fast" / "too restrictive" duration thresholds and the mechanical-
-suspicion thresholds below are deliberately simple placeholders — fixed
-priors, not values derived from this project's own shot data. Replacing
-them with data-driven thresholds is tracked as its own follow-up phase in
-docs/DESIGN.md.
+Every tunable threshold this module uses lives in one place: FlowAnalysisConfig
+below - a dataclass with no default values, on purpose. Consts live in
+definitions.yaml, code is for logic, so this module holds no fixed priors of
+its own at all; every real caller (runtime.py) builds a FlowAnalysisConfig
+from definitions.yaml's flow_analysis_constants. See that key's own comment
+in definitions.yaml for the sourcing/derivation behind each value - several
+are themselves still simple placeholders there, not values derived from this
+project's own shot data yet, and replacing them with data-driven thresholds
+is tracked as its own follow-up phase in docs/DESIGN.md - but that's a
+property of the YAML values, not of this module.
 
 This module blends two different kinds of "prior" against a per-bag
 baseline, and deliberately treats them differently:
@@ -61,106 +66,34 @@ import statistics
 
 from .storage import ShotSample
 
-MIN_SAMPLES = 5
-MIN_BASELINE_SHOTS = 3
-FIRST_FLOW_THRESHOLD_G_S = 0.3
-SMOOTHING_WINDOW_MS = 500
-SUSPICION_THRESHOLD = 0.6
 
-# A single sample's derivative can spike past FIRST_FLOW_THRESHOLD_G_S purely
-# from scale quantization (e.g. a 0.1g-resolution reading landing right at a
-# sample boundary) even during a genuine low/no-flow trickle - real flow
-# stays above the threshold for a run of samples, not just one, so
-# "first flow" requires the crossing to hold for at least this long.
-_FIRST_FLOW_SUSTAIN_MS = 300
+@dataclass(frozen=True, slots=True)
+class FlowAnalysisConfig:
+    """Every tunable threshold flow_analysis.py uses, in one place - and, on
+    purpose, with no default values: consts live in definitions.yaml, code
+    is for logic. See definitions.yaml's flow_analysis_constants for what
+    each field means and where its value came from; every real caller
+    (runtime.py, tests) builds this from FlowAnalysisConfig(**load_definitions()
+    .flow_analysis_constants) rather than constructing one from memory.
+    """
 
-# Rough expected total-flow rate (beverage mass / total shot time, including
-# pre-infusion), used as the starting point before any bag-specific history
-# exists. Anchored against docs/DESIGN.md section 25's Example A (18g -> 38g
-# in 24s, explicitly "clearly fast"): 1.25 g/s puts that shot's t90 just
-# inside the too-fast cutoff, which the previous placeholder (2.0 g/s) did not.
-#
-# KNOWN STALE: definitions.yaml's expert_rules.flow_classification now holds
-# updated values (1.3 / 0.88 / 1.10) checked against real good/bad verdicts
-# from James Hoffmann's dial-in videos (see that key's own comment for the
-# data table and docs/DIAL_IN_RULES.md for sourcing) - in
-# particular _TOO_RESTRICTIVE_FACTOR here is far looser than that evidence
-# supports (1.6 would call a shot Hoffmann himself diagnosed as "too slow"
-# healthy). These three constants are still what actually runs; nothing
-# reads expert_rules.flow_classification yet. Wire this module up to read
-# from there instead of hardcoding its own values, then delete this note.
-_EXPECTED_FLOW_G_S = 1.25
-_TOO_FAST_FACTOR = 0.8
-_TOO_RESTRICTIVE_FACTOR = 1.6
-
-# How many "pseudo-shots" the global flow-rate prior is worth when blending
-# with a bag's own healthy-shot history - shrinks toward the bag-specific
-# median as shot_count grows, rather than switching over abruptly at some
-# threshold. A placeholder like the other constants above.
-_PRIOR_WEIGHT_SHOTS = 1.0
-
-# Fixed prior: mid- or late-shot flow accelerating upward by this many g/s
-# per second is treated as maximally suspicious, independent of any baseline.
-_ABSOLUTE_ACCEL_LIMIT_G_S2 = 1.0
-
-# A shot's first detected flow earlier than this fraction of its configured
-# pre-infusion duration is implausible: pre-infusion is meant to be a
-# low/no-flow soak, so flow starting well before it ends suggests the
-# measurement (or the pre-infusion press itself) isn't trustworthy.
-_EARLY_FLOW_FRACTION_OF_PREINFUSION = 0.5
-
-# A raw weight reading this many grams below its own running peak so far is
-# treated as the cup or scale having been disturbed, not real flow: weight
-# can only rise while coffee is actually being collected, so any meaningful
-# drop - however it happens, whenever it happens - means everything from
-# that point on isn't trustworthy. Everything before it still is.
-_MAX_PLAUSIBLE_WEIGHT_DROP_G = 0.5
-
-# Disturbance detection only arms once the running peak has cleared this
-# floor. Below it - typically pre-infusion, before any real coffee mass has
-# accumulated - scale settling noise alone can span several tenths of a
-# gram, comfortably exceeding _MAX_PLAUSIBLE_WEIGHT_DROP_G on its own with no
-# real disturbance involved; a real shot found this live, misclassifying a
-# genuine ~50g pour as invalid because of a sub-gram dip minutes before the
-# real pour even began. Once a shot has genuinely accumulated this much
-# weight, the same _MAX_PLAUSIBLE_WEIGHT_DROP_G drop is unambiguous
-# interference, exactly as before.
-_DISTURBANCE_DETECTION_FLOOR_G = 2.0
-
-# A drop past _MAX_PLAUSIBLE_WEIGHT_DROP_G must hold for at least this long
-# to count as a genuine disturbance rather than a splash/settle bounce - a
-# real shot with a violent, turbulent gush saw repeated multi-gram dips
-# (droplets, crema settling, the cup rocking on the scale) that each
-# recovered and kept climbing within a few hundred ms, but the first one hit
-# _first_disturbance_index's old instantaneous check and truncated the shot
-# down to its first ~9s, hiding the huge overshoot that followed and turning
-# an obviously too-fast shot into a false too_restrictive (t90 never reached
-# in the truncated data). A genuine cup-lift stays low far longer than this.
-_DISTURBANCE_SUSTAIN_MS = 1000
-
-# A leading weight reading this far below zero is scale noise before it's
-# settled/tared, not real data - weight is never meaningfully negative, at
-# any point in a shot (ordinary scale jitter near a true zero baseline stays
-# within a couple tenths of a gram either way). A live shot hit a single
-# -48 g first sample (elapsed_ms=22, one reading before the scale had
-# connected/tared) that dragged the whole smoothing/derivative computation
-# with it, misclassifying an otherwise perfectly normal (if too-fast) shot as
-# invalid_measurement. This must only ever reject on the negative side - a
-# legitimately high leading *positive* reading (e.g. synthetic test data, or
-# real samples that only start once a pour is already well underway) is not
-# implausible the same way and must never be discarded.
-_LEADING_GARBAGE_THRESHOLD_G = 2.0
-
-# A leading sample whose scale_ms (the BOOKOO scale's own onboard clock) runs
-# this many ms ahead of our own elapsed_ms is a stale BLE notification queued
-# from before our tare-and-start-timer command reset the scale's clock, not
-# real data for this shot - a live shot's first two samples read
-# scale_ms=19200 while elapsed_ms was still under 200, carrying a stale,
-# unrelated 12g reading left over from whatever the scale was doing before
-# this shot. Once the scale's own clock is reset, its readings drop back to
-# roughly tracking elapsed_ms, so this only ever rejects genuinely stale
-# leading samples, not real ones. See _first_synced_clock_index.
-_STALE_SCALE_CLOCK_THRESHOLD_MS = 2000
+    min_samples: int
+    min_baseline_shots: int
+    first_flow_threshold_g_s: float
+    smoothing_window_ms: int
+    suspicion_threshold: float
+    first_flow_sustain_ms: int
+    expected_flow_g_s: float
+    too_fast_factor: float
+    too_restrictive_factor: float
+    prior_weight_shots: float
+    absolute_accel_limit_g_s2: float
+    early_flow_fraction_of_preinfusion: float
+    max_plausible_weight_drop_g: float
+    disturbance_detection_floor_g: float
+    disturbance_sustain_ms: int
+    leading_garbage_threshold_g: float
+    stale_scale_clock_threshold_ms: int
 
 
 class ShotClassification(str, Enum):
@@ -216,6 +149,14 @@ class ShotAnalysis:
     channeling_suspicion: float | None
     baseline_eligible: bool
     invalid_reason: str | None
+    # actual shot duration / expected duration for this bag (expected_s =
+    # target_yield_g / expected_flow_g_s, itself Bayesian-shrunk toward this
+    # bag's own history - see _blended_expected_flow_g_s). Below 1.0 = ran
+    # fast, above 1.0 = ran slow/restrictive. None when a shot couldn't be
+    # classified at all (t90 never reached and no samples to fall back on,
+    # or too few samples). This is what expert_rules.grind_correction's
+    # bands (definitions.yaml) key off of - see grind_correction.py.
+    duration_ratio: float | None
     t_first_flow_ms: int | None
     t10_ms: int | None
     t50_ms: int | None
@@ -237,6 +178,7 @@ def _invalid(reason: InvalidReason) -> ShotAnalysis:
         channeling_suspicion=None,
         baseline_eligible=False,
         invalid_reason=str(reason),
+        duration_ratio=None,
         t_first_flow_ms=None,
         t10_ms=None,
         t50_ms=None,
@@ -253,33 +195,38 @@ def _invalid(reason: InvalidReason) -> ShotAnalysis:
     )
 
 
-def _first_disturbance_index(times_ms: list[int], raw_weights: list[float]) -> int | None:
+def _first_disturbance_index(
+    times_ms: list[int], raw_weights: list[float], config: FlowAnalysisConfig
+) -> int | None:
     """First index where weight drops meaningfully below its own running
-    peak AND stays there for at least _DISTURBANCE_SUSTAIN_MS - physically
-    implausible during a real pour (weight only rises while coffee is being
-    collected), so a drop that never recovers reliably flags cup/scale
-    interference. A violent, splashy gush can bounce a sample or two below
-    the running peak (droplets, crema settling, the cup rocking) without any
-    real interference - that recovers within a couple hundred ms and keeps
-    climbing, unlike a genuine disturbance, so only a drop that holds for the
-    full sustain window (or runs out the rest of the shot without
-    recovering) counts.
+    peak AND stays there for at least config.disturbance_sustain_ms -
+    physically implausible during a real pour (weight only rises while
+    coffee is being collected), so a drop that never recovers reliably
+    flags cup/scale interference. A violent, splashy gush can bounce a
+    sample or two below the running peak (droplets, crema settling, the cup
+    rocking) without any real interference - that recovers within a couple
+    hundred ms and keeps climbing, unlike a genuine disturbance, so only a
+    drop that holds for the full sustain window (or runs out the rest of
+    the shot without recovering) counts.
 
-    Only armed once the running peak clears _DISTURBANCE_DETECTION_FLOOR_G -
-    see that constant for why.
+    Only armed once the running peak clears
+    config.disturbance_detection_floor_g - see that field for why.
     """
     n = len(raw_weights)
     running_max = raw_weights[0]
     i = 0
     while i < n:
         weight = raw_weights[i]
-        if running_max >= _DISTURBANCE_DETECTION_FLOOR_G and weight < running_max - _MAX_PLAUSIBLE_WEIGHT_DROP_G:
-            drop_level = running_max - _MAX_PLAUSIBLE_WEIGHT_DROP_G
+        if (
+            running_max >= config.disturbance_detection_floor_g
+            and weight < running_max - config.max_plausible_weight_drop_g
+        ):
+            drop_level = running_max - config.max_plausible_weight_drop_g
             start_t = times_ms[i]
             j = i
             while j < n and raw_weights[j] < drop_level:
                 j += 1
-            if j == n or times_ms[j - 1] - start_t >= _DISTURBANCE_SUSTAIN_MS:
+            if j == n or times_ms[j - 1] - start_t >= config.disturbance_sustain_ms:
                 return i
             running_max = max(running_max, max(raw_weights[i:j]))
             i = j
@@ -289,12 +236,13 @@ def _first_disturbance_index(times_ms: list[int], raw_weights: list[float]) -> i
     return None
 
 
-def _first_plausible_index(raw_weights: list[float]) -> int:
+def _first_plausible_index(raw_weights: list[float], config: FlowAnalysisConfig) -> int:
     """First index whose weight isn't implausibly negative (more than
-    _LEADING_GARBAGE_THRESHOLD_G below zero) - i.e. how many leading samples
-    to skip as pre-tare/pre-connect scale noise. Only ever rejects on the
-    negative side: a legitimately high leading positive reading (e.g. real
-    samples that only start once a pour is already underway) is left alone.
+    config.leading_garbage_threshold_g below zero) - i.e. how many leading
+    samples to skip as pre-tare/pre-connect scale noise. Only ever rejects
+    on the negative side: a legitimately high leading positive reading
+    (e.g. real samples that only start once a pour is already underway) is
+    left alone.
 
     Unlike _first_disturbance_index (a genuine mid-shot problem, judged
     relative to the shot's own running peak), this looks for implausible
@@ -305,21 +253,23 @@ def _first_plausible_index(raw_weights: list[float]) -> int:
     Returns len(raw_weights) if every sample is implausible.
     """
     for i, weight in enumerate(raw_weights):
-        if weight >= -_LEADING_GARBAGE_THRESHOLD_G:
+        if weight >= -config.leading_garbage_threshold_g:
             return i
     return len(raw_weights)
 
 
-def _first_synced_clock_index(times_ms: list[int], scale_ms_values: list[int]) -> int:
+def _first_synced_clock_index(
+    times_ms: list[int], scale_ms_values: list[int], config: FlowAnalysisConfig
+) -> int:
     """First index whose scale_ms is plausibly in sync with our own
     elapsed_ms - i.e. how many leading samples to skip as stale BLE
     notifications left over from before the scale's clock was reset. See
-    _STALE_SCALE_CLOCK_THRESHOLD_MS.
+    config.stale_scale_clock_threshold_ms.
 
     Returns len(times_ms) if every sample's clock is out of sync.
     """
     for i, (t, scale_ms) in enumerate(zip(times_ms, scale_ms_values)):
-        if scale_ms - t <= _STALE_SCALE_CLOCK_THRESHOLD_MS:
+        if scale_ms - t <= config.stale_scale_clock_threshold_ms:
             return i
     return len(times_ms)
 
@@ -421,7 +371,7 @@ def _mean_second_derivative(times_s: list[float], values: list[float]) -> float:
     return total / count if count else 0.0
 
 
-def _blended_expected_flow_g_s(baseline: BaselineFeatures | None) -> float:
+def _blended_expected_flow_g_s(baseline: BaselineFeatures | None, config: FlowAnalysisConfig) -> float:
     """Bayesian shrinkage toward this bag's own observed flow rate.
 
     A bag's characteristic pace is a reference point, not a safety boundary -
@@ -430,17 +380,18 @@ def _blended_expected_flow_g_s(baseline: BaselineFeatures | None) -> float:
     accumulate rather than only ever being overridden, never replaced.
     """
     if baseline is None or baseline.shot_count <= 0:
-        return _EXPECTED_FLOW_G_S
+        return config.expected_flow_g_s
     return (
-        _PRIOR_WEIGHT_SHOTS * _EXPECTED_FLOW_G_S + baseline.shot_count * baseline.median_flow_g_s
-    ) / (_PRIOR_WEIGHT_SHOTS + baseline.shot_count)
+        config.prior_weight_shots * config.expected_flow_g_s
+        + baseline.shot_count * baseline.median_flow_g_s
+    ) / (config.prior_weight_shots + baseline.shot_count)
 
 
-def _absolute_mechanical_suspicion(mid_accel: float, late_accel: float) -> float:
+def _absolute_mechanical_suspicion(mid_accel: float, late_accel: float, config: FlowAnalysisConfig) -> float:
     """Fixed-prior suspicion: only rising flow (mid or late) is concerning."""
     # Under roughly constant pump pressure, flow naturally staying flat or gently declining through a shot is normal and expected — resistance doesn't spontaneously drop on its own. Flow rising mid/late shot is a red flag (classic channeling signature: a gap opens in the puck, resistance drops, flow rate jumps). So a negative mid_accel/late_accel (flow slowing down, i.e. healthy) should contribute zero suspicion
     worst = max(mid_accel, late_accel, 0.0)
-    return min(1.0, worst / _ABSOLUTE_ACCEL_LIMIT_G_S2) # 0 = flat/declining, 1.0 = at-or-past the limit
+    return min(1.0, worst / config.absolute_accel_limit_g_s2)  # 0 = flat/declining, 1.0 = at-or-past the limit
 
 
 def _baseline_deviation_suspicion(late_accel: float, baseline: BaselineFeatures) -> float:
@@ -449,7 +400,7 @@ def _baseline_deviation_suspicion(late_accel: float, baseline: BaselineFeatures)
     An unusually low/declining late_accel is not a channeling signal.
 
     TODO(revisit once real, verified shot data exists): this doesn't grow
-    more bag-dependent as shot_count increases past MIN_BASELINE_SHOTS,
+    more bag-dependent as shot_count increases past config.min_baseline_shots,
     unlike _blended_expected_flow_g_s. That's deliberate for now, not an
     oversight: median_late_accel is built only from shots THIS classifier
     already called "healthy" - self-labeled, not independently verified. If
@@ -460,7 +411,7 @@ def _baseline_deviation_suspicion(late_accel: float, baseline: BaselineFeatures)
     risk). Flow rate has no equivalent risk (a bag's pace is just a fact,
     not an evaluative judgment), which is why only it gets Bayesian
     shrinkage today. A safer path to more bag-dependence here, once we can
-    check it against real outcomes: keep _ABSOLUTE_ACCEL_LIMIT_G_S2 as a
+    check it against real outcomes: keep config.absolute_accel_limit_g_s2 as a
     permanent floor, but let growing shot_count increase how *sensitive*
     this deviation check is (smaller deviations start counting), rather
     than moving the floor itself.
@@ -476,9 +427,18 @@ def analyze_shot(
     target_yield_g: float,
     preinfusion_s: float,
     baseline: BaselineFeatures | None,
+    config: FlowAnalysisConfig,
 ) -> ShotAnalysis:
-    """Classify one shot's flow curve (docs/DESIGN.md section 13, Stage 1)."""
-    if len(samples) < MIN_SAMPLES:
+    """Classify one shot's flow curve (docs/DESIGN.md section 13, Stage 1).
+
+    config is mandatory, on purpose: there is no built-in fallback, so every
+    caller must build one from definitions.yaml's flow_analysis_constants
+    (FlowAnalysisConfig(**load_definitions().flow_analysis_constants)) - see
+    that key's own comment in definitions.yaml for the full derivation of
+    each value, and FlowAnalysisConfig's own docstring for why this module
+    holds no default numbers at all.
+    """
+    if len(samples) < config.min_samples:
         return _invalid(InvalidReason.TOO_FEW_SAMPLES)
 
     times_ms = [sample.elapsed_ms for sample in samples]
@@ -488,16 +448,16 @@ def analyze_shot(
     # reading, or a stale reading whose scale_ms shows it's left over from
     # before the scale's clock was reset) before it can poison the
     # smoothing/derivative computation below - see _first_plausible_index,
-    # _first_synced_clock_index, and their respective threshold constants.
+    # _first_synced_clock_index, and their respective config fields.
     leading_garbage = max(
-        _first_plausible_index(raw_weights),
-        _first_synced_clock_index(times_ms, [sample.scale_ms for sample in samples]),
+        _first_plausible_index(raw_weights, config),
+        _first_synced_clock_index(times_ms, [sample.scale_ms for sample in samples], config),
     )
     if leading_garbage:
         samples = samples[leading_garbage:]
         times_ms = times_ms[leading_garbage:]
         raw_weights = raw_weights[leading_garbage:]
-        if len(samples) < MIN_SAMPLES:
+        if len(samples) < config.min_samples:
             return _invalid(InvalidReason.LEADING_GARBAGE_LEFT_TOO_FEW_SAMPLES)
 
     # Cup or scale disturbed (lifted, bumped, moved) at any point: weight can
@@ -507,14 +467,14 @@ def analyze_shot(
     # told when it's "safe" to touch the cup, because whatever happens after
     # a real disturbance is simply discarded rather than contaminating the
     # rest of the shot's stats.
-    disturbance_index = _first_disturbance_index(times_ms, raw_weights)
+    disturbance_index = _first_disturbance_index(times_ms, raw_weights, config)
     disturbed = disturbance_index is not None
     if disturbed:
         samples = samples[:disturbance_index]
         times_ms = times_ms[:disturbance_index]
         raw_weights = raw_weights[:disturbance_index]
 
-    if len(samples) < MIN_SAMPLES:
+    if len(samples) < config.min_samples:
         reason = (
             InvalidReason.DISTURBANCE_LEFT_TOO_FEW_SAMPLES
             if disturbed
@@ -525,12 +485,12 @@ def analyze_shot(
     if times_ms[-1] <= 0 or raw_weights[-1] < 1.0:
         return _invalid(InvalidReason.NON_POSITIVE_DURATION if times_ms[-1] <= 0 else InvalidReason.NEAR_ZERO_FINAL_WEIGHT)
 
-    smoothed = _moving_average(times_ms, raw_weights, SMOOTHING_WINDOW_MS)
+    smoothed = _moving_average(times_ms, raw_weights, config.smoothing_window_ms)
     flow = _derivative(times_ms, smoothed)
     times_s = [t / 1000.0 for t in times_ms]
 
     t_first_flow_ms = _first_sustained_crossing_ms(
-        times_ms, flow, FIRST_FLOW_THRESHOLD_G_S, _FIRST_FLOW_SUSTAIN_MS
+        times_ms, flow, config.first_flow_threshold_g_s, config.first_flow_sustain_ms
     )
     # Was time to first flow plausible? (docs/DESIGN.md section 13). Either the
     # scale never registered real flow despite a meaningful final weight, or
@@ -538,7 +498,7 @@ def analyze_shot(
     # ended - both mean this trace isn't trustworthy enough to classify further.
     if t_first_flow_ms is None:
         return _invalid(InvalidReason.NO_DETECTED_FLOW)
-    if t_first_flow_ms < preinfusion_s * 1000 * _EARLY_FLOW_FRACTION_OF_PREINFUSION:
+    if t_first_flow_ms < preinfusion_s * 1000 * config.early_flow_fraction_of_preinfusion:
         return _invalid(InvalidReason.FLOW_STARTED_BEFORE_PREINFUSION_END)
 
     t10_ms = _first_crossing_ms(times_ms, smoothed, 0.10 * target_yield_g)
@@ -569,12 +529,13 @@ def analyze_shot(
     late_accel = _linear_slope(late_times, late_values)
 
     duration_s = (t90_ms if t90_ms is not None else times_ms[-1]) / 1000.0
-    expected_s = target_yield_g / _blended_expected_flow_g_s(baseline)
+    expected_s = target_yield_g / _blended_expected_flow_g_s(baseline, config)
+    duration_ratio = duration_s / expected_s if expected_s > 0 else None
 
-    absolute_score = _absolute_mechanical_suspicion(mid_accel, late_accel)
+    absolute_score = _absolute_mechanical_suspicion(mid_accel, late_accel, config)
     baseline_score = (
         _baseline_deviation_suspicion(late_accel, baseline)
-        if baseline is not None and baseline.shot_count >= MIN_BASELINE_SHOTS
+        if baseline is not None and baseline.shot_count >= config.min_baseline_shots
         else 0.0
     )
     channeling_suspicion = max(absolute_score, baseline_score)
@@ -606,11 +567,11 @@ def analyze_shot(
     # threshold), not a calibration one.
     if t90_ms is None:
         classification = ShotClassification.TOO_RESTRICTIVE
-    elif channeling_suspicion >= SUSPICION_THRESHOLD:
+    elif channeling_suspicion >= config.suspicion_threshold:
         classification = ShotClassification.PUCK_PREP_ISSUE
-    elif duration_s < expected_s * _TOO_FAST_FACTOR:
+    elif duration_s < expected_s * config.too_fast_factor:
         classification = ShotClassification.TOO_FAST
-    elif duration_s > expected_s * _TOO_RESTRICTIVE_FACTOR:
+    elif duration_s > expected_s * config.too_restrictive_factor:
         classification = ShotClassification.TOO_RESTRICTIVE
     else:
         classification = ShotClassification.HEALTHY
@@ -620,6 +581,7 @@ def analyze_shot(
         channeling_suspicion=channeling_suspicion,
         baseline_eligible=classification == ShotClassification.HEALTHY,
         invalid_reason=None,
+        duration_ratio=duration_ratio,
         t_first_flow_ms=t_first_flow_ms,
         t10_ms=t10_ms,
         t50_ms=t50_ms,

@@ -218,6 +218,52 @@ class StorageTests(unittest.TestCase):
         )
         self.assertIsNone(self.db.last_shot()["effective_stop_margin_g"])
 
+    def test_finalize_shot_persists_recommended_grind_delta(self) -> None:
+        """Phase 4's (docs/DESIGN.md section 28) expert-system grind
+        recommendation, computed by grind_correction.recommend_grind_delta
+        in runtime.py's _async_finalize."""
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=30.0,
+            status="complete",
+            stop_command_elapsed_ms=25000,
+            samples=[],
+            recommended_grind_delta=-1.0,
+        )
+        self.assertAlmostEqual(self.db.last_shot()["recommended_grind_delta"], -1.0)
+
+    def test_finalize_shot_recommended_grind_delta_defaults_to_none(self) -> None:
+        """A healthy shot (or one excluded as puck_prep_issue/
+        invalid_measurement) isn't a grind-correction candidate at all -
+        must persist as None, not 0.0, so it's distinguishable from an
+        actual "no change" recommendation."""
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=30.0,
+            status="complete",
+            stop_command_elapsed_ms=25000,
+            samples=[],
+        )
+        self.assertIsNone(self.db.last_shot()["recommended_grind_delta"])
+
     def test_recent_shots_and_last_shot_include_the_bag_s_roaster(self) -> None:
         bag = self.new_bag()  # new_bag() sets roaster="Test Roaster"
         self.db.create_shot(

@@ -59,6 +59,8 @@ class Definitions:
     slots: tuple[str, ...]
     defaults: dict[str, Any]
     entities: dict[str, tuple[EntityDefinition, ...]] = field(default_factory=dict)
+    expert_rules: dict[str, Any] = field(default_factory=dict)
+    flow_analysis_constants: dict[str, Any] = field(default_factory=dict)
 
     def platform(self, platform: str) -> tuple[EntityDefinition, ...]:
         return self.entities.get(platform, ())
@@ -181,6 +183,8 @@ def _parse_definitions(path: Path) -> Definitions:
         slots=slots,
         defaults=defaults,
         entities=entities,
+        expert_rules=raw.get("expert_rules", {}),
+        flow_analysis_constants=raw.get("flow_analysis_constants", {}),
     )
 
 

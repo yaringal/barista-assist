@@ -25,68 +25,185 @@ defaults:
   new_bag:
     starting_mass_g: 250.0
 
+# Every tunable threshold flow_analysis.py's Stage-1 classifier uses, in one
+# place - runtime.py builds a flow_analysis.FlowAnalysisConfig from this dict
+# on every shot (see _async_finalize). FlowAnalysisConfig itself has no
+# default values and no explanatory comments (consts live in yaml, code is
+# for logic) - this is the only place both the numbers and the reasoning
+# behind them live at all.
+#
+# Most of the fields below are signal-processing/plausibility thresholds,
+# each tuned against a specific real anomalous shot a human diagnosed by
+# inspecting the raw trace - see each field's own comment for its incident.
+# Getting these better calibrated needs more real recorded edge cases for a
+# human to review, not just more shot volume - there's no automatic ground
+# truth for "was this really a disturbance" the way there is for e.g.
+# stop_latency's tail-weight error. expected_flow_g_s/too_fast_factor/
+# too_restrictive_factor further below are the ones with a real derivation
+# behind their current values instead.
+flow_analysis_constants:
+  # Fewer than this many samples can't be classified at all - not enough
+  # points to smooth/derive a trend from. Arbitrary, not tuned against any
+  # specific incident.
+  min_samples: 5
+
+  # A bag needs at least this many recorded healthy shots before its own
+  # baseline (median late-shot acceleration) is trusted for the
+  # baseline-deviation channeling check - too few, and one atypical healthy
+  # shot could dominate the "normal for this bag" reference point.
+  # Arbitrary, not tuned against any specific incident.
+  min_baseline_shots: 3
+
+  # The derivative must clear this many g/s to count as real flow at all,
+  # as opposed to scale noise around zero. Arbitrary, not tuned against any
+  # specific incident.
+  first_flow_threshold_g_s: 0.3
+
+  # Centered moving-average window applied to raw weight before computing
+  # flow (the derivative) - trades detail for noise rejection. Arbitrary,
+  # not tuned against any specific incident.
+  smoothing_window_ms: 500
+
+  # A single sample's derivative can spike past first_flow_threshold_g_s
+  # purely from scale quantization (e.g. a 0.1g-resolution reading landing
+  # right at a sample boundary) even during a genuine low/no-flow trickle -
+  # real flow stays above the threshold for a run of samples, not just one,
+  # so "first flow" requires the crossing to hold for at least this long.
+  first_flow_sustain_ms: 300
+
+  # A raw weight reading this many grams below its own running peak so far
+  # is treated as the cup or scale having been disturbed, not real flow:
+  # weight can only rise while coffee is actually being collected, so any
+  # meaningful drop - however it happens, whenever it happens - means
+  # everything from that point on isn't trustworthy. Everything before it
+  # still is.
+  max_plausible_weight_drop_g: 0.5
+
+  # Disturbance detection only arms once the running peak has cleared this
+  # floor. Below it - typically pre-infusion, before any real coffee mass
+  # has accumulated - scale settling noise alone can span several tenths of
+  # a gram, comfortably exceeding max_plausible_weight_drop_g on its own
+  # with no real disturbance involved; a real shot found this live,
+  # misclassifying a genuine ~50g pour as invalid because of a sub-gram dip
+  # minutes before the real pour even began. Once a shot has genuinely
+  # accumulated this much weight, the same max_plausible_weight_drop_g drop
+  # is unambiguous interference, exactly as before.
+  disturbance_detection_floor_g: 2.0
+
+  # A drop past max_plausible_weight_drop_g must hold for at least this long
+  # to count as a genuine disturbance rather than a splash/settle bounce - a
+  # real shot with a violent, turbulent gush saw repeated multi-gram dips
+  # (droplets, crema settling, the cup rocking on the scale) that each
+  # recovered and kept climbing within a few hundred ms, but the first one
+  # hit the old instantaneous check and truncated the shot down to its
+  # first ~9s, hiding the huge overshoot that followed and turning an
+  # obviously too-fast shot into a false too_restrictive (t90 never reached
+  # in the truncated data). A genuine cup-lift stays low far longer than
+  # this.
+  disturbance_sustain_ms: 1000
+
+  # A leading weight reading this far below zero is scale noise before it's
+  # settled/tared, not real data - weight is never meaningfully negative,
+  # at any point in a shot (ordinary scale jitter near a true zero baseline
+  # stays within a couple tenths of a gram either way). A live shot hit a
+  # single -48g first sample (elapsed_ms=22, one reading before the scale
+  # had connected/tared) that dragged the whole smoothing/derivative
+  # computation with it, misclassifying an otherwise perfectly normal (if
+  # too-fast) shot as invalid_measurement. This must only ever reject on
+  # the negative side - a legitimately high leading *positive* reading
+  # (e.g. synthetic test data, or real samples that only start once a pour
+  # is already well underway) is not implausible the same way and must
+  # never be discarded.
+  leading_garbage_threshold_g: 2.0
+
+  # A leading sample whose scale_ms (the BOOKOO scale's own onboard clock)
+  # runs this many ms ahead of our own elapsed_ms is a stale BLE
+  # notification queued from before our tare-and-start-timer command reset
+  # the scale's clock, not real data for this shot - a live shot's first
+  # two samples read scale_ms=19200 while elapsed_ms was still under 200,
+  # carrying a stale, unrelated 12g reading left over from whatever the
+  # scale was doing before this shot. Once the scale's own clock is reset,
+  # its readings drop back to roughly tracking elapsed_ms, so this only
+  # ever rejects genuinely stale leading samples, not real ones.
+  stale_scale_clock_threshold_ms: 2000
+
+  # A shot's first detected flow earlier than this fraction of its
+  # configured pre-infusion duration is implausible - pre-infusion is meant
+  # to be a low/no-flow soak. Unvalidated placeholder, same status as the
+  # signal-processing group above.
+  early_flow_fraction_of_preinfusion: 0.5
+
+  # channeling_suspicion at or above this value classifies puck_prep_issue
+  # rather than by the shot's hydraulic fast/slow reading (docs/DESIGN.md
+  # section 13 Stage 1). Unvalidated guess, not checked against any of the
+  # dial-in videos (they describe channeling qualitatively - "a sudden rise
+  # in flow" - never with a numeric suspicion-score equivalent).
+  suspicion_threshold: 0.6
+
+  # Fixed prior: mid- or late-shot flow accelerating upward by this many g/s
+  # per second is treated as maximally suspicious, independent of any
+  # baseline. Same status as suspicion_threshold above - unvalidated.
+  absolute_accel_limit_g_s2: 1.0
+
+  # How many "pseudo-shots" the expected_flow_g_s prior below is worth when
+  # blending with a bag's own healthy-shot history - shrinks toward the
+  # bag-specific median as shot_count grows. Unvalidated placeholder.
+  prior_weight_shots: 1.0
+
+  # expected_flow_g_s: the flow rate (target_yield_g / total shot seconds,
+  # t90-ish) a "normal" shot is expected to run at, before any per-bag
+  # history exists (flow_analysis blends this with the bag's own recent
+  # median as shots accumulate - see flow_analysis._blended_expected_flow_g_s,
+  # unaffected by this change). too_fast_factor/too_restrictive_factor
+  # bound how far duration_s may deviate from expected_s (=
+  # target_yield_g / expected_flow_g_s) before a shot leaves "healthy":
+  # too_fast if duration_s < expected_s * too_fast_factor, too_restrictive
+  # if duration_s > expected_s * too_restrictive_factor.
+  #
+  # The values below replace flow_analysis.py's original placeholders of
+  # 1.25 / 0.8 / 1.6 (themselves anchored only to DESIGN.md's own
+  # hand-written Example A, not to anything Hoffmann actually said - see
+  # docs/DIAL_IN_RULES.md and the "design-doc-is-not-source-
+  # of-truth" lesson from that research). These were checked directly
+  # against every dose/yield/time data point across the dial-in videos
+  # that Hoffmann himself gave an explicit good/bad verdict on -
+  # converted to flow_g_s = yield_g / time_s, then to
+  # duration_ratio = expected_flow_g_s / actual_flow_g_s (equivalent to
+  # duration_s / expected_s for a fixed yield):
+  #
+  #   source                          yield/time      flow_g_s  duration_ratio  verdict
+  #   Dial-In Ep1 shot 1              40g / 34s        1.176      1.105         "too slow" (harsh/muddy/sour)
+  #   Dial-In Ep1 shot 2              38g / 25s        1.520      0.855         "too fast" (under-extracted)
+  #   Dial-In Ep1 shot 3              38g / 27s        1.407      0.924         improving, not flagged as fast/slow
+  #   Dial-In Ep1 shot 4 ("pretty good") 38.5g / 29s    1.328      0.979         accepted
+  #   Grind Size ep's own "good" example 36g / 30s      1.200      1.083         stated as the target to hit
+  #   Dial-In Ep2 baseline             40g / ~29s       1.379      0.943         not flagged as fast/slow (issue was flavour/temp)
+  #   Dial-In Ep2 after adjustment     ~37g / ~30s      1.233      1.054         "hit the numbers", fine
+  #
+  # (expected_flow_g_s = 1.3 used to compute duration_ratio above.) The
+  # bad-verdict points (1.105, 0.855) and every accepted/unflagged point
+  # (0.924-1.083) separate cleanly at roughly 0.88 and 1.10 - notably,
+  # the old 1.6 factor is nowhere close to catching Ep1 shot 1's 1.105,
+  # despite Hoffmann calling that shot too slow outright. This is a small
+  # (7-point), spoken-approximate-timing dataset from one creator's
+  # equipment, not this installation's own instrumented shot history, so
+  # treat it the same way as any other placeholder in this file: a better-
+  # grounded starting point than an invented example, still to be replaced
+  # once Phase 3b/4b's real recorded shots exist.
+  expected_flow_g_s: 1.3
+  too_fast_factor: 0.88
+  too_restrictive_factor: 1.10
+
 # Expert-system correction rules (DESIGN.md §13-15), consolidated from James
 # Hoffmann's dial-in videos - see docs/DIAL_IN_RULES.md for the
 # full per-video sourcing and open questions. This encodes *policy* (which
 # lever to pull, in what order, by how much) as data; the diagnostic math
 # that produces a shot's classification/duration_ratio stays in
 # flow_analysis.py, matching this file's own header: algorithms stay in
-# Python, tunable behaviour lives here.
+# Python, tunable behaviour lives here. flow_analysis_constants above is a
+# similar idea but for flow_analysis.py's own internal thresholds rather
+# than the barista-facing correction policy below.
 expert_rules:
-
-  # The too_fast/too_restrictive/healthy split itself (Phase 4) is still
-  # computed in flow_analysis.py (duration_s vs expected_s = target_yield_g /
-  # expected_flow_g_s), and as of this writing that module still hardcodes
-  # its own _EXPECTED_FLOW_G_S/_TOO_FAST_FACTOR/_TOO_RESTRICTIVE_FACTOR
-  # constants rather than reading them from here - flow_classification below
-  # is the intended source of truth those constants should be replaced with
-  # once the runtime is wired to read expert_rules (tracked, not yet done).
-  # Until that migration happens, the two are known to disagree - see
-  # flow_classification's own comment for the specific evidence.
-  flow_classification: 
-    # expected_flow_g_s: the flow rate (target_yield_g / total shot seconds,
-    # t90-ish) a "normal" shot is expected to run at, before any per-bag
-    # history exists (flow_analysis blends this with the bag's own recent
-    # median as shots accumulate - see flow_analysis._blended_expected_flow_g_s,
-    # unaffected by this change). too_fast_factor/too_restrictive_factor
-    # bound how far duration_s may deviate from expected_s (=
-    # target_yield_g / expected_flow_g_s) before a shot leaves "healthy":
-    # too_fast if duration_s < expected_s * too_fast_factor, too_restrictive
-    # if duration_s > expected_s * too_restrictive_factor.
-    #
-    # The values below replace flow_analysis.py's current 1.25 / 0.8 / 1.6
-    # (themselves anchored only to DESIGN.md's own hand-written Example A,
-    # not to anything Hoffmann actually said - see
-    # docs/DIAL_IN_RULES.md and the "design-doc-is-not-source-
-    # of-truth" lesson from that research). These were checked directly
-    # against every dose/yield/time data point across the dial-in videos
-    # that Hoffmann himself gave an explicit good/bad verdict on -
-    # converted to flow_g_s = yield_g / time_s, then to
-    # duration_ratio = expected_flow_g_s / actual_flow_g_s (equivalent to
-    # duration_s / expected_s for a fixed yield):
-    #
-    #   source                          yield/time      flow_g_s  duration_ratio  verdict
-    #   Dial-In Ep1 shot 1              40g / 34s        1.176      1.105         "too slow" (harsh/muddy/sour)
-    #   Dial-In Ep1 shot 2              38g / 25s        1.520      0.855         "too fast" (under-extracted)
-    #   Dial-In Ep1 shot 3              38g / 27s        1.407      0.924         improving, not flagged as fast/slow
-    #   Dial-In Ep1 shot 4 ("pretty good") 38.5g / 29s    1.328      0.979         accepted
-    #   Grind Size ep's own "good" example 36g / 30s      1.200      1.083         stated as the target to hit
-    #   Dial-In Ep2 baseline             40g / ~29s       1.379      0.943         not flagged as fast/slow (issue was flavour/temp)
-    #   Dial-In Ep2 after adjustment     ~37g / ~30s      1.233      1.054         "hit the numbers", fine
-    #
-    # (expected_flow_g_s = 1.3 used to compute duration_ratio above.) The
-    # bad-verdict points (1.105, 0.855) and every accepted/unflagged point
-    # (0.924-1.083) separate cleanly at roughly 0.88 and 1.10 - notably,
-    # the old 1.6 factor is nowhere close to catching Ep1 shot 1's 1.105,
-    # despite Hoffmann calling that shot too slow outright. This is a small
-    # (7-point), spoken-approximate-timing dataset from one creator's
-    # equipment, not this installation's own instrumented shot history, so
-    # treat it the same way as any other placeholder in this file: a better-
-    # grounded starting point than an invented example, still to be replaced
-    # once Phase 3b/4b's real recorded shots exist.
-    expected_flow_g_s: 1.3
-    too_fast_factor: 0.88
-    too_restrictive_factor: 1.10
 
   # Corrects a shot's flow-rate deviation by moving grind only, holding
   # every other recipe variable constant (DESIGN.md §13 Stage 2 - "isolate
@@ -109,7 +226,7 @@ expert_rules:
     excludes_classification: [puck_prep_issue, invalid_measurement]
     hold_constant: [dose_g, target_yield_g, temperature_offset_c, preinfusion_s]
     # duration_ratio = actual shot duration / expected duration for this bag,
-    # using flow_classification's expected_flow_g_s above. Below 1.0 = ran
+    # using flow_analysis_constants.expected_flow_g_s above. Below 1.0 = ran
     # fast; above 1.0 = ran slow/restrictive. Bands are ordered ascending by
     # duration_ratio_max; a shot's duration_ratio picks the first band whose
     # max it is <= to (grossly_restrictive, with no max, catches anything
@@ -318,8 +435,8 @@ expert_rules:
     # where it tasted best"), and "Quick & Easy Guide" gives light roast as
     # "1:3 and above" (open-ended, not a ceiling). Use only to seed
     # target_yield_g for a brand-new bag; a bag's own accepted shots should
-    # override this immediately, the same way flow_classification's fixed
-    # prior yields to a bag's own history.
+    # override this immediately, the same way flow_analysis_constants'
+    # expected_flow_g_s prior yields to a bag's own history.
 
 entities:
   sensor:
@@ -407,6 +524,25 @@ entities:
       state_class: measurement
       precision: 2
 
+    recommended_grind:
+      # Phase 4 (docs/DESIGN.md section 28) - a human-readable "current
+      # setting -> recommended setting" note (e.g. "15.0 -> 14.0"), computed
+      # in BaristaRuntime.entity_value from the last shot's own recorded
+      # grind setting (shots.grind - the value that shot actually ran at,
+      # not whatever the bag's live grind happens to be now if it's since
+      # been changed for an unrelated reason) plus grind_correction.py's
+      # recommend_grind_delta() output (persisted as shots.
+      # recommended_grind_delta - see storage.finalize_shot). None/
+      # unavailable when the last shot wasn't a grind-correction candidate
+      # (healthy, or excluded as puck_prep_issue/invalid_measurement) -
+      # that's a real "no recommendation" state, not a fault. field is a
+      # virtual name (not a real shots column) that entity_value
+      # special-cases, the same way source: bag's remaining_g does.
+      source: last_shot
+      field: recommended_grind_note
+      translation_key: recommended_grind
+      token: __RECOMMENDED_GRIND__
+
     flow_rate:
       source: scale
       field: flow_g_s
@@ -457,7 +593,17 @@ entities:
       token: __TARGET_YIELD__
       min: 15.0
       max: 80.0
-      step: 2.5
+      # 3.0, not 2.5: runtime._validate_recipe_field requires
+      # (value - min) / step to land exactly on a whole number, and the
+      # default recipe's target_yield_g (defaults.recipe above) is 36.0 -
+      # (36.0 - 15.0) / 2.5 = 8.4, which fails that check and made every
+      # new bag (which validates its recipe defaults on creation) reject
+      # its own starting yield. 3.0 divides (36.0 - 15.0) evenly and is
+      # still within Hoffmann's original 2-3g ceiling for a yield
+      # fine-tune (docs/DESIGN.md section 6.3) - the wider 5-10g figure is
+      # expert_rules.flavor_correction.tags.sharp_sour's own delta_g, a
+      # separate value from this UI increment.
+      step: 3.0
       unit: g
       mode: box
       requires_bag: true

@@ -65,6 +65,11 @@ views:
             features_position: bottom
 
           - type: tile
+            entity: __RECOMMENDED_GRIND__
+            name: Recommended grind
+            color: blue
+
+          - type: tile
             entity: __TARGET_YIELD__
             name: Target yield
             color: amber

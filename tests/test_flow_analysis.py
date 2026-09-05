@@ -10,6 +10,7 @@ threshold constants are expected to change once real shot data is available
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import unittest
 from pathlib import Path
@@ -20,6 +21,7 @@ import ha_stubs  # noqa: E402
 
 flow_analysis = ha_stubs.import_barista_module("flow_analysis")
 storage = ha_stubs.import_barista_module("storage")
+definitions = ha_stubs.import_barista_module("definitions")
 
 BaselineFeatures = flow_analysis.BaselineFeatures
 ShotClassification = flow_analysis.ShotClassification
@@ -27,11 +29,17 @@ InvalidReason = flow_analysis.InvalidReason
 analyze_shot = flow_analysis.analyze_shot
 ShotSample = storage.ShotSample
 
+# The real, sourced config (definitions.yaml's flow_analysis_constants) -
+# consts live in yaml, code is for logic, so FlowAnalysisConfig itself holds
+# no defaults; tests build the same real config runtime.py does, rather than
+# a parallel hardcoded copy that could drift out of sync with it.
+CONFIG = flow_analysis.FlowAnalysisConfig(**definitions.load_definitions().flow_analysis_constants)
+
 TARGET_YIELD_G = 36.0
 # median_flow_g_s matches the module's own prior everywhere except the
 # dedicated blending test, so it's a no-op for tests not about that.
 HEALTHY_BASELINE = BaselineFeatures(
-    shot_count=3, median_late_accel=0.0, median_flow_g_s=flow_analysis._EXPECTED_FLOW_G_S
+    shot_count=3, median_late_accel=0.0, median_flow_g_s=CONFIG.expected_flow_g_s
 )
 
 
@@ -72,7 +80,7 @@ class FlowAnalysisTests(unittest.TestCase):
     def test_too_few_samples_is_invalid(self) -> None:
         samples = _steady_flow_samples(18.0)[:3]
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertFalse(result.baseline_eligible)
@@ -82,7 +90,7 @@ class FlowAnalysisTests(unittest.TestCase):
         """A scale fault or empty cup: plenty of samples, but almost no beverage mass."""
         samples = _simulate(lambda _t: 0.02, 18.0)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, InvalidReason.NEAR_ZERO_FINAL_WEIGHT)
@@ -96,7 +104,7 @@ class FlowAnalysisTests(unittest.TestCase):
         """
         samples = _steady_flow_samples(duration_s=24.0)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=7.0, baseline=HEALTHY_BASELINE
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=7.0, baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, InvalidReason.FLOW_STARTED_BEFORE_PREINFUSION_END)
@@ -106,30 +114,71 @@ class FlowAnalysisTests(unittest.TestCase):
         flow at any point: an implausible combination, not a genuinely slow pour."""
         samples = _simulate(lambda _t: 0.05, 30.0)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertIsNone(result.t_first_flow_ms)
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, InvalidReason.NO_DETECTED_FLOW)
 
     def test_steady_flow_at_the_expected_rate_is_healthy(self) -> None:
-        expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
+        expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         samples = _steady_flow_samples(duration_s=expected_s)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
         self.assertIsNotNone(result.t50_ms)
         self.assertAlmostEqual(result.t50_ms, 0.5 * expected_s * 1000, delta=200)
+        # duration_ratio is built from t90, not total shot time, so even a
+        # shot at exactly the expected flow rate lands around 0.9, not 1.0 -
+        # for constant flow, reaching 90% of the yield takes ~90% of the
+        # total time by construction. This is the same t90-vs-total-time gap
+        # already called out in docs/DIAL_IN_RULES.md Part 4.
+        self.assertIsNotNone(result.duration_ratio)
+        self.assertAlmostEqual(result.duration_ratio, 0.9, delta=0.05)
+
+    def test_duration_ratio_is_none_for_an_invalid_shot(self) -> None:
+        samples = _steady_flow_samples(18.0)[:3]  # too few samples
+        result = analyze_shot(
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+        )
+        self.assertEqual(result.classification, ShotClassification.INVALID)
+        self.assertIsNone(result.duration_ratio)
+
+    def test_a_different_config_actually_changes_the_classification(self) -> None:
+        """FlowAnalysisConfig has no defaults of its own (consts live in
+        yaml, code is for logic) - this proves the config parameter itself
+        is what drives classification, by showing two different configs
+        classify the identical shot differently, not that some particular
+        number happens to match a hardcoded expectation."""
+        expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
+        samples = _steady_flow_samples(duration_s=expected_s)
+
+        under_real_config = analyze_shot(
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+        )
+        self.assertEqual(under_real_config.classification, ShotClassification.HEALTHY)
+
+        # a shot at exactly the expected rate is now "too fast" under this
+        # tighter factor
+        tighter_config = dataclasses.replace(CONFIG, too_fast_factor=0.99)
+        under_explicit_config = analyze_shot(
+            samples,
+            target_yield_g=TARGET_YIELD_G,
+            preinfusion_s=0.0,
+            baseline=HEALTHY_BASELINE,
+            config=tighter_config,
+        )
+        self.assertEqual(under_explicit_config.classification, ShotClassification.TOO_FAST)
 
     def test_cup_lifted_after_the_pour_does_not_contaminate_the_classification(self) -> None:
         """The user can remove the cup/scale whenever they like: weight can
         only rise during a real pour, so a drop is unambiguous interference,
         not flow - and everything after it must be discarded, not analyzed."""
-        expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
+        expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         clean = _steady_flow_samples(duration_s=expected_s)
         clean_result = analyze_shot(
-            clean, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None
+            clean, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, config=CONFIG
         )
         self.assertEqual(clean_result.classification, ShotClassification.HEALTHY)
 
@@ -156,7 +205,7 @@ class FlowAnalysisTests(unittest.TestCase):
             clean + disturbed_tail,
             target_yield_g=TARGET_YIELD_G,
             preinfusion_s=0.0,
-            baseline=None,
+            baseline=None, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
         self.assertEqual(result.t90_ms, clean_result.t90_ms)
@@ -177,7 +226,7 @@ class FlowAnalysisTests(unittest.TestCase):
             ShotSample(seq=2, elapsed_ms=200, scale_ms=200, weight_g=-0.2, flow_g_s=-0.6, battery_percent=90),
             ShotSample(seq=3, elapsed_ms=300, scale_ms=300, weight_g=0.0, flow_g_s=0.2, battery_percent=90),
         ]
-        expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
+        expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         real_pour = _steady_flow_samples(duration_s=expected_s)
         shifted_pour = [
             ShotSample(
@@ -194,7 +243,7 @@ class FlowAnalysisTests(unittest.TestCase):
             noisy_preinfusion + shifted_pour,
             target_yield_g=TARGET_YIELD_G,
             preinfusion_s=0.0,
-            baseline=HEALTHY_BASELINE,
+            baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
 
@@ -206,10 +255,14 @@ class FlowAnalysisTests(unittest.TestCase):
         has cleared that floor, exactly as before this fix."""
         times_ms = [0, 100, 200, 300]
         below_floor = [0.0, 0.4, -0.2, 0.0]  # peak 0.4g, well under the floor
-        self.assertIsNone(flow_analysis._first_disturbance_index(times_ms, below_floor))
+        self.assertIsNone(
+            flow_analysis._first_disturbance_index(times_ms, below_floor, CONFIG)
+        )
 
         above_floor = [0.0, 1.0, 3.0, 2.0]  # peak 3.0g; the 1.0g drop exceeds the threshold
-        self.assertEqual(flow_analysis._first_disturbance_index(times_ms, above_floor), 3)
+        self.assertEqual(
+            flow_analysis._first_disturbance_index(times_ms, above_floor, CONFIG), 3
+        )
 
     def test_disturbance_leaving_too_few_samples_is_invalid_with_a_distinct_reason(self) -> None:
         """A disturbance early enough to leave under MIN_SAMPLES of trustworthy
@@ -238,7 +291,7 @@ class FlowAnalysisTests(unittest.TestCase):
             )
         ]
         result = analyze_shot(
-            disturbed, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None
+            disturbed, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, InvalidReason.DISTURBANCE_LEFT_TOO_FEW_SAMPLES)
@@ -254,7 +307,7 @@ class FlowAnalysisTests(unittest.TestCase):
         garbage_first_sample = ShotSample(
             seq=0, elapsed_ms=22, scale_ms=0, weight_g=-48.0, flow_g_s=0.06, battery_percent=90
         )
-        expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
+        expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         real_pour = _steady_flow_samples(duration_s=expected_s * 0.3)
         shifted_pour = [
             ShotSample(
@@ -271,7 +324,7 @@ class FlowAnalysisTests(unittest.TestCase):
             [garbage_first_sample] + shifted_pour,
             target_yield_g=TARGET_YIELD_G,
             preinfusion_s=0.0,
-            baseline=HEALTHY_BASELINE,
+            baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
@@ -282,25 +335,26 @@ class FlowAnalysisTests(unittest.TestCase):
         is a legitimately high leading *positive* reading (e.g. real samples
         that only start once a pour is already underway) - only readings
         clearly beyond real scale noise on the negative side are."""
-        self.assertEqual(flow_analysis._first_plausible_index([0.0, 0.1, -0.1, 0.2]), 0)
-        self.assertEqual(flow_analysis._first_plausible_index([-48.0, 0.0, 0.1]), 1)
-        self.assertEqual(flow_analysis._first_plausible_index([-48.0, 30.0, 0.0]), 1)
-        self.assertEqual(flow_analysis._first_plausible_index([30.0, 99.0]), 0)
-        self.assertEqual(flow_analysis._first_plausible_index([-48.0, -30.0]), 2)  # all implausible
+        config = CONFIG
+        self.assertEqual(flow_analysis._first_plausible_index([0.0, 0.1, -0.1, 0.2], config), 0)
+        self.assertEqual(flow_analysis._first_plausible_index([-48.0, 0.0, 0.1], config), 1)
+        self.assertEqual(flow_analysis._first_plausible_index([-48.0, 30.0, 0.0], config), 1)
+        self.assertEqual(flow_analysis._first_plausible_index([30.0, 99.0], config), 0)
+        self.assertEqual(flow_analysis._first_plausible_index([-48.0, -30.0], config), 2)  # all implausible
 
     def test_reaching_target_far_faster_than_expected_is_too_fast(self) -> None:
-        expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
+        expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         samples = _steady_flow_samples(duration_s=expected_s * 0.3)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
 
     def test_reaching_target_far_slower_than_expected_is_too_restrictive(self) -> None:
-        expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
+        expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         samples = _steady_flow_samples(duration_s=expected_s * 2.2)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
 
@@ -312,7 +366,7 @@ class FlowAnalysisTests(unittest.TestCase):
 
         samples = _simulate(flow_fn, duration_s=20.0)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
         )
         self.assertIsNone(result.t90_ms)
         self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
@@ -329,20 +383,20 @@ class FlowAnalysisTests(unittest.TestCase):
 
         samples = _simulate(flow_fn, duration_s=24.0)
         result = analyze_shot(
-            samples, target_yield_g=target_yield_g, preinfusion_s=preinfusion_s, baseline=None
+            samples, target_yield_g=target_yield_g, preinfusion_s=preinfusion_s, baseline=None, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
 
     def test_steady_shot_is_healthy_with_no_baseline_at_all(self) -> None:
         """No per-bag history yet: fall back entirely on the fixed mechanical prior."""
-        expected_s = TARGET_YIELD_G / flow_analysis._EXPECTED_FLOW_G_S
+        expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         samples = _steady_flow_samples(duration_s=expected_s)
         sparse_baseline = BaselineFeatures(
-            shot_count=1, median_late_accel=0.0, median_flow_g_s=flow_analysis._EXPECTED_FLOW_G_S
+            shot_count=1, median_late_accel=0.0, median_flow_g_s=CONFIG.expected_flow_g_s
         )
         for baseline in (None, sparse_baseline):
             result = analyze_shot(
-                samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=baseline
+                samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=baseline, config=CONFIG
             )
             self.assertEqual(result.classification, ShotClassification.HEALTHY)
             self.assertTrue(result.baseline_eligible)
@@ -357,7 +411,7 @@ class FlowAnalysisTests(unittest.TestCase):
         samples = _steady_flow_samples(duration_s=TARGET_YIELD_G / bag_rate)
 
         no_history = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, config=CONFIG
         )
         self.assertEqual(no_history.classification, ShotClassification.TOO_FAST)
 
@@ -365,20 +419,22 @@ class FlowAnalysisTests(unittest.TestCase):
             shot_count=50, median_late_accel=0.0, median_flow_g_s=bag_rate
         )
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=strong_history
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=strong_history, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
 
     def test_blended_flow_rate_shifts_toward_bag_history_as_shot_count_grows(self) -> None:
         bag_rate = 1.8
-        prior_only = flow_analysis._blended_expected_flow_g_s(None)
+        prior_only = flow_analysis._blended_expected_flow_g_s(None, CONFIG)
         weak = flow_analysis._blended_expected_flow_g_s(
-            BaselineFeatures(shot_count=1, median_late_accel=0.0, median_flow_g_s=bag_rate)
+            BaselineFeatures(shot_count=1, median_late_accel=0.0, median_flow_g_s=bag_rate),
+            CONFIG,
         )
         strong = flow_analysis._blended_expected_flow_g_s(
-            BaselineFeatures(shot_count=50, median_late_accel=0.0, median_flow_g_s=bag_rate)
+            BaselineFeatures(shot_count=50, median_late_accel=0.0, median_flow_g_s=bag_rate),
+            CONFIG,
         )
-        self.assertEqual(prior_only, flow_analysis._EXPECTED_FLOW_G_S)
+        self.assertEqual(prior_only, CONFIG.expected_flow_g_s)
         self.assertLess(prior_only, weak)
         self.assertLess(weak, strong)
         self.assertLess(strong, bag_rate)  # even 50 shots don't fully erase the prior
@@ -399,7 +455,7 @@ class FlowAnalysisTests(unittest.TestCase):
         samples = _simulate(flow_fn, duration_s=20.0)
         for baseline in (None, HEALTHY_BASELINE):
             result = analyze_shot(
-                samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=baseline
+                samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=baseline, config=CONFIG
             )
             self.assertNotIn(
                 result.classification,
@@ -425,13 +481,13 @@ class FlowAnalysisTests(unittest.TestCase):
 
         samples = _simulate(flow_fn, duration_s=20.0)
         matching_baseline = BaselineFeatures(
-            shot_count=5, median_late_accel=1.0, median_flow_g_s=flow_analysis._EXPECTED_FLOW_G_S
+            shot_count=5, median_late_accel=1.0, median_flow_g_s=CONFIG.expected_flow_g_s
         )
         result = analyze_shot(
             samples,
             target_yield_g=TARGET_YIELD_G,
             preinfusion_s=0.0,
-            baseline=matching_baseline,
+            baseline=matching_baseline, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.PUCK_PREP_ISSUE)
 
@@ -449,15 +505,15 @@ class FlowAnalysisTests(unittest.TestCase):
         samples = _simulate(flow_fn, duration_s=32.0)
 
         unflagged = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, config=CONFIG
         )
         self.assertEqual(unflagged.classification, ShotClassification.HEALTHY)
 
         tight_baseline = BaselineFeatures(
-            shot_count=5, median_late_accel=0.0, median_flow_g_s=flow_analysis._EXPECTED_FLOW_G_S
+            shot_count=5, median_late_accel=0.0, median_flow_g_s=CONFIG.expected_flow_g_s
         )
         escalated = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=tight_baseline
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=tight_baseline, config=CONFIG
         )
         self.assertEqual(escalated.classification, ShotClassification.PUCK_PREP_ISSUE)
         self.assertGreater(escalated.channeling_suspicion, unflagged.channeling_suspicion)
@@ -509,17 +565,23 @@ class FirstSyncedClockIndexTests(unittest.TestCase):
     def test_no_stale_samples_returns_zero(self) -> None:
         times_ms = [0, 100, 200, 300]
         scale_ms = [0, 100, 200, 300]
-        self.assertEqual(flow_analysis._first_synced_clock_index(times_ms, scale_ms), 0)
+        self.assertEqual(
+            flow_analysis._first_synced_clock_index(times_ms, scale_ms, CONFIG), 0
+        )
 
     def test_leading_stale_samples_are_counted(self) -> None:
         times_ms = [26, 116, 235, 330]
         scale_ms = [19200, 19200, 0, 0]
-        self.assertEqual(flow_analysis._first_synced_clock_index(times_ms, scale_ms), 2)
+        self.assertEqual(
+            flow_analysis._first_synced_clock_index(times_ms, scale_ms, CONFIG), 2
+        )
 
     def test_every_sample_stale_returns_the_full_length(self) -> None:
         times_ms = [26, 116]
         scale_ms = [19200, 19300]
-        self.assertEqual(flow_analysis._first_synced_clock_index(times_ms, scale_ms), 2)
+        self.assertEqual(
+            flow_analysis._first_synced_clock_index(times_ms, scale_ms, CONFIG), 2
+        )
 
 
 class FirstDisturbanceIndexTests(unittest.TestCase):
@@ -532,29 +594,39 @@ class FirstDisturbanceIndexTests(unittest.TestCase):
     def test_no_drop_returns_none(self) -> None:
         times_ms = [0, 100, 200, 300]
         weights = [0.0, 1.0, 2.0, 3.0]
-        self.assertIsNone(flow_analysis._first_disturbance_index(times_ms, weights))
+        self.assertIsNone(
+            flow_analysis._first_disturbance_index(times_ms, weights, CONFIG)
+        )
 
     def test_a_quickly_recovering_dip_does_not_count(self) -> None:
         times_ms = [0, 100, 300, 500, 700]
         weights = [0.0, 3.0, 2.4, 3.5, 4.0]
-        self.assertIsNone(flow_analysis._first_disturbance_index(times_ms, weights))
+        self.assertIsNone(
+            flow_analysis._first_disturbance_index(times_ms, weights, CONFIG)
+        )
 
     def test_a_drop_that_never_recovers_counts(self) -> None:
         times_ms = [0, 100, 200, 1300, 1400, 1500, 1600]
         weights = [0.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-        self.assertEqual(flow_analysis._first_disturbance_index(times_ms, weights), 2)
+        self.assertEqual(
+            flow_analysis._first_disturbance_index(times_ms, weights, CONFIG), 2
+        )
 
     def test_a_drop_sustained_long_enough_counts_even_if_it_later_recovers(self) -> None:
         times_ms = [0, 100, 200, 1250, 1300]
         weights = [0.0, 3.0, 1.0, 1.0, 3.5]
-        self.assertEqual(flow_analysis._first_disturbance_index(times_ms, weights), 2)
+        self.assertEqual(
+            flow_analysis._first_disturbance_index(times_ms, weights, CONFIG), 2
+        )
 
     def test_a_drop_below_the_detection_floor_does_not_count(self) -> None:
         """Below _DISTURBANCE_DETECTION_FLOOR_G, settling noise alone can
         exceed _MAX_PLAUSIBLE_WEIGHT_DROP_G with no real disturbance."""
         times_ms = [0, 100, 200, 2000]
         weights = [0.0, 1.0, 0.3, 0.3]
-        self.assertIsNone(flow_analysis._first_disturbance_index(times_ms, weights))
+        self.assertIsNone(
+            flow_analysis._first_disturbance_index(times_ms, weights, CONFIG)
+        )
 
 
 if __name__ == "__main__":

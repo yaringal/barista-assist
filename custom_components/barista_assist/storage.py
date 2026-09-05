@@ -11,7 +11,7 @@ import statistics
 from typing import Any, Iterable
 from uuid import uuid4
 
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 BAG_RECIPE_FIELDS = frozenset(
     {"dose_g", "grind", "target_yield_g", "temperature_offset_c", "preinfusion_s"}
 )
@@ -233,12 +233,17 @@ class BaristaDatabase:
         channeling_suspicion: float | None = None,
         analysis_json: str | None = None,
         effective_stop_margin_g: float | None = None,
+        recommended_grind_delta: float | None = None,
     ) -> None:
         """effective_stop_margin_g is the live-projected margin actually used
         at this shot's own automatic target-weight stop decision (see
         ActiveShot.effective_stop_margin_g) - None for a shot ended by manual
         abort/timeout instead, since no weight-triggered margin was ever
-        computed for it."""
+        computed for it. recommended_grind_delta is Phase 4's
+        (docs/DESIGN.md section 28) expert-system grind recommendation for
+        this shot (grind_correction.recommend_grind_delta) - None when the
+        shot isn't a grind-correction candidate (not too_fast/too_restrictive,
+        or excluded as puck_prep_issue/invalid_measurement)."""
         sample_list = list(samples)
         with self._connect() as db:
             db.execute(
@@ -247,7 +252,7 @@ class BaristaDatabase:
                 SET ended_at=?, actual_yield_g=?, status=?,
                     stop_command_elapsed_ms=?, sample_count=?,
                     classification=?, channeling_suspicion=?, analysis_json=?,
-                    effective_stop_margin_g=?
+                    effective_stop_margin_g=?, recommended_grind_delta=?
                 WHERE id=?
                 """,
                 (
@@ -260,6 +265,7 @@ class BaristaDatabase:
                     channeling_suspicion,
                     analysis_json,
                     effective_stop_margin_g,
+                    recommended_grind_delta,
                     shot_id,
                 ),
             )
@@ -387,6 +393,7 @@ class BaristaDatabase:
                 f"status={clean(shot['status'])}",
                 f"classification={clean(shot['classification'])}",
                 f"channeling_suspicion={shot['channeling_suspicion'] if shot['channeling_suspicion'] is not None else ''}",
+                f"recommended_grind_delta={shot['recommended_grind_delta'] if shot['recommended_grind_delta'] is not None else ''}",
                 f"analysis_json={clean(shot['analysis_json'])}",
                 f"dose_g={shot['dose_g']}",
                 f"grind={shot['grind']}",
