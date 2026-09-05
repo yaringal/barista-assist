@@ -67,6 +67,11 @@ import statistics
 from .storage import ShotSample
 
 
+# =============================================================================
+# Configuration and data contracts
+# =============================================================================
+
+
 @dataclass(frozen=True, slots=True)
 class FlowAnalysisConfig:
     """Every tunable threshold flow_analysis.py uses, in one place - and, on
@@ -172,27 +177,56 @@ class ShotAnalysis:
     late_accel: float | None
 
 
-def _invalid(reason: InvalidReason) -> ShotAnalysis:
-    return ShotAnalysis(
-        classification=ShotClassification.INVALID,
-        channeling_suspicion=None,
-        baseline_eligible=False,
-        invalid_reason=str(reason),
-        duration_ratio=None,
-        t_first_flow_ms=None,
-        t10_ms=None,
-        t50_ms=None,
-        t90_ms=None,
-        early_flow_g_s=None,
-        mid_flow_g_s=None,
-        late_flow_g_s=None,
-        max_flow_g_s=None,
-        flow_slope=None,
-        flow_curvature=None,
-        flow_variance=None,
-        mid_accel=None,
-        late_accel=None,
-    )
+# =============================================================================
+# The sections below are ordered to match analyze_shot's own execution
+# sequence at the bottom of this file: leading-garbage trim, then mid-shot
+# disturbance trim, then smoothing/derivative, then timing crossings, then
+# trend/shape features, then expected-flow blending and suspicion scoring.
+# =============================================================================
+
+
+# --- Leading-garbage detection: dropped before any real analysis begins ----
+
+
+def _first_plausible_index(raw_weights: list[float], config: FlowAnalysisConfig) -> int:
+    """First index whose weight isn't implausibly negative (more than
+    config.leading_garbage_threshold_g below zero) - i.e. how many leading
+    samples to skip as pre-tare/pre-connect scale noise. Only ever rejects
+    on the negative side: a legitimately high leading positive reading
+    (e.g. real samples that only start once a pour is already underway) is
+    left alone.
+
+    Unlike _first_disturbance_index (a genuine mid-shot problem, judged
+    relative to the shot's own running peak), this looks for implausible
+    readings before any real peak has been established at all, so it can't
+    use the same running-peak comparison - a garbage first sample would just
+    become the (garbage) running peak itself.
+
+    Returns len(raw_weights) if every sample is implausible.
+    """
+    for i, weight in enumerate(raw_weights):
+        if weight >= -config.leading_garbage_threshold_g:
+            return i
+    return len(raw_weights)
+
+
+def _first_synced_clock_index(
+    times_ms: list[int], scale_ms_values: list[int], config: FlowAnalysisConfig
+) -> int:
+    """First index whose scale_ms is plausibly in sync with our own
+    elapsed_ms - i.e. how many leading samples to skip as stale BLE
+    notifications left over from before the scale's clock was reset. See
+    config.stale_scale_clock_threshold_ms.
+
+    Returns len(times_ms) if every sample's clock is out of sync.
+    """
+    for i, (t, scale_ms) in enumerate(zip(times_ms, scale_ms_values)):
+        if scale_ms - t <= config.stale_scale_clock_threshold_ms:
+            return i
+    return len(times_ms)
+
+
+# --- Mid-shot disturbance detection: cup/scale bumped, lifted, or moved ----
 
 
 def _first_disturbance_index(
@@ -236,42 +270,7 @@ def _first_disturbance_index(
     return None
 
 
-def _first_plausible_index(raw_weights: list[float], config: FlowAnalysisConfig) -> int:
-    """First index whose weight isn't implausibly negative (more than
-    config.leading_garbage_threshold_g below zero) - i.e. how many leading
-    samples to skip as pre-tare/pre-connect scale noise. Only ever rejects
-    on the negative side: a legitimately high leading positive reading
-    (e.g. real samples that only start once a pour is already underway) is
-    left alone.
-
-    Unlike _first_disturbance_index (a genuine mid-shot problem, judged
-    relative to the shot's own running peak), this looks for implausible
-    readings before any real peak has been established at all, so it can't
-    use the same running-peak comparison - a garbage first sample would just
-    become the (garbage) running peak itself.
-
-    Returns len(raw_weights) if every sample is implausible.
-    """
-    for i, weight in enumerate(raw_weights):
-        if weight >= -config.leading_garbage_threshold_g:
-            return i
-    return len(raw_weights)
-
-
-def _first_synced_clock_index(
-    times_ms: list[int], scale_ms_values: list[int], config: FlowAnalysisConfig
-) -> int:
-    """First index whose scale_ms is plausibly in sync with our own
-    elapsed_ms - i.e. how many leading samples to skip as stale BLE
-    notifications left over from before the scale's clock was reset. See
-    config.stale_scale_clock_threshold_ms.
-
-    Returns len(times_ms) if every sample's clock is out of sync.
-    """
-    for i, (t, scale_ms) in enumerate(zip(times_ms, scale_ms_values)):
-        if scale_ms - t <= config.stale_scale_clock_threshold_ms:
-            return i
-    return len(times_ms)
+# --- Smoothing and flow derivation ------------------------------------------
 
 
 def _moving_average(times_ms: list[int], values: list[float], window_ms: int) -> list[float]:
@@ -310,21 +309,22 @@ def _derivative(times_ms: list[int], values: list[float]) -> list[float]:
     return flow
 
 
-def _first_crossing_ms(times_ms: list[int], values: list[float], threshold: float) -> int | None:
-    for t, v in zip(times_ms, values):
-        if v >= threshold:
-            return t
-    return None
+# --- Timing / crossing helpers -----------------------------------------------
 
 
-def _first_sustained_crossing_ms(
-    times_ms: list[int], values: list[float], threshold: float, sustain_ms: int
+def _first_crossing_ms(
+    times_ms: list[int], values: list[float], threshold: float, sustain_ms: int = 0
 ) -> int | None:
-    """Like _first_crossing_ms, but ignores a run that drops back below
-    threshold before holding for sustain_ms - filters out a single noisy
-    spike from being mistaken for the true start of flow. A run still
-    touching the last sample counts even if it hasn't reached sustain_ms yet,
-    since there's no later data to prove it wouldn't have held."""
+    """First time values crosses threshold. With the default sustain_ms=0,
+    any single sample at or above threshold counts (used for t10/t50/t90
+    against the already-smoothed weight curve, where a momentary dip back
+    below threshold isn't a real concern). Pass sustain_ms to additionally
+    require the crossing to hold for that long before counting - filters
+    out a single noisy spike from being mistaken for the true start of flow
+    (used for first-flow detection against the noisier raw derivative). A
+    run still touching the last sample counts even if it hasn't reached
+    sustain_ms yet, since there's no later data to prove it wouldn't have
+    held."""
     n = len(times_ms)
     i = 0
     while i < n:
@@ -339,6 +339,9 @@ def _first_sustained_crossing_ms(
             return start_t
         i = j
     return None
+
+
+# --- Trend/shape helpers: acceleration and curvature ------------------------
 
 
 def _linear_slope(xs: list[float], ys: list[float]) -> float:
@@ -369,6 +372,9 @@ def _mean_second_derivative(times_s: list[float], values: list[float]) -> float:
         total += (d2 - d1) / ((dt1 + dt2) / 2)
         count += 1
     return total / count if count else 0.0
+
+
+# --- Expected-flow-rate blending and channeling-suspicion scoring ----------
 
 
 def _blended_expected_flow_g_s(baseline: BaselineFeatures | None, config: FlowAnalysisConfig) -> float:
@@ -419,6 +425,37 @@ def _baseline_deviation_suspicion(late_accel: float, baseline: BaselineFeatures)
     reference = max(abs(baseline.median_late_accel), 0.1)
     rise_above_baseline = max(late_accel - baseline.median_late_accel, 0.0)
     return min(1.0, rise_above_baseline / (reference * 3.0))
+
+
+# --- Early-exit construction, used throughout analyze_shot below -----------
+
+
+def _invalid(reason: InvalidReason) -> ShotAnalysis:
+    return ShotAnalysis(
+        classification=ShotClassification.INVALID,
+        channeling_suspicion=None,
+        baseline_eligible=False,
+        invalid_reason=str(reason),
+        duration_ratio=None,
+        t_first_flow_ms=None,
+        t10_ms=None,
+        t50_ms=None,
+        t90_ms=None,
+        early_flow_g_s=None,
+        mid_flow_g_s=None,
+        late_flow_g_s=None,
+        max_flow_g_s=None,
+        flow_slope=None,
+        flow_curvature=None,
+        flow_variance=None,
+        mid_accel=None,
+        late_accel=None,
+    )
+
+
+# =============================================================================
+# Public entry point
+# =============================================================================
 
 
 def analyze_shot(
@@ -489,8 +526,8 @@ def analyze_shot(
     flow = _derivative(times_ms, smoothed)
     times_s = [t / 1000.0 for t in times_ms]
 
-    t_first_flow_ms = _first_sustained_crossing_ms(
-        times_ms, flow, config.first_flow_threshold_g_s, config.first_flow_sustain_ms
+    t_first_flow_ms = _first_crossing_ms(
+        times_ms, flow, config.first_flow_threshold_g_s, sustain_ms=config.first_flow_sustain_ms
     )
     # Was time to first flow plausible? (docs/DESIGN.md section 13). Either the
     # scale never registered real flow despite a meaningful final weight, or

@@ -25,51 +25,48 @@ defaults:
   new_bag:
     starting_mass_g: 250.0
 
-# Every tunable threshold flow_analysis.py's Stage-1 classifier uses, in one
-# place - runtime.py builds a flow_analysis.FlowAnalysisConfig from this dict
-# on every shot (see _async_finalize). FlowAnalysisConfig itself has no
-# default values and no explanatory comments (consts live in yaml, code is
-# for logic) - this is the only place both the numbers and the reasoning
-# behind them live at all.
+# =============================================================================
+# flow_analysis_constants - every tunable threshold flow_analysis.py's Stage-1
+# classifier uses, in one place. runtime.py builds a flow_analysis.
+# FlowAnalysisConfig from this dict on every shot (see _async_finalize).
+# FlowAnalysisConfig itself has no default values and no explanatory comments
+# (consts live in yaml, code is for logic) - this is the only place both the
+# numbers and the reasoning behind them live at all.
 #
-# Most of the fields below are signal-processing/plausibility thresholds,
-# each tuned against a specific real anomalous shot a human diagnosed by
-# inspecting the raw trace - see each field's own comment for its incident.
-# Getting these better calibrated needs more real recorded edge cases for a
-# human to review, not just more shot volume - there's no automatic ground
-# truth for "was this really a disturbance" the way there is for e.g.
-# stop_latency's tail-weight error. expected_flow_g_s/too_fast_factor/
-# too_restrictive_factor further below are the ones with a real derivation
-# behind their current values instead.
+# Grouped below to match flow_analysis.py's own section order (leading-garbage
+# -> disturbance -> smoothing/first-flow -> channeling suspicion -> flow-rate
+# classification), so the two files read the same way.
+# =============================================================================
 flow_analysis_constants:
-  # Fewer than this many samples can't be classified at all - not enough
-  # points to smooth/derive a trend from. Arbitrary, not tuned against any
-  # specific incident.
-  min_samples: 5
 
-  # A bag needs at least this many recorded healthy shots before its own
-  # baseline (median late-shot acceleration) is trusted for the
-  # baseline-deviation channeling check - too few, and one atypical healthy
-  # shot could dominate the "normal for this bag" reference point.
-  # Arbitrary, not tuned against any specific incident.
-  min_baseline_shots: 3
+  # --- Leading-garbage detection ---------------------------------------------
 
-  # The derivative must clear this many g/s to count as real flow at all,
-  # as opposed to scale noise around zero. Arbitrary, not tuned against any
-  # specific incident.
-  first_flow_threshold_g_s: 0.3
+  # A leading weight reading this far below zero is scale noise before it's
+  # settled/tared, not real data - weight is never meaningfully negative, at
+  # any point in a shot (ordinary scale jitter near a true zero baseline
+  # stays within a couple tenths of a gram either way). A live shot hit a
+  # single -48g first sample (elapsed_ms=22, one reading before the scale
+  # had connected/tared) that dragged the whole smoothing/derivative
+  # computation with it, misclassifying an otherwise perfectly normal (if
+  # too-fast) shot as invalid_measurement. This must only ever reject on the
+  # negative side - a legitimately high leading *positive* reading (e.g.
+  # synthetic test data, or real samples that only start once a pour is
+  # already well underway) is not implausible the same way and must never
+  # be discarded.
+  leading_garbage_threshold_g: 2.0
 
-  # Centered moving-average window applied to raw weight before computing
-  # flow (the derivative) - trades detail for noise rejection. Arbitrary,
-  # not tuned against any specific incident.
-  smoothing_window_ms: 500
+  # A leading sample whose scale_ms (the BOOKOO scale's own onboard clock)
+  # runs this many ms ahead of our own elapsed_ms is a stale BLE
+  # notification queued from before our tare-and-start-timer command reset
+  # the scale's clock, not real data for this shot - a live shot's first two
+  # samples read scale_ms=19200 while elapsed_ms was still under 200,
+  # carrying a stale, unrelated 12g reading left over from whatever the
+  # scale was doing before this shot. Once the scale's own clock is reset,
+  # its readings drop back to roughly tracking elapsed_ms, so this only
+  # ever rejects genuinely stale leading samples, not real ones.
+  stale_scale_clock_threshold_ms: 2000
 
-  # A single sample's derivative can spike past first_flow_threshold_g_s
-  # purely from scale quantization (e.g. a 0.1g-resolution reading landing
-  # right at a sample boundary) even during a genuine low/no-flow trickle -
-  # real flow stays above the threshold for a run of samples, not just one,
-  # so "first flow" requires the crossing to hold for at least this long.
-  first_flow_sustain_ms: 300
+  # --- Mid-shot disturbance detection (cup/scale bumped, lifted, moved) ------
 
   # A raw weight reading this many grams below its own running peak so far
   # is treated as the cup or scale having been disturbed, not real flow:
@@ -102,48 +99,63 @@ flow_analysis_constants:
   # this.
   disturbance_sustain_ms: 1000
 
-  # A leading weight reading this far below zero is scale noise before it's
-  # settled/tared, not real data - weight is never meaningfully negative,
-  # at any point in a shot (ordinary scale jitter near a true zero baseline
-  # stays within a couple tenths of a gram either way). A live shot hit a
-  # single -48g first sample (elapsed_ms=22, one reading before the scale
-  # had connected/tared) that dragged the whole smoothing/derivative
-  # computation with it, misclassifying an otherwise perfectly normal (if
-  # too-fast) shot as invalid_measurement. This must only ever reject on
-  # the negative side - a legitimately high leading *positive* reading
-  # (e.g. synthetic test data, or real samples that only start once a pour
-  # is already well underway) is not implausible the same way and must
-  # never be discarded.
-  leading_garbage_threshold_g: 2.0
+  # --- Smoothing & first-flow detection --------------------------------------
 
-  # A leading sample whose scale_ms (the BOOKOO scale's own onboard clock)
-  # runs this many ms ahead of our own elapsed_ms is a stale BLE
-  # notification queued from before our tare-and-start-timer command reset
-  # the scale's clock, not real data for this shot - a live shot's first
-  # two samples read scale_ms=19200 while elapsed_ms was still under 200,
-  # carrying a stale, unrelated 12g reading left over from whatever the
-  # scale was doing before this shot. Once the scale's own clock is reset,
-  # its readings drop back to roughly tracking elapsed_ms, so this only
-  # ever rejects genuinely stale leading samples, not real ones.
-  stale_scale_clock_threshold_ms: 2000
+  # Fewer than this many samples can't be classified at all - not enough
+  # points to smooth/derive a trend from. Arbitrary, not tuned against any
+  # specific incident.
+  min_samples: 5
+
+  # Centered moving-average window applied to raw weight before computing
+  # flow (the derivative) - trades detail for noise rejection. Arbitrary,
+  # not tuned against any specific incident.
+  smoothing_window_ms: 500
+
+  # The derivative must clear this many g/s to count as real flow at all,
+  # as opposed to scale noise around zero. Arbitrary, not tuned against any
+  # specific incident.
+  first_flow_threshold_g_s: 0.3
+
+  # A single sample's derivative can spike past first_flow_threshold_g_s
+  # purely from scale quantization (e.g. a 0.1g-resolution reading landing
+  # right at a sample boundary) even during a genuine low/no-flow trickle -
+  # real flow stays above the threshold for a run of samples, not just one,
+  # so "first flow" requires the crossing to hold for at least this long.
+  first_flow_sustain_ms: 300
 
   # A shot's first detected flow earlier than this fraction of its
   # configured pre-infusion duration is implausible - pre-infusion is meant
   # to be a low/no-flow soak. Unvalidated placeholder, same status as the
-  # signal-processing group above.
+  # rest of this group.
   early_flow_fraction_of_preinfusion: 0.5
+
+  # --- Channeling suspicion ---------------------------------------------------
+  # Getting these three better calibrated needs more real recorded edge
+  # cases for a human to review, not just more shot volume - there's no
+  # automatic ground truth for "was this really channeling" the way there
+  # is for e.g. stop_latency's tail-weight error, and none of the 16
+  # James Hoffmann/Lance Hedrick/Matt Perger dial-in videos this project
+  # has cross-checked describe channeling numerically (only qualitatively -
+  # "a sudden rise in flow", "tiger striping"). All three remain unvalidated
+  # guesses.
+
+  # A bag needs at least this many recorded healthy shots before its own
+  # baseline (median late-shot acceleration) is trusted for the
+  # baseline-deviation channeling check - too few, and one atypical healthy
+  # shot could dominate the "normal for this bag" reference point.
+  min_baseline_shots: 3
 
   # channeling_suspicion at or above this value classifies puck_prep_issue
   # rather than by the shot's hydraulic fast/slow reading (docs/DESIGN.md
-  # section 13 Stage 1). Unvalidated guess, not checked against any of the
-  # dial-in videos (they describe channeling qualitatively - "a sudden rise
-  # in flow" - never with a numeric suspicion-score equivalent).
+  # section 13 Stage 1).
   suspicion_threshold: 0.6
 
   # Fixed prior: mid- or late-shot flow accelerating upward by this many g/s
   # per second is treated as maximally suspicious, independent of any
-  # baseline. Same status as suspicion_threshold above - unvalidated.
+  # baseline.
   absolute_accel_limit_g_s2: 1.0
+
+  # --- Flow-rate classification (the Hoffmann-calibrated trio) ---------------
 
   # How many "pseudo-shots" the expected_flow_g_s prior below is worth when
   # blending with a bag's own healthy-shot history - shrinks toward the
@@ -160,16 +172,11 @@ flow_analysis_constants:
   # too_fast if duration_s < expected_s * too_fast_factor, too_restrictive
   # if duration_s > expected_s * too_restrictive_factor.
   #
-  # The values below replace flow_analysis.py's original placeholders of
-  # 1.25 / 0.8 / 1.6 (themselves anchored only to DESIGN.md's own
-  # hand-written Example A, not to anything Hoffmann actually said - see
-  # docs/DIAL_IN_RULES.md and the "design-doc-is-not-source-
-  # of-truth" lesson from that research). These were checked directly
-  # against every dose/yield/time data point across the dial-in videos
-  # that Hoffmann himself gave an explicit good/bad verdict on -
-  # converted to flow_g_s = yield_g / time_s, then to
-  # duration_ratio = expected_flow_g_s / actual_flow_g_s (equivalent to
-  # duration_s / expected_s for a fixed yield):
+  # Unlike every other constant in this file, these three have a real
+  # derivation: checked directly against every dose/yield/time data point
+  # across James Hoffmann's dial-in videos that he gave an explicit
+  # good/bad verdict on - converted to flow_g_s = yield_g / time_s, then to
+  # duration_ratio = expected_flow_g_s / actual_flow_g_s:
   #
   #   source                          yield/time      flow_g_s  duration_ratio  verdict
   #   Dial-In Ep1 shot 1              40g / 34s        1.176      1.105         "too slow" (harsh/muddy/sour)
@@ -182,37 +189,39 @@ flow_analysis_constants:
   #
   # (expected_flow_g_s = 1.3 used to compute duration_ratio above.) The
   # bad-verdict points (1.105, 0.855) and every accepted/unflagged point
-  # (0.924-1.083) separate cleanly at roughly 0.88 and 1.10 - notably,
-  # the old 1.6 factor is nowhere close to catching Ep1 shot 1's 1.105,
-  # despite Hoffmann calling that shot too slow outright. This is a small
-  # (7-point), spoken-approximate-timing dataset from one creator's
-  # equipment, not this installation's own instrumented shot history, so
-  # treat it the same way as any other placeholder in this file: a better-
-  # grounded starting point than an invented example, still to be replaced
-  # once Phase 3b/4b's real recorded shots exist.
+  # (0.924-1.083) separate cleanly at roughly 0.88 and 1.10. This is still a
+  # small (7-point), spoken-approximate-timing dataset from one creator's
+  # equipment, not this installation's own instrumented shot history - a
+  # better-grounded starting point than an invented example, but still to
+  # be replaced once Phase 3b/4b's real recorded shots exist. Full
+  # derivation/history: docs/DIAL_IN_RULES.md Part 4.
   expected_flow_g_s: 1.3
   too_fast_factor: 0.88
   too_restrictive_factor: 1.10
 
-# Expert-system correction rules (DESIGN.md §13-15), consolidated from James
-# Hoffmann's dial-in videos - see docs/DIAL_IN_RULES.md for the
-# full per-video sourcing and open questions. This encodes *policy* (which
-# lever to pull, in what order, by how much) as data; the diagnostic math
-# that produces a shot's classification/duration_ratio stays in
-# flow_analysis.py, matching this file's own header: algorithms stay in
-# Python, tunable behaviour lives here. flow_analysis_constants above is a
-# similar idea but for flow_analysis.py's own internal thresholds rather
-# than the barista-facing correction policy below.
+# =============================================================================
+# expert_rules - correction rules consolidated from James Hoffmann's,
+# Lance Hedrick's, and Matt Perger's dial-in videos (DESIGN.md §13-15). This
+# encodes *policy* (which lever to pull, in what order, by how much) as data;
+# the diagnostic math that produces a shot's classification/duration_ratio
+# stays in flow_analysis.py (see flow_analysis_constants above for that).
+#
+# Full per-source quotes and reasoning for everything in this section:
+# docs/DIAL_IN_RULES.md (James Hoffmann) and docs/CROSS_CREATOR_RULE_CHECK.md
+# (cross-checked against Lance Hedrick/Matt Perger, including what was
+# deliberately left out as one creator's personal preference rather than a
+# genuine consensus/mechanism - see that doc's "queued decisions").
+# =============================================================================
 expert_rules:
 
-  # Corrects a shot's flow-rate deviation by moving grind only, holding
-  # every other recipe variable constant (DESIGN.md §13 Stage 2 - "isolate
-  # variables", from the Grind Size video's rule 3). Never applied to a
-  # puck_prep_issue or invalid_measurement shot: channeling has two distinct
-  # causes in the source videos (bad puck prep vs. grind ground too fine for
-  # the pressure/prep quality being used) and flow_analysis.py can't yet tell
-  # them apart from the weight curve alone, so defaulting to "repeat the
-  # recipe, don't touch grind" is the safe choice until it can.
+  # --- Phase 4, live: grind_correction ----------------------------------------
+  # Corrects a shot's flow-rate deviation by moving grind only, holding every
+  # other recipe variable constant (DESIGN.md §13 Stage 2 - "isolate
+  # variables"). Never applied to a puck_prep_issue or invalid_measurement
+  # shot: channeling has two distinct causes (bad puck prep vs. grind ground
+  # too fine for the pressure/prep quality being used) and flow_analysis.py
+  # can't yet tell them apart from the weight curve alone, so defaulting to
+  # "repeat the recipe, don't touch grind" is the safe choice until it can.
   #
   # TODO, queued: that "repeat, don't touch grind" default is applied the
   # same way no matter how many consecutive shots at this recipe have come
@@ -225,6 +234,7 @@ expert_rules:
     applies_to_classification: [too_fast, too_restrictive]
     excludes_classification: [puck_prep_issue, invalid_measurement]
     hold_constant: [dose_g, target_yield_g, temperature_offset_c, preinfusion_s]
+
     # duration_ratio = actual shot duration / expected duration for this bag,
     # using flow_analysis_constants.expected_flow_g_s above. Below 1.0 = ran
     # fast; above 1.0 = ran slow/restrictive. Bands are ordered ascending by
@@ -260,28 +270,18 @@ expert_rules:
         duration_ratio_max: null
         grind_delta: 2.0
 
-  # Phase 5 reference only - not yet consumed by any controller/runtime code.
-  # Tags match DESIGN.md §13's own sensory-tag list, but the lever mapped to
-  # each tag is only as trustworthy as its source: where a James Hoffmann
-  # video independently states the same fix, that's noted below and treated
-  # as the stronger claim; where a mapping only comes from DESIGN.md's own
-  # (pre-video-research, hand-written) examples, that's noted too - DESIGN.md
-  # is not treated as a source of truth here, it's the thing this research
-  # was meant to check. See docs/DIAL_IN_RULES.md.
-  #
-  # Cross-checked against Lance Hedrick's and Matt Perger's videos too (see
-  # docs/CROSS_CREATOR_RULE_CHECK.md); adjustments below are annotated
-  # "cross-creator". Weighted for genuine consensus/mechanism over any one
-  # creator's personal preference: Lance's self-described personal biases
-  # (e.g. "I always prefer to go coarser", rejecting fixed time windows
-  # despite using them himself in two of his own other videos, changing
-  # grind and contact time together instead of isolating grind) were
-  # deliberately NOT incorporated anywhere in this file - see
-  # docs/CROSS_CREATOR_RULE_CHECK.md's "queued decisions" for why each one
-  # was left out. What did get incorporated below either matches across
-  # multiple independent sources or is a stated mechanism, not an opinion.
+    # ~5-10g, grinder-dependent (Grind Size ep, rule 4): a shot pulled right
+    # after a grind change is a mix of old- and new-setting grounds until
+    # purged, so it isn't a clean comparison to the pre-change baseline.
+    requires_purge_before_next_comparison: true
+
+  # --- Phase 5 reference only: flavor_correction ------------------------------
+  # Not yet consumed by any controller/runtime code. Tags match DESIGN.md
+  # §13's own sensory-tag list. Weighted for genuine consensus/mechanism over
+  # any one creator's personal preference - see docs/CROSS_CREATOR_RULE_CHECK.md.
   flavor_correction:
     lever_order: [yield, temperature, dose, preinfusion]
+
     # A single shot's taste tag shouldn't trigger a correction on its own
     # (Brew Temperature ep: "time and time and time again", not one shot -
     # shot-to-shot variation and bean heterogeneity can produce a false
@@ -293,75 +293,48 @@ expert_rules:
       temperature_offset_c: 1
       dose_g: 0.5
       target_yield_g: 2.5
+
     tags:
       sour_sharp:
         lever: yield
         direction: increase
         delta_g: [5, 10]
-        # Direction matches DESIGN.md's own Example B. Magnitude was
-        # originally 2-3g (Hoffmann's "Ratio" ep - his own stated ceiling
-        # before a yield tweak starts changing the drink's style), but
-        # cross-creator: three independent worked examples (Lance Hedrick's
-        # "Fix Sour Espresso" - "five, eight, maybe ten grams more"; Lance's
-        # "Quick & Easy Guide" - demonstrated +5g; Matt Perger - +10g, a 25%
-        # jump) all use noticeably bigger jumps than Hoffmann's own stated
-        # ceiling, so this was widened to 5-10g. This isn't "trust Lance
-        # over Hoffmann" - Perger's independent +10g example is what tips it;
-        # a 3-source majority against Hoffmann's single stated ceiling.
+        # Hoffmann's Ratio ep capped this at 2-3g; widened to 5-10g after
+        # three independent cross-creator examples (Lance x2, Perger) all
+        # used bigger jumps - a 3-source majority, not "trust Lance over
+        # Hoffmann". Escalates to temperature only once the issue is
+        # confirmed to persist across shots (Brew Temperature ep) and ratio
+        # alone hasn't fixed it - if a milk drink comes out too weak as a
+        # result, DESIGN.md's Example C says to return yield toward its
+        # prior value before trying +1°C, rather than stacking both changes.
         escalation:
-          # Video-sourced (Brew Temperature ep): only escalate to
-          # temperature once the taste issue is confirmed to persist across
-          # shots, not from a single one, and only after ratio has already
-          # been tried. If a milk drink comes out too weak as a result,
-          # DESIGN.md's Example C additionally says to return yield toward
-          # its prior value before trying +1°C rather than stacking both
-          # changes - that sequencing detail is DESIGN.md's own, not
-          # independently stated in the transcripts.
           condition: persists_after_yield_change
           lever: temperature
           direction: increase
+
       bitter_harsh:
-        # Cross-creator reorder: previously mapped straight to temperature.
-        # Lance Hedrick's "Quick & Easy Guide" ("if it's watery, it's
-        # bitter, it's drying... lower [the ratio], that's probably
-        # over-extraction") puts yield/ratio decrease first, with
-        # temperature only mentioned as a secondary aside for machines that
-        # support it ("Understanding Variables": "most people don't have
-        # the capability... I wouldn't sweat it"). This isn't a new
-        # principle - it matches Hoffmann's own stated rule to try ratio
-        # before temperature for any taste issue - this tag just hadn't
-        # been updated to reflect that ordering the way sour_sharp's
-        # escalation already was. Fixing an internal inconsistency, not
-        # adopting a new claim.
         lever: yield
         direction: decrease
-        # No delta_g on purpose - unlike sour_sharp's increase direction
-        # (2-3g Hoffmann, widened to 5-10g against three independent
-        # worked examples above), nothing in any of the 16 transcripts
-        # states a magnitude for the DECREASE direction: every source that
-        # discusses pulling back yield for bitterness/over-extraction gives
-        # direction only ("lower it", "return yield toward its prior
-        # value"), never a number. Adding one here would be a guess, not a
-        # sourced figure - falls back to this block's own
-        # minimum_meaningful_step.target_yield_g (2.5g) instead of
-        # inventing a dedicated value.
+        # Cross-creator reorder: previously mapped straight to temperature.
+        # Lance's "Quick & Easy Guide" puts yield/ratio decrease first,
+        # temperature only as a secondary aside for machines that support
+        # it - matches Hoffmann's own general "ratio before temperature"
+        # rule, so this was fixing an internal inconsistency, not adopting
+        # a new claim. No delta_g: no source gives a magnitude for this
+        # direction, only "lower it" - falls back to this block's own
+        # minimum_meaningful_step.target_yield_g instead of a guessed figure.
         escalation:
           condition: persists_after_yield_change
           lever: temperature
           direction: decrease
         note: "distinguish from dirty-machine bitterness (a lingering, burned flavour) - that is not a recipe fix"
-        # Cross-creator qualifier, corroborated independently in two Lance
-        # Hedrick videos ("Dialing In By Taste", "Understanding Variables"):
-        # darker roasts produce more fines, and fines are inherently
-        # bitter - so a shot can taste bitter while actually being
-        # UNDER-extracted (via channeling), which this tag's yield-decrease
-        # fix would make worse, not better. Stated distinguishing signal:
-        # true over-extraction bitterness comes together with
-        # wateriness/dryness; fines-driven bitterness doesn't necessarily.
-        # If bitter appears WITHOUT watery/drying, this may not be the
-        # right tag at all - check for puck_prep_issue/channeling first
-        # rather than assuming over-extraction.
+        # Corroborated independently in two Lance Hedrick videos: darker
+        # roasts produce more fines, and fines are inherently bitter, so a
+        # shot can taste bitter while actually being UNDER-extracted (via
+        # channeling) - true over-extraction bitterness comes together with
+        # wateriness/dryness, fines-driven bitterness doesn't necessarily.
         fines_caveat: "bitter without accompanying watery/drying mouthfeel may be under-extraction/channeling, not over-extraction - do not apply this tag's fix in that case"
+
       thin_weak:
         lever: dose
         direction: increase
@@ -370,73 +343,52 @@ expert_rules:
         # dose increase"), corroborated independently by the Dose video's
         # own 0.5g micro-tweak figure.
         note: "a small dose increase (about 0.5g) is the standard fix for a shot that already tastes good but comes across underpowered or weak"
+
       dry_astringent:
-        # Previously unmapped ("no Stage-3 lever identified... left unmapped
-        # pending more data"). Cross-creator: now has real evidence. Lance
-        # Hedrick's "Quick & Easy Guide" pairs "watery and drying and
-        # bitter" together as the over-extraction signature (fix: lower
-        # ratio); Matt Perger's diminishing-returns finding independently
-        # arrives at the same place from grind - pushing grind past its
-        # peak makes mouthfeel "dry" while extraction and strength both
-        # drop. Two different levers, same diagnosis (over-extraction),
-        # from two independent sources.
         lever: yield
         direction: decrease
-        # Same gap as bitter_harsh, and for the same reason: no source
-        # gives a magnitude for this direction, only "lower it"/"back off".
-        # Falls back to minimum_meaningful_step.target_yield_g (2.5g)
-        # rather than a guessed delta_g.
-        
-        # When this tag appears alongside thin or watery mouthfeel (true over-extraction): decrease yield first. If the over-extraction is actually caused by a grind pushed too fine rather than a ratio problem, back off the grind instead - this tag alone doesn't distinguish which lever caused it, only that yield or grind should move toward less extraction.
+        # Previously unmapped for lack of evidence. Now grounded: Lance's
+        # "Quick & Easy Guide" pairs watery/drying/bitter together as the
+        # over-extraction signature (fix: lower ratio); Matt Perger's
+        # independent diminishing-returns finding arrives at the same place
+        # from grind (pushing it past its peak makes mouthfeel "dry" while
+        # extraction and strength both drop) - two different levers, same
+        # diagnosis, from two independent sources. No delta_g, same reason
+        # as bitter_harsh: falls back to minimum_meaningful_step.target_yield_g.
+        note: "when this tag appears alongside thin/watery mouthfeel (true over-extraction): decrease yield first. If the over-extraction is actually caused by a grind pushed too fine rather than a ratio problem, back off the grind instead - this tag alone doesn't distinguish which lever caused it, only that yield or grind should move toward less extraction"
+
       balanced:
         note: "all good - no action"
 
-  # Phase 5/6 reference only - not yet consumed by any code. DESIGN.md §19's
-  # warm-start logic only matches against a "similar coffee" today; it
-  # doesn't use a new bag's coffee.roast_level (§16 - already modeled,
-  # already collected, just unused for this) as a prior for anything.
-  # Cross-creator: two independent Lance Hedrick videos ("Quick & Easy
-  # Guide" and "Mystery Roast") agree closely on a starting ratio by roast
-  # level, so this is a reasonable candidate warm-start prior once a bag
-  # has no shot history of its own (or no similar-coffee match) to fall
-  # back on.
+  # --- Phase 5/6 reference only: roast_level_ratio_prior ----------------------
+  # Not yet consumed by any code. DESIGN.md §19's warm-start logic only
+  # matches against a "similar coffee" today; this is a candidate fallback
+  # prior keyed on a new bag's coffee.roast_level (§16 - already modeled,
+  # unused for this) for when there's no similar-coffee match either.
   #
-  # Cross-checked against Hoffmann's own actual dial-in results (the only
-  # two videos with both a stated roast level AND a final numeric recipe):
-  # Dial-In Ep1, light roast, ended at 17g -> 42g (1:2.47); Dial-In Ep2,
-  # medium roast, ended at 19g -> 36-38g, which Hoffmann himself calls "the
-  # classic two to one ratio" (~1:1.9-2.0). Lance's medium=2.5 doesn't hold
-  # up against that - Hoffmann's actual medium result sits closer to
-  # Lance's DARK tier than his medium one. medium was lowered from 2.5
-  # toward that result; not moved all the way to 2.0 because that would
-  # collapse it onto the dark tier and lose the ordering (dark < medium <
-  # light) this prior exists to encode, and because a single Hoffmann data
-  # point plus Lance's stated table isn't enough to pin an exact number,
-  # only enough to say 2.5 was too high. light (3.0) hasn't been re-checked
-  # the same way - Hoffmann's light-roast result (2.47) is itself below
-  # Lance's light tier (3.0+, stated as open-ended, not a ceiling), so that
-  # tier may be optimistic too, but with only one Hoffmann light-roast data
-  # point and Lance's own explicit "and above" hedge, there isn't a clear
-  # correction to make there yet - flagging rather than guessing.
+  # dark/light are Lance Hedrick's stated guideline (two videos agree
+  # closely). medium was cross-checked against Hoffmann's own actual
+  # medium-roast dial-in result (19g->36-38g, "the classic two to one
+  # ratio", ~1:1.9-2.0) and lowered from Lance's 2.5 toward that - not all
+  # the way to 2.0, which would collapse the dark/medium distinction this
+  # prior exists to encode. light hasn't been re-checked the same way (only
+  # one weaker Hoffmann data point exists for it). Full derivation:
+  # docs/CROSS_CREATOR_RULE_CHECK.md.
   #
-  # Worth weighing all of this lightly regardless of the exact numbers:
-  # Hoffmann's own "Episode 0" is an extended argument against exactly this
-  # kind of simplification - "not all two-to-ones are created equal" - his
-  # stated position is that ratio depends on dose, basket, grinder, and
-  # water at least as much as roast level. This prior is a low-confidence
-  # fallback for when nothing else is available, not a validated rule.
+  # Worth weighing this whole prior lightly regardless of the exact numbers:
+  # Hoffmann's own "Episode 0" argues at length against exactly this kind of
+  # simplification - ratio depends on dose, basket, grinder, and water at
+  # least as much as roast level. This is a low-confidence fallback for when
+  # nothing else is available, not a validated rule.
   roast_level_ratio_prior:
     dark: 2.0
     medium: 2.2
     light: 3.0
     # Both Lance sources are explicit these are loose starting points, not
-    # fixed targets: "Mystery Roast" ends its actual dark-roast dial-in
-    # below 1:2 once tasted ("we ended up below one to two because that's
-    # where it tasted best"), and "Quick & Easy Guide" gives light roast as
-    # "1:3 and above" (open-ended, not a ceiling). Use only to seed
-    # target_yield_g for a brand-new bag; a bag's own accepted shots should
-    # override this immediately, the same way flow_analysis_constants'
-    # expected_flow_g_s prior yields to a bag's own history.
+    # fixed targets - use only to seed target_yield_g for a brand-new bag; a
+    # bag's own accepted shots should override this immediately, the same
+    # way flow_analysis_constants' expected_flow_g_s prior yields to a bag's
+    # own history.
 
 entities:
   sensor:
@@ -601,7 +553,7 @@ entities:
       # its own starting yield. 3.0 divides (36.0 - 15.0) evenly and is
       # still within Hoffmann's original 2-3g ceiling for a yield
       # fine-tune (docs/DESIGN.md section 6.3) - the wider 5-10g figure is
-      # expert_rules.flavor_correction.tags.sharp_sour's own delta_g, a
+      # expert_rules.flavor_correction.tags.sour_sharp's own delta_g, a
       # separate value from this UI increment.
       step: 3.0
       unit: g

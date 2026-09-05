@@ -520,23 +520,26 @@ class FlowAnalysisTests(unittest.TestCase):
 
 
 class FirstSustainedCrossingTests(unittest.TestCase):
-    """Direct tests for _first_sustained_crossing_ms, the helper that keeps a
-    single noisy/quantization-driven derivative spike from being mistaken for
-    the true start of flow (see test_flow_analysis_real_shots.py's
+    """Direct tests for _first_crossing_ms's sustain_ms behavior - the option
+    that keeps a single noisy/quantization-driven derivative spike from being
+    mistaken for the true start of flow (see test_flow_analysis_real_shots.py's
     GoodButFlaggedMachinePiTests for the real-shot regression this fixed).
     Tested in isolation from the smoothing pipeline since the crossing rule
-    itself is what's being verified here, not curve-shaping."""
+    itself is what's being verified here, not curve-shaping. (t10/t50/t90's
+    plain, no-sustain crossings against the already-smoothed weight curve
+    aren't separately unit-tested here - they're covered indirectly through
+    analyze_shot's own tests.)"""
 
     def test_a_single_sample_spike_does_not_count(self) -> None:
         times_ms = [0, 100, 200, 300, 400]
         values = [0.0, 0.0, 1.0, 0.0, 0.0]
-        result = flow_analysis._first_sustained_crossing_ms(times_ms, values, 0.3, 300)
+        result = flow_analysis._first_crossing_ms(times_ms, values, 0.3, sustain_ms=300)
         self.assertIsNone(result)
 
     def test_a_sustained_run_counts_from_its_start(self) -> None:
         times_ms = [0, 100, 200, 300, 400, 500]
         values = [0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
-        result = flow_analysis._first_sustained_crossing_ms(times_ms, values, 0.3, 300)
+        result = flow_analysis._first_crossing_ms(times_ms, values, 0.3, sustain_ms=300)
         self.assertEqual(result, 200)
 
     def test_a_run_still_rising_at_the_last_sample_counts_even_if_short(self) -> None:
@@ -545,13 +548,13 @@ class FirstSustainedCrossingTests(unittest.TestCase):
         while genuinely mid-pour."""
         times_ms = [0, 100, 200]
         values = [0.0, 0.0, 1.0]
-        result = flow_analysis._first_sustained_crossing_ms(times_ms, values, 0.3, 300)
+        result = flow_analysis._first_crossing_ms(times_ms, values, 0.3, sustain_ms=300)
         self.assertEqual(result, 200)
 
     def test_an_earlier_spike_is_skipped_in_favor_of_the_real_sustained_run(self) -> None:
         times_ms = [0, 100, 200, 300, 400, 500, 600]
         values = [0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
-        result = flow_analysis._first_sustained_crossing_ms(times_ms, values, 0.3, 300)
+        result = flow_analysis._first_crossing_ms(times_ms, values, 0.3, sustain_ms=300)
         self.assertEqual(result, 400)
 
 
