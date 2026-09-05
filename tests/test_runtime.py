@@ -491,6 +491,30 @@ class ShotPlotPointsTests(RuntimeTestCase):
         # points, not an empty list or a re-derived one.
         self.assertEqual(self.runtime._shot_plot_points(), frozen)
 
+    async def test_survives_a_simulated_app_restart(self):
+        """Regression test: _last_shot_samples used to be populated only
+        in-memory by _async_finalize, so it was never reloaded from the
+        samples table on startup - restarting the integration (a fresh
+        BaristaRuntime built against the same config entry, same DB file)
+        left the Live Shot card's frozen graph blank even though
+        self.last_shot's own metadata (classification, yield, etc.)
+        correctly reloaded from the database all along."""
+        await self.start_shot(preinfusion_s=1.0)
+        await self.wait_for_extracting()
+        await asyncio.sleep(1.05)
+        self.scale.push_reading(make_reading(weight_g=36.0, flow_g_s=1.0))
+        await self.hass.tasks[-1]
+        await asyncio.sleep(self.runtime._settle_seconds() + 0.1)
+
+        frozen = self.runtime._shot_plot_points()
+        self.assertGreater(len(frozen), 0)
+
+        restarted_hass = FakeHass(self._temp_dir)
+        restarted_runtime = BaristaRuntime(restarted_hass, self.entry)
+        await restarted_runtime.async_initialize()
+
+        self.assertEqual(restarted_runtime._shot_plot_points(), frozen)
+
 
 class BotLockSerializationTests(RuntimeTestCase):
     async def test_press_waits_for_an_in_flight_prepare_call(self):

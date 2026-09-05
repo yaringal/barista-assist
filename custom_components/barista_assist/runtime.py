@@ -418,6 +418,17 @@ class BaristaRuntime:
             slot: await self.hass.async_add_executor_job(self.db.bag_remaining_g, bag.id)
             for slot, bag in self._bags.items()
         }
+        # _last_shot_samples backs the Live Shot card's frozen plot for the
+        # last completed shot (_shot_plot_points) - otherwise only ever set
+        # in-memory when a shot finishes during this same runtime session
+        # (_async_finalize), so without this it goes blank after every
+        # restart even though self.last_shot's own metadata (classification,
+        # yield, etc.) correctly reloads from the database above.
+        self._last_shot_samples = (
+            await self.hass.async_add_executor_job(self.db.full_shot_samples, self.last_shot["id"])
+            if self.last_shot
+            else []
+        )
         self._notify(force=True)
 
     def _notify(self, *, force: bool = False) -> None:

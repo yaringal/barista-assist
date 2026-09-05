@@ -329,6 +329,22 @@ class BaristaDatabase:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def full_shot_samples(self, shot_id: str) -> list[ShotSample]:
+        """Same rows as shot_samples(), but as real ShotSample objects (all
+        six columns, not just the four the shot-history view needs) - used
+        to restore BaristaRuntime._last_shot_samples after a restart, since
+        that field is otherwise only ever populated in-memory when a shot
+        finishes during the current runtime session."""
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT seq, elapsed_ms, scale_ms, weight_g, flow_g_s, battery_percent
+                FROM samples WHERE shot_id=? ORDER BY seq ASC
+                """,
+                (shot_id,),
+            ).fetchall()
+        return [ShotSample(**dict(row)) for row in rows]
+
     def delete_shot(self, shot_id: str) -> bool:
         """Delete one shot; its samples go with it via ON DELETE CASCADE.
         Returns whether a shot was actually found and deleted."""
