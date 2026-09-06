@@ -27,7 +27,7 @@ class StorageTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def new_bag(self, name: str = "Test Coffee"):
+    def new_bag(self, name: str = "Test Coffee", *, roast_level: str | None = None):
         return self.db.new_bag(
             slot="normal",
             coffee_name=name,
@@ -39,6 +39,7 @@ class StorageTests(unittest.TestCase):
             target_yield_g=36.0,
             temperature_offset_c=1,
             preinfusion_s=7,
+            roast_level=roast_level,
         )
 
     def test_new_bag_replaces_active_slot_only(self) -> None:
@@ -131,6 +132,47 @@ class StorageTests(unittest.TestCase):
         )
         text = self.db.export_shots_text()
         self.assertIn("adapt_pi=True", text)
+
+    def test_export_shots_text_can_filter_to_one_shot(self) -> None:
+        """The shot-history card's per-row export button - shot_id restricts
+        the export to just that shot's metadata and samples, leaving every
+        other stored shot out entirely."""
+        bag = self.new_bag()
+        first_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.finalize_shot(
+            first_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=36.0,
+            status="complete",
+            stop_command_elapsed_ms=29000,
+            samples=[storage.ShotSample(0, 0, 0, 0.0, 0.0, 90)],
+        )
+        second_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T18:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.finalize_shot(
+            second_id,
+            ended_at="2026-08-16T18:00:33+00:00",
+            actual_yield_g=36.0,
+            status="complete",
+            stop_command_elapsed_ms=29000,
+            samples=[storage.ShotSample(0, 0, 0, 0.0, 0.0, 90)],
+        )
+
+        text = self.db.export_shots_text(shot_id=first_id)
+        self.assertIn(f"shot_id={first_id}", text)
+        self.assertNotIn(f"shot_id={second_id}", text)
+        self.assertEqual(text.count("[SHOT]"), 1)
 
     def test_export_includes_flow_analysis_fields(self) -> None:
         bag = self.new_bag()
@@ -263,6 +305,84 @@ class StorageTests(unittest.TestCase):
             samples=[],
         )
         self.assertIsNone(self.db.last_shot()["recommended_grind_delta"])
+
+    def test_new_bag_persists_roast_level(self) -> None:
+        bag = self.new_bag(roast_level="medium")
+        self.assertEqual(bag.roast_level, "medium")
+        self.assertEqual(self.db.active_bags()["normal"].roast_level, "medium")
+
+    def test_new_bag_roast_level_defaults_to_none(self) -> None:
+        bag = self.new_bag()
+        self.assertIsNone(bag.roast_level)
+
+    def test_record_flavor_tag_persists_per_axis(self) -> None:
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.record_flavor_tag(shot_id, "extraction", "sour_sharp")
+        self.db.record_flavor_tag(shot_id, "mouthfeel", "dry_astringent")
+        shot = self.db.last_shot()
+        self.assertEqual(shot["flavor_extraction_tag"], "sour_sharp")
+        self.assertEqual(shot["flavor_mouthfeel_tag"], "dry_astringent")
+
+    def test_record_flavor_tag_on_one_axis_does_not_touch_the_other(self) -> None:
+        """A shot can be answered on only one axis (e.g. the mouthfeel
+        notification was never tapped) - recording extraction must not
+        overwrite mouthfeel with anything, and vice versa."""
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.db.record_flavor_tag(shot_id, "extraction", "bitter_harsh")
+        self.assertIsNone(self.db.last_shot()["flavor_mouthfeel_tag"])
+
+    def test_record_flavor_tag_returns_whether_a_shot_was_found(self) -> None:
+        """Mirrors delete_shot's own return convention - lets a caller (see
+        runtime._handle_flavor_notification_action) log a stale notification
+        action instead of it silently doing nothing."""
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.assertTrue(self.db.record_flavor_tag(shot_id, "extraction", "sour_sharp"))
+        self.assertFalse(self.db.record_flavor_tag("no-such-shot", "extraction", "sour_sharp"))
+
+    def test_recent_flavor_tags_is_most_recent_first_and_answered_only(self) -> None:
+        bag = self.new_bag()
+        for started_at, tag in [
+            ("2026-08-16T17:00:00+00:00", "sour_sharp"),
+            ("2026-08-16T18:00:00+00:00", None),  # never answered
+            ("2026-08-16T19:00:00+00:00", "balanced"),
+        ]:
+            shot_id = self.db.create_shot(
+                bag=bag,
+                started_at=started_at,
+                stop_compensation_g=1.5,
+                preinfusion_s=7.0,
+                adapt_pi=False,
+            )
+            if tag is not None:
+                self.db.record_flavor_tag(shot_id, "extraction", tag)
+        self.assertEqual(
+            self.db.recent_flavor_tags(bag.id, "extraction"), ["balanced", "sour_sharp"]
+        )
+
+    def test_recent_flavor_tags_is_empty_with_no_history(self) -> None:
+        bag = self.new_bag()
+        self.assertEqual(self.db.recent_flavor_tags(bag.id, "mouthfeel"), [])
 
     def test_recent_shots_and_last_shot_include_the_bag_s_roaster(self) -> None:
         bag = self.new_bag()  # new_bag() sets roaster="Test Roaster"

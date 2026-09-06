@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.number import NumberEntity, NumberEntityDescription, NumberMode
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -42,6 +44,11 @@ class BaristaNumber(BaristaAssistEntity, NumberEntity):
     def native_value(self) -> float | None:
         value = self.runtime.entity_value(self.definition)
         return float(value) if value is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        attributes = self.runtime.entity_attributes(self.definition)
+        return attributes or None
 
     async def async_set_native_value(self, value: float) -> None:
         await self.runtime.async_set_entity_value(self.definition, value)

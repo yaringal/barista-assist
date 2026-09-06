@@ -53,6 +53,7 @@ from custom_components.barista_assist.const import (  # noqa: E402
     CONF_BREW_ENTITY,
     CONF_MACHINE_LIMIT_CONFIRMED,
     CONF_MACHINE_MAX_SHOT_SECONDS,
+    CONF_NOTIFY_SERVICE,
     CONF_SAFETY_MARGIN_SECONDS,
     CONF_SCALE_ADDRESS,
 )
@@ -1099,9 +1100,280 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         self.assertIsNone(self.runtime.entity_value(recommended_grind))
 
 
+class FlavorFeedbackTests(RuntimeTestCase):
+    """Phase 5 (docs/DESIGN.md section 13): taste-feedback push notifications
+    5 minutes after a shot, and the resulting recommended_flavor_note."""
+
+    async def test_no_notification_is_scheduled_without_a_configured_service(self):
+        """CONF_NOTIFY_SERVICE isn't set on self.entry by default - the
+        feature must be a no-op, not an error, when it's unconfigured."""
+        await self.start_shot()
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))
+        await self.runtime._async_finalize("complete")
+        self.assertEqual(self.runtime._flavor_notification_tasks, {})
+
+    async def test_no_notification_is_scheduled_for_an_aborted_shot(self):
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+        await self.start_shot()
+        await self.wait_for_extracting()
+        await self.runtime._async_finalize("aborted")
+        self.assertEqual(self.runtime._flavor_notification_tasks, {})
+
+    async def test_a_completed_shot_schedules_a_notification_task(self):
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+        await self.start_shot()
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))
+        await self.runtime._async_finalize("complete")
+        shot_id = self.runtime.last_shot["id"]
+        self.assertIn(shot_id, self.runtime._flavor_notification_tasks)
+
+    async def test_send_flavor_feedback_notifications_sends_both_axes(self):
+        """Called directly rather than through the real flavor_feedback_delay_s
+        sleep - see _schedule_flavor_feedback_notifications' own docstring
+        for why it's kept separately callable."""
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+        await self.runtime._async_send_flavor_feedback_notifications("shot-123")
+
+        calls = self.hass.services.calls
+        self.assertEqual(len(calls), 2)
+        for domain, service, data in calls:
+            self.assertEqual(domain, "notify")
+            self.assertEqual(service, "mock_notify")
+            self.assertIn("message", data)
+            self.assertTrue(data["data"]["actions"])
+
+        actions = {
+            action["action"] for _domain, _service, data in calls for action in data["data"]["actions"]
+        }
+        self.assertIn("barista_flavor:shot-123:extraction:sour_sharp", actions)
+        self.assertIn("barista_flavor:shot-123:extraction:bitter_harsh", actions)
+        self.assertIn("barista_flavor:shot-123:extraction:balanced", actions)
+        self.assertIn("barista_flavor:shot-123:mouthfeel:thin_weak", actions)
+        self.assertIn("barista_flavor:shot-123:mouthfeel:dry_astringent", actions)
+        self.assertIn("barista_flavor:shot-123:mouthfeel:balanced", actions)
+
+    async def test_one_axis_s_notify_failure_does_not_block_the_other_axis(self):
+        """The two axes are independent notify.* calls - one failing (e.g.
+        the notify service is temporarily unavailable) must not also
+        prevent the other axis's notification from going out, and must be
+        logged with enough context to diagnose which axis/shot failed."""
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+        self.hass.services.fail_next_call()
+
+        with self.assertLogs("custom_components.barista_assist.runtime", level="WARNING") as log:
+            await self.runtime._async_send_flavor_feedback_notifications("shot-123")
+
+        self.assertEqual(len(self.hass.services.calls), 2)  # both axes still attempted
+        self.assertTrue(any("shot-123" in message for message in log.output), log.output)
+
+    async def test_send_flavor_feedback_notifications_is_a_noop_without_a_service(self):
+        await self.runtime._async_send_flavor_feedback_notifications("shot-123")
+        self.assertEqual(self.hass.services.calls, [])
+
+    async def test_notification_action_event_records_the_tag(self):
+        await self.start_shot()
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))
+        await self.runtime._async_finalize("complete")
+        shot_id = self.runtime.last_shot["id"]
+        bag_id = self.runtime.last_shot["bag_id"]
+
+        await self.hass.bus.async_fire(
+            "mobile_app_notification_action",
+            {"action": f"barista_flavor:{shot_id}:extraction:sour_sharp"},
+        )
+
+        self.assertEqual(
+            self.runtime.db.recent_flavor_tags(bag_id, "extraction"), ["sour_sharp"]
+        )
+
+    async def test_notification_action_event_ignores_unrelated_actions(self):
+        """Some other integration's own actionable notification fires the
+        same event type on the same device - must not be misread as ours."""
+        await self.start_shot()
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))
+        await self.runtime._async_finalize("complete")
+        bag_id = self.runtime.last_shot["bag_id"]
+
+        await self.hass.bus.async_fire(
+            "mobile_app_notification_action", {"action": "some_other_integration_action"}
+        )
+
+        self.assertEqual(self.runtime.db.recent_flavor_tags(bag_id, "extraction"), [])
+
+    async def test_notification_action_event_for_a_deleted_shot_logs_a_warning(self):
+        """The shot a notification was about may have since been deleted
+        from shot history - record_flavor_tag's UPDATE then silently affects
+        zero rows rather than raising, so this must be logged somewhere
+        instead of just doing nothing with no trace."""
+        with self.assertLogs("custom_components.barista_assist.runtime", level="WARNING") as log:
+            await self.hass.bus.async_fire(
+                "mobile_app_notification_action",
+                {"action": "barista_flavor:no-such-shot:extraction:sour_sharp"},
+            )
+        self.assertTrue(any("no-such-shot" in message for message in log.output), log.output)
+
+    def _recommended_flavor(self):
+        definition = self.runtime.definitions.entity("sensor", "recommended_flavor")
+        return self.runtime.entity_value(definition)
+
+    async def test_recommended_flavor_note_after_a_persistent_pattern(self):
+        """require_persistent_pattern_shots=2 (definitions.yaml): needs the
+        same tag on the bag's 2 most recent answered shots before it shows
+        up, then reads as "{field}: {current} -> {recommended} (persistent
+        {tag})", the same style as recommended_grind_note."""
+        await self.create_bag()
+        bag = self.runtime.selected_bag
+        for _ in range(2):
+            await self.runtime.async_brew()
+            await self.wait_for_extracting()
+            self.scale.push_reading(make_reading(weight_g=36.0))
+            await self.runtime._async_finalize("complete")
+            await self.runtime.hass.async_add_executor_job(
+                self.runtime.db.record_flavor_tag,
+                self.runtime.last_shot["id"],
+                "extraction",
+                "sour_sharp",
+            )
+        await self.runtime.async_refresh_cache()
+
+        note = self._recommended_flavor()
+        self.assertIsNotNone(note)
+        self.assertIn("persistent sour_sharp", note)
+        self.assertIn(f"{bag.target_yield_g:g}", note)
+
+    async def test_recommended_flavor_note_is_none_with_only_one_answered_shot(self):
+        await self.start_shot()
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))
+        await self.runtime._async_finalize("complete")
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
+        await self.runtime.async_refresh_cache()
+
+        self.assertIsNone(self._recommended_flavor())
+
+    async def test_recommended_flavor_note_is_none_with_no_bag(self):
+        definition = self.runtime.definitions.entity("sensor", "recommended_flavor")
+        self.assertIsNone(self.runtime.entity_value(definition))
+
+    async def _brew_and_tag(self, axis: str, tag: str, *, times: int) -> None:
+        for _ in range(times):
+            await self.runtime.async_brew()
+            await self.wait_for_extracting()
+            self.scale.push_reading(make_reading(weight_g=36.0))
+            await self.runtime._async_finalize("complete")
+            await self.runtime.hass.async_add_executor_job(
+                self.runtime.db.record_flavor_tag, self.runtime.last_shot["id"], axis, tag
+            )
+        await self.runtime.async_refresh_cache()
+
+    def _recommended_attribute(self, platform: str, key: str):
+        """The "recommended" secondary-tile-content attribute (see
+        dashboard.yaml's state_content: [state, recommended] on the
+        dose/grind/target_yield/temperature_offset tiles) for one entity."""
+        definition = self.runtime.definitions.entity(platform, key)
+        return self.runtime.entity_attributes(definition).get("recommended")
+
+    async def test_recommended_dose_attribute_shows_a_short_note_without_the_tag(self):
+        """A decoration on the dose tile itself (state_content), not a
+        separate tile - just "current -> recommended", no "(persistent
+        tag)" suffix the combined recommended_flavor note has."""
+        await self.create_bag()
+        dose = self.runtime.selected_bag.dose_g
+        await self._brew_and_tag("mouthfeel", "thin_weak", times=2)
+
+        note = self._recommended_attribute("number", "dose")
+        self.assertEqual(note, f"{dose:g} → {dose + 0.5:g}")
+        self.assertNotIn("persistent", note)
+
+    async def test_recommended_target_yield_attribute_shows_a_short_note(self):
+        await self.create_bag()
+        target_yield = self.runtime.selected_bag.target_yield_g
+        await self._brew_and_tag("extraction", "sour_sharp", times=2)
+
+        note = self._recommended_attribute("number", "target_yield")
+        self.assertEqual(note, f"{target_yield:g} → {target_yield + 5:g}")
+
+    async def test_recommended_temperature_attribute_is_none_without_a_persistent_pattern(self):
+        await self.create_bag()
+        self.assertIsNone(self._recommended_attribute("select", "temperature_offset"))
+
+    async def test_recommended_dose_attribute_is_none_with_no_bag(self):
+        self.assertIsNone(self._recommended_attribute("number", "dose"))
+
+    async def test_recommended_grind_attribute_matches_the_recommended_grind_sensor(self):
+        """grind's own tile decoration is driven by the same
+        _recommended_grind_note() the standalone recommended_grind sensor
+        (Phase 4) already uses - last-shot-sourced, not flavor_correction."""
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=15.0, target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+
+        grind_note = self._recommended_attribute("number", "grind")
+        sensor_definition = self.runtime.definitions.entity("sensor", "recommended_grind")
+        self.assertIsNotNone(grind_note)
+        self.assertEqual(grind_note, self.runtime.entity_value(sensor_definition))
+
+
+class RoastLevelRatioPriorTests(RuntimeTestCase):
+    """runtime.py's async_new_bag seeds target_yield_g from
+    expert_rules.roast_level_ratio_prior only for a genuinely new bag in an
+    empty slot (docs/DESIGN.md section 19's roast-level fallback)."""
+
+    async def test_seeds_target_yield_from_roast_level_in_an_empty_slot(self):
+        """dose_g defaults to 18.0, medium's ratio is 2.2 -> 18.0*2.2=39.6."""
+        bag = await self.runtime.async_new_bag(
+            {
+                "slot": self.runtime.definitions.slots[0],
+                "coffee_name": "Test Coffee",
+                "roast_level": "medium",
+            }
+        )
+        self.assertEqual(bag.target_yield_g, 39.6)
+
+    async def test_does_not_override_an_explicit_target_yield(self):
+        bag = await self.runtime.async_new_bag(
+            {
+                "slot": self.runtime.definitions.slots[0],
+                "coffee_name": "Test Coffee",
+                "roast_level": "medium",
+                "target_yield_g": 42.0,
+            }
+        )
+        self.assertEqual(bag.target_yield_g, 42.0)
+
+    async def test_does_not_apply_without_a_known_roast_level(self):
+        bag = await self.runtime.async_new_bag(
+            {"slot": self.runtime.definitions.slots[0], "coffee_name": "Test Coffee"}
+        )
+        self.assertEqual(bag.target_yield_g, 36.0)  # flat default, unaffected
+
+    async def test_does_not_apply_when_a_bag_already_exists_in_the_slot(self):
+        """A same-slot refill has a real recipe to inherit from - the
+        roast-level prior is only a fallback for nothing-to-inherit-at-all."""
+        slot = self.runtime.definitions.slots[0]
+        await self.runtime.async_new_bag({"slot": slot, "coffee_name": "First"})
+        second = await self.runtime.async_new_bag(
+            {"slot": slot, "coffee_name": "Second", "roast_level": "dark"}
+        )
+        self.assertEqual(second.target_yield_g, 36.0)  # inherited from "First", not re-seeded
+
+
 class ShotHistoryTests(RuntimeTestCase):
-    """async_list_shots/async_shot_samples/async_delete_shot back the
-    shot-history dashboard tab."""
+    """async_list_shots/async_shot_samples/async_delete_shot/
+    async_export_shots_text back the shot-history dashboard tab."""
 
     async def test_list_shots_includes_a_finished_shot(self):
         shot_id = await self.start_shot()
@@ -1110,6 +1382,25 @@ class ShotHistoryTests(RuntimeTestCase):
         shots = await self.runtime.async_list_shots()
 
         self.assertEqual([shot["id"] for shot in shots], [shot_id])
+
+    async def test_export_shots_text_can_filter_to_one_shot(self):
+        """The shot-history card's per-row export button - a pass-through to
+        storage.export_shots_text(shot_id=...)."""
+        shot_id = await self.start_shot()
+        await self.runtime._async_finalize("complete")
+
+        text = await self.runtime.async_export_shots_text(shot_id)
+
+        self.assertIn(f"shot_id={shot_id}", text)
+        self.assertEqual(text.count("[SHOT]"), 1)
+
+    async def test_export_shots_text_defaults_to_every_shot(self):
+        await self.start_shot()
+        await self.runtime._async_finalize("complete")
+
+        text = await self.runtime.async_export_shots_text()
+
+        self.assertEqual(text.count("[SHOT]"), 1)
 
     async def test_shot_samples_returns_the_recorded_time_series(self):
         shot_id = await self.start_shot()

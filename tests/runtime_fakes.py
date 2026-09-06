@@ -48,6 +48,37 @@ class FakeServices:
             raise (self._fail_exc or RuntimeError("simulated switch.turn_on failure"))
 
 
+class FakeEvent:
+    """Just enough of homeassistant.core.Event for a listener to read .data."""
+
+    def __init__(self, data: dict) -> None:
+        self.data = data
+
+
+class FakeBus:
+    """Records async_listen subscriptions; async_fire calls every matching
+    listener directly (awaiting it if it's a coroutine function), the same
+    as a real event bus dispatching to BaristaRuntime's own listener."""
+
+    def __init__(self) -> None:
+        self._listeners: dict[str, list] = {}
+
+    def async_listen(self, event_type: str, listener):
+        self._listeners.setdefault(event_type, []).append(listener)
+
+        def _unsub() -> None:
+            self._listeners[event_type].remove(listener)
+
+        return _unsub
+
+    async def async_fire(self, event_type: str, data: dict | None = None) -> None:
+        event = FakeEvent(data or {})
+        for listener in list(self._listeners.get(event_type, [])):
+            result = listener(event)
+            if asyncio.iscoroutine(result):
+                await result
+
+
 class FakeConfig:
     def __init__(self, base_dir: Path) -> None:
         self._base_dir = base_dir
@@ -65,6 +96,7 @@ class FakeHass:
         self.config = FakeConfig(base_dir)
         self.states = FakeStates()
         self.services = FakeServices()
+        self.bus = FakeBus()
         self.data: dict = {}
         # Every task handed to us, in creation order, so tests can await the
         # exact task a call just scheduled instead of guessing with sleep(0).

@@ -15,6 +15,10 @@ CONF_BREW_ENTITY: Final = "brew_entity"
 CONF_MACHINE_MAX_SHOT_SECONDS: Final = "machine_max_shot_seconds"
 CONF_SAFETY_MARGIN_SECONDS: Final = "safety_margin_seconds"
 CONF_MACHINE_LIMIT_CONFIRMED: Final = "machine_limit_confirmed"
+# The part after "notify." in a notify service name (e.g. "mobile_app_pixel"
+# for notify.mobile_app_pixel) - not an entity id. Empty/unset disables the
+# flavor-feedback notification feature (see runtime.py).
+CONF_NOTIFY_SERVICE: Final = "notify_service"
 
 STATIC_URL_PATH: Final = "/barista_assist_static"
 

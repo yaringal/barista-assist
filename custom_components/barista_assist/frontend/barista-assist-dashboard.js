@@ -48,11 +48,8 @@ class BaristaAssistExportCard extends HTMLElement {
     this._hass = hass;
   }
 
-  // The Companion app injects window.externalApp (iOS) or window.externalBus
-  // (Android) for its native bridge - the same check Home Assistant's own
-  // frontend uses to detect running inside the app.
   _isCompanionApp() {
-    return typeof window.externalApp !== "undefined" || typeof window.externalBus !== "undefined";
+    return isCompanionApp();
   }
 
   _showManualCopy(text, message) {
@@ -120,6 +117,17 @@ if (!window.customCards.some((item) => item.type === "barista-assist-export-card
     description: "Copy all stored Barista Assist shot time series to the clipboard.",
     preview: true,
   });
+}
+
+// The Companion app injects window.externalApp (iOS) or window.externalBus
+// (Android) for its native bridge - the same check Home Assistant's own
+// frontend uses to detect running inside the app. Shared by both
+// BaristaAssistExportCard's whole-database export and
+// BaristaAssistShotHistoryCard's per-row export - the Companion app's
+// WebView clipboard risk (silent truncation on a large writeText()) applies
+// equally to a single shot's data, just less likely to actually bite.
+function isCompanionApp() {
+  return typeof window.externalApp !== "undefined" || typeof window.externalBus !== "undefined";
 }
 
 function escapeHtml(value) {
@@ -347,6 +355,39 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
     }
   }
 
+  async _exportShot(shotId, coffeeName, button) {
+    try {
+      const result = await this._hass.callWS({
+        type: "barista_assist/export_shots_text",
+        shot_id: shotId,
+      });
+      if (!isCompanionApp()) {
+        try {
+          await navigator.clipboard.writeText(result.text);
+          this._flashExportButton(button, "✅");
+          return;
+        } catch (_clipboardError) {
+          // fall through to the manual prompt below
+        }
+      }
+      window.prompt(`Copy ${coffeeName || "this shot"}'s data:`, result.text);
+    } catch (error) {
+      window.alert(`Could not export shot: ${error?.message || error}`);
+    }
+  }
+
+  // Brief success feedback in place of the export button's own icon, since
+  // this card (unlike BaristaAssistExportCard) has no persistent status
+  // line to write into - just this one row's button.
+  _flashExportButton(button, icon) {
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = icon;
+    setTimeout(() => {
+      button.textContent = original;
+    }, 1200);
+  }
+
   async _deleteShot(shotId, coffeeName) {
     const label = coffeeName ? ` (${coffeeName})` : "";
     if (!window.confirm(`Delete this shot${label}? This cannot be undone.`)) return;
@@ -419,6 +460,7 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
           <div class="col yield">${this._formatNumber(shot.actual_yield_g)} / ${this._formatNumber(
             shot.target_yield_g
           )}g</div>
+          <button class="export" data-export-id="${this._escape(shot.id)}" title="Export this shot">📋</button>
           <button class="delete" data-delete-id="${this._escape(shot.id)}" title="Delete shot">🗑</button>
         </div>
         ${expanded ? this._renderDetail(shot) : ""}
@@ -480,11 +522,11 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
         .col.coffee { flex: 1.2; }
         .col.classification { flex: 1.3; }
         .col.yield { flex: 0.9; text-align: right; }
-        .col.spacer { width: 32px; }
+        .col.spacer { width: 68px; }
         .tag-healthy { color: var(--success-color, #2e7d32); }
         .tag-too_fast, .tag-too_restrictive { color: var(--warning-color, #ef6c00); }
         .tag-puck_prep_issue, .tag-invalid_measurement { color: var(--error-color, #c62828); }
-        button.delete {
+        button.export, button.delete {
           border: 0;
           background: none;
           cursor: pointer;
@@ -493,7 +535,10 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
           opacity: 0.6;
           border-radius: 8px;
         }
-        button.delete:hover { opacity: 1; background: var(--secondary-background-color, rgba(127,127,127,0.12)); }
+        button.export:hover, button.delete:hover {
+          opacity: 1;
+          background: var(--secondary-background-color, rgba(127,127,127,0.12));
+        }
         .detail { padding: 12px 8px 16px; }
         .detail.loading { opacity: 0.7; }
         .detail-grid {
@@ -518,6 +563,13 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
         event.stopPropagation();
         const shot = (this._shots || []).find((s) => s.id === el.dataset.deleteId);
         this._deleteShot(el.dataset.deleteId, shot?.coffee_name);
+      });
+    });
+    this.shadowRoot.querySelectorAll(".export").forEach((el) => {
+      el.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const shot = (this._shots || []).find((s) => s.id === el.dataset.exportId);
+        this._exportShot(el.dataset.exportId, shot?.coffee_name, el);
       });
     });
     if (this._expandedId) {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -38,6 +40,11 @@ class BaristaSelect(BaristaAssistEntity, SelectEntity):
             return self.definition.option_label(value)
         except ValueError:
             return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        attributes = self.runtime.entity_attributes(self.definition)
+        return attributes or None
 
     async def async_select_option(self, option: str) -> None:
         await self.runtime.async_set_entity_value(

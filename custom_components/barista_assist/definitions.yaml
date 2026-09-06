@@ -22,6 +22,12 @@ defaults:
     adapt_pi: true
     stop_latency_normal_s: 3.4
     stop_latency_elevated_s: 4.3
+    # How long after a shot finishes to send the taste-feedback push
+    # notifications (expert_rules.flavor_correction) - long enough for the
+    # drink to actually be tasted, short enough that the shot is still fresh
+    # in memory. Not dashboard-editable (unlike the settings above it): this
+    # is a one-off UX tuning knob, not something that needs live recalibration.
+    flavor_feedback_delay_s: 300
   new_bag:
     starting_mass_g: 250.0
 
@@ -275,10 +281,20 @@ expert_rules:
     # purged, so it isn't a clean comparison to the pre-change baseline.
     requires_purge_before_next_comparison: true
 
-  # --- Phase 5 reference only: flavor_correction ------------------------------
-  # Not yet consumed by any controller/runtime code. Tags match DESIGN.md
-  # §13's own sensory-tag list. Weighted for genuine consensus/mechanism over
-  # any one creator's personal preference - see docs/CROSS_CREATOR_RULE_CHECK.md.
+  # --- Phase 5: flavor_correction ----------------------------------------------
+  # Consumed by flavor_correction.py, driven by taste-feedback push
+  # notifications sent flavor_feedback_delay_s after a shot finishes (see
+  # runtime.py's _async_send_flavor_feedback_notifications). Tags match
+  # DESIGN.md §13's own sensory-tag list. Weighted for genuine
+  # consensus/mechanism over any one creator's personal preference - see
+  # docs/CROSS_CREATOR_RULE_CHECK.md.
+  #
+  # TODO(revisit once real, verified shot data exists): every tag's
+  # `escalation` block below is not yet implemented - flavor_correction.py
+  # only ever recommends a tag's own base lever/delta, never escalates to a
+  # second lever after a first correction is tried and the tag still
+  # persists. See flavor_correction.py's own module docstring for why this
+  # was deferred rather than built now.
   flavor_correction:
     lever_order: [yield, temperature, dose, preinfusion]
 
@@ -298,11 +314,18 @@ expert_rules:
       sour_sharp:
         lever: yield
         direction: increase
-        delta_g: [5, 10]
-        # Hoffmann's Ratio ep capped this at 2-3g; widened to 5-10g after
-        # three independent cross-creator examples (Lance x2, Perger) all
-        # used bigger jumps - a 3-source majority, not "trust Lance over
-        # Hoffmann". Escalates to temperature only once the issue is
+        # Hoffmann's Ratio ep capped this at 2-3g; widened after three
+        # independent cross-creator examples (Lance x2, Perger) all used
+        # bigger jumps - 5g, 8-10g, +10g - a 3-source majority, not "trust
+        # Lance over Hoffmann". None of the sources agree on one exact
+        # number though, so 5 (this spread's own low end) is a project-level
+        # implementation choice, not itself sourced from any one video -
+        # same category as Phase 4's grind_correction magnitudes (see
+        # docs/DESIGN.md's Phase 4 section). Picked once here, in data,
+        # rather than recomputed from a stored range every time
+        # flavor_correction.py reads this tag.
+        delta_g: 5
+        # Escalates to temperature only once the issue is
         # confirmed to persist across shots (Brew Temperature ep) and ratio
         # alone hasn't fixed it - if a milk drink comes out too weak as a
         # result, DESIGN.md's Example C says to return yield toward its
@@ -360,11 +383,13 @@ expert_rules:
       balanced:
         note: "all good - no action"
 
-  # --- Phase 5/6 reference only: roast_level_ratio_prior ----------------------
-  # Not yet consumed by any code. DESIGN.md §19's warm-start logic only
-  # matches against a "similar coffee" today; this is a candidate fallback
-  # prior keyed on a new bag's coffee.roast_level (§16 - already modeled,
-  # unused for this) for when there's no similar-coffee match either.
+  # --- Phase 5/6: roast_level_ratio_prior ---------------------------------------
+  # Consumed by runtime.py's async_new_bag as a target_yield_g fallback -
+  # only when a brand-new bag is opened in a slot with no existing bag to
+  # inherit a recipe from (there is still no "similar coffee" warm-start
+  # match to prefer over this; DESIGN.md §19's own warm-start logic remains
+  # unimplemented, so this prior is used whenever roast_level is known and
+  # there's nothing else at all to seed from).
   #
   # dark/light are Lance Hedrick's stated guideline (two videos agree
   # closely). medium was cross-checked against Hoffmann's own actual
@@ -445,6 +470,7 @@ entities:
         - bag_id
         - roaster
         - roast_date
+        - roast_level
         - opened_at
         - dose_g
         - grind
@@ -495,6 +521,25 @@ entities:
       translation_key: recommended_grind
       token: __RECOMMENDED_GRIND__
 
+    recommended_flavor:
+      # Phase 5 (docs/DESIGN.md section 13) - a human-readable "current
+      # setting -> recommended setting" note per axis (e.g. "Target yield:
+      # 36.0 -> 41.0 (persistent sour_sharp)"), computed in
+      # BaristaRuntime.entity_value from the selected bag's own recent,
+      # answered taste-feedback tags (storage.recent_flavor_tags) plus
+      # flavor_correction.py's recommend_flavor_correction() output. Both
+      # axes (extraction, mouthfeel) are checked independently and joined
+      # with "; " when both currently have a recommendation. None/
+      # unavailable when neither axis has a persistent pattern yet - that's
+      # a real "no recommendation" state, not a fault. field is a virtual
+      # name (not a real bag column) that entity_value special-cases, the
+      # same way source: bag's remaining_g/recommended_grind_note do.
+      source: bag
+      field: recommended_flavor_note
+      translation_key: recommended_flavor
+      token: __RECOMMENDED_FLAVOR__
+      requires_bag: true
+
     flow_rate:
       source: scale
       field: flow_g_s
@@ -526,6 +571,13 @@ entities:
       unit: g
       mode: box
       requires_bag: true
+      # "recommended" (e.g. "18.0 -> 18.5") is a virtual attribute
+      # (BaristaRuntime.entity_attributes special-cases it, the same way
+      # source: bag's remaining_g/bag_id do) - flavor_correction's
+      # persistent-pattern recommendation for this field, if any. Shown as
+      # a decoration on this same tile via dashboard.yaml's
+      # state_content: [state, recommended], not a separate card.
+      attributes: [recommended]
 
     grind:
       source: bag
@@ -537,25 +589,27 @@ entities:
       step: 0.5
       mode: box
       requires_bag: true
+      # Phase 4's grind_correction recommendation for the last shot (docs/
+      # DESIGN.md section 28) - see dose's own "recommended" comment above
+      # for the general mechanism; this one comes from the last completed
+      # shot rather than flavor_correction's bag-level tags.
+      attributes: [recommended]
 
     target_yield:
       source: bag
       field: target_yield_g
       translation_key: target_yield
       token: __TARGET_YIELD__
+      attributes: [recommended]
       min: 15.0
       max: 80.0
-      # 3.0, not 2.5: runtime._validate_recipe_field requires
-      # (value - min) / step to land exactly on a whole number, and the
-      # default recipe's target_yield_g (defaults.recipe above) is 36.0 -
-      # (36.0 - 15.0) / 2.5 = 8.4, which fails that check and made every
-      # new bag (which validates its recipe defaults on creation) reject
-      # its own starting yield. 3.0 divides (36.0 - 15.0) evenly and is
-      # still within Hoffmann's original 2-3g ceiling for a yield
-      # fine-tune (docs/DESIGN.md section 6.3) - the wider 5-10g figure is
-      # expert_rules.flavor_correction.tags.sour_sharp's own delta_g, a
-      # separate value from this UI increment.
-      step: 3.0
+      # A UI increment only (runtime._validate_recipe_field only checks
+      # min/max, not step alignment - any value in range is accepted, not
+      # just multiples of this) - 2.5g matches Hoffmann's original 2-3g
+      # ceiling for a yield fine-tune (docs/DESIGN.md section 6.3). The
+      # wider 5g figure is expert_rules.flavor_correction.tags.sour_sharp's
+      # own delta_g, a separate value from this UI increment.
+      step: 2.5
       unit: g
       mode: box
       requires_bag: true
@@ -656,6 +710,7 @@ entities:
       translation_key: temperature_offset
       token: __TEMPERATURE__
       requires_bag: true
+      attributes: [recommended]
       options:
         - label: "-2 °C"
           value: -2
@@ -667,6 +722,26 @@ entities:
           value: 1
         - label: "+2 °C"
           value: 2
+
+    new_bag_roast_level:
+      # Feeds expert_rules.roast_level_ratio_prior (see runtime.py's
+      # async_new_bag) - a fallback used only when a brand-new bag is opened
+      # in a slot with no existing bag to inherit target_yield_g from.
+      # "Not specified" (the default) means that fallback is skipped, same
+      # as leaving new_bag_roaster/new_bag_roast_date blank.
+      source: draft
+      field: roast_level
+      translation_key: new_bag_roast_level
+      token: __NEW_BAG_ROAST_LEVEL__
+      options:
+        - label: Not specified
+          value: ""
+        - label: Dark
+          value: dark
+        - label: Medium
+          value: medium
+        - label: Light
+          value: light
 
   switch:
     adapt_pi:

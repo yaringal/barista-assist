@@ -52,6 +52,7 @@ views:
             entity: __DOSE__
             name: Dose
             color: amber
+            state_content: [state, recommended]
             features: &number_buttons
               - type: numeric-input
                 style: buttons
@@ -61,18 +62,15 @@ views:
             entity: __GRIND__
             name: Grind
             color: amber
+            state_content: [state, recommended]
             features: *number_buttons
             features_position: bottom
-
-          - type: tile
-            entity: __RECOMMENDED_GRIND__
-            name: Recommended grind
-            color: blue
 
           - type: tile
             entity: __TARGET_YIELD__
             name: Target yield
             color: amber
+            state_content: [state, recommended]
             features: *number_buttons
             features_position: bottom
 
@@ -80,6 +78,7 @@ views:
             entity: __TEMPERATURE__
             name: Temperature offset
             color: orange
+            state_content: [state, recommended]
             features:
               - type: select-options
             features_position: bottom
@@ -147,6 +146,15 @@ views:
             name: Channeling suspicion
             color: red
 
+          - type: entities
+            title: Future shot recommendation
+            show_header_toggle: false
+            entities:
+              - entity: __RECOMMENDED_GRIND__
+                name: Grind
+              - entity: __RECOMMENDED_FLAVOR__
+                name: Flavor
+
   - title: Bags
     path: bags
     icon: mdi:sack
@@ -184,6 +192,8 @@ views:
                 name: New bag roaster
               - entity: __NEW_BAG_ROAST_DATE__
                 name: New bag roast date
+              - entity: __NEW_BAG_ROAST_LEVEL__
+                name: New bag roast level
               - entity: __NEW_BAG_STARTING_MASS__
                 name: New bag starting mass
 
@@ -275,6 +285,13 @@ views:
                 name: Learned latency (normal flow ~2g/s)
               - entity: __STOP_LATENCY_ELEVATED__
                 name: Learned latency (fast flow ~4g/s)
+
+          - type: button
+            name: Integration settings (configure)
+            icon: mdi:cog
+            tap_action:
+              action: navigate
+              navigation_path: /config/integrations/integration/barista_assist
 
   - title: Shots
     path: shots

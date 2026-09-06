@@ -145,9 +145,9 @@ def install() -> None:
 
     voluptuous = _new_module("voluptuous")
 
-    class Required:
-        """Stand-in for voluptuous.Required: only ever used as a literal
-        dict key here, never for actual schema validation."""
+    class _MarkerKey:
+        """Stand-in for voluptuous.Required/Optional: only ever used as a
+        literal dict key here, never for actual schema validation."""
 
         def __init__(self, key, **kwargs) -> None:
             self.key = key
@@ -158,7 +158,14 @@ def install() -> None:
         def __eq__(self, other) -> bool:
             return self.key == getattr(other, "key", other)
 
+    class Required(_MarkerKey):
+        pass
+
+    class Optional(_MarkerKey):
+        pass
+
     voluptuous.Required = Required
+    voluptuous.Optional = Optional
 
     bleak_module = _new_module("bleak")
     bleak_exc = _new_module("bleak.exc")

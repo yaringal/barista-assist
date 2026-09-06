@@ -95,17 +95,24 @@ def _get_runtime(hass: HomeAssistant, connection: ActiveConnection, msg_id: int)
     return runtime
 
 
-@websocket_api.websocket_command({vol.Required("type"): "barista_assist/export_shots_text"})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "barista_assist/export_shots_text",
+        vol.Optional("shot_id"): str,
+    }
+)
 @websocket_api.async_response
 async def ws_export_shots_text(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Return all persisted shot data as plain text for diagnosis/pasting."""
+    """Return persisted shot data as plain text for diagnosis/pasting - every
+    shot, or just one when shot_id is given (the shot-history card's per-row
+    export button)."""
     runtime = _get_runtime(hass, connection, msg["id"])
     if runtime is None:
         return
     try:
-        text = await runtime.async_export_shots_text()
+        text = await runtime.async_export_shots_text(msg.get("shot_id"))
     except Exception as err:
         connection.send_error(msg["id"], "export_failed", str(err))
         return

@@ -26,12 +26,14 @@ from .const import (
     CONF_BREW_ENTITY,
     CONF_MACHINE_LIMIT_CONFIRMED,
     CONF_MACHINE_MAX_SHOT_SECONDS,
+    CONF_NOTIFY_SERVICE,
     CONF_SAFETY_MARGIN_SECONDS,
     CONF_SCALE_ADDRESS,
     DOMAIN,
     SIGNAL_UPDATE,
 )
 from .definitions import EntityDefinition, load_definitions
+from .flavor_correction import recommend_flavor_correction
 from .flow_analysis import BaselineFeatures, FlowAnalysisConfig, analyze_shot
 from .grind_correction import recommend_grind_delta
 from .protocol import BookooReading
@@ -57,6 +59,16 @@ _SHOT_PLOT_MAX_POINTS = 300
 # does in the post-shot analysis, rather than reacting to one noisy single
 # reading.
 _STOP_MARGIN_FLOW_WINDOW_MS = 500
+# Prefix + ":"-delimited fields ("barista_flavor:{shot_id}:{axis}:{tag}") for
+# the actionable-notification action ids the flavor-feedback notifications
+# use (see _async_send_flavor_feedback_notifications/
+# _handle_flavor_notification_action) - namespaced so the bus listener never
+# reacts to an unrelated integration's own mobile_app_notification_action.
+_FLAVOR_ACTION_PREFIX = "barista_flavor"
+_FLAVOR_AXES = {
+    "extraction": [("sour_sharp", "Sour / Sharp"), ("bitter_harsh", "Bitter / Harsh")],
+    "mouthfeel": [("thin_weak", "Thin / Weak"), ("dry_astringent", "Dry / Astringent")],
+}
 # BaristaRuntime.stop_latency_normal_s/stop_latency_elevated_s (a rough
 # estimate of the physical latency between the stop decision and the pour
 # actually stopping - BLE press + pump stop + drip settle - multiplied by
@@ -165,6 +177,12 @@ class BagDraft:
     coffee: str = ""
     roaster: str = ""
     roast_date: date | None = None
+    # "medium" default: most bags dialed in with this integration so far
+    # have been medium roasts, and roast_level_ratio_prior's medium ratio
+    # (2.2) is the best-corroborated of the three anyway (see its own
+    # comment in definitions.yaml) - "Not specified" is still a real,
+    # selectable option for a bag that genuinely isn't one.
+    roast_level: str = "medium"
     starting_mass_g: float = 250.0
 
 
@@ -252,6 +270,13 @@ class BaristaRuntime:
         self._last_shot_samples: list[ShotSample] = []
         self._bags: dict[str, Bag] = {}
         self._bag_remaining: dict[str, float | None] = {}
+        # bag_id -> axis -> that bag's most-recent-first answered flavor tags
+        # (see storage.recent_flavor_tags) - cached the same way
+        # _bag_remaining is, since entity_value()/native_value is a sync
+        # property and must never touch the database directly.
+        self._bag_flavor_tags: dict[str, dict[str, list[str]]] = {}
+        self._flavor_notification_tasks: dict[str, asyncio.Task[None]] = {}
+        self._flavor_action_unsub: Any = None
         self._last_dispatch = 0.0
         self._timeout_task: asyncio.Task[None] | None = None
         self._settle_task: asyncio.Task[None] | None = None
@@ -379,11 +404,34 @@ class BaristaRuntime:
         await self._async_save_state()
         await self.async_refresh_cache()
         await self.scale.async_start()
+        self._flavor_action_unsub = self.hass.bus.async_listen(
+            "mobile_app_notification_action", self._handle_flavor_notification_action
+        )
+        _LOGGER.debug(
+            "BaristaRuntime initialized: selected_slot=%s adapt_pi=%s machine_max_shot_s=%.1f "
+            "safety_margin_s=%.1f early_stop_margin=%.2f-%.2fg stop_latency=%.2f/%.2fs "
+            "(normal/elevated) notify_service=%s",
+            self.selected_slot,
+            self.adapt_pi,
+            self.machine_max_shot_s,
+            self.safety_margin_s,
+            self.early_stop_margin_min_g,
+            self.early_stop_margin_max_g,
+            self.stop_latency_normal_s,
+            self.stop_latency_elevated_s,
+            self.entry.options.get(CONF_NOTIFY_SERVICE) or "(disabled)",
+        )
 
     async def async_close(self) -> None:
+        _LOGGER.debug("Closing BaristaRuntime")
         for task in self._background_tasks():
             if task:
                 task.cancel()
+        for task in self._flavor_notification_tasks.values():
+            task.cancel()
+        if self._flavor_action_unsub is not None:
+            self._flavor_action_unsub()
+            self._flavor_action_unsub = None
         await self.scale.async_stop()
 
     def _background_tasks(self) -> tuple[asyncio.Task[None] | None, ...]:
@@ -418,6 +466,18 @@ class BaristaRuntime:
             slot: await self.hass.async_add_executor_job(self.db.bag_remaining_g, bag.id)
             for slot, bag in self._bags.items()
         }
+        self._bag_flavor_tags = {}
+        for bag in self._bags.values():
+            # A nested comprehension here would need `await` inside a
+            # comprehension whose immediate enclosing scope is another
+            # comprehension, not this async function itself - not valid
+            # Python (unlike the single-level ones above) - hence the loop.
+            self._bag_flavor_tags[bag.id] = {
+                axis: await self.hass.async_add_executor_job(
+                    self.db.recent_flavor_tags, bag.id, axis
+                )
+                for axis in _FLAVOR_AXES
+            }
         # _last_shot_samples backs the Live Shot card's frozen plot for the
         # last completed shot (_shot_plot_points) - otherwise only ever set
         # in-memory when a shot finishes during this same runtime session
@@ -471,6 +531,8 @@ class BaristaRuntime:
                 return None
             if field == "remaining_g":
                 return self._bag_remaining.get(self.selected_slot)
+            if field == "recommended_flavor_note":
+                return self._recommended_flavor_note(bag)
             return getattr(bag, str(field))
         raise HomeAssistantError(f"Unsupported entity source: {source}")
 
@@ -490,6 +552,80 @@ class BaristaRuntime:
             return None
         current = self.last_shot["grind"]
         return f"{current:g} → {current + delta:g}"
+
+    def _flavor_field_recommendations(self, bag: Bag) -> dict[str, tuple[float, float, str]]:
+        """recipe field -> (current, recommended, tag) for every field
+        flavor_correction currently recommends changing on this bag - the
+        shared computation behind both _recommended_flavor_note (the
+        combined dashboard summary) and _recipe_field_short_note (the
+        per-tile recommendation badges), so the two can never drift apart.
+
+        Two axes can recommend the same field at once (bitter_harsh and
+        dry_astringent both use the yield lever, for instance) - the axis
+        iteration order (_FLAVOR_AXES: extraction, then mouthfeel) decides
+        which one wins for that field; the other is silently dropped rather
+        than combined. Not yet resolved more precisely than that - a rare
+        enough edge case to leave for once it's actually seen in practice."""
+        config = self.definitions.expert_rules["flavor_correction"]
+        result: dict[str, tuple[float, float, str]] = {}
+        for tags_by_axis in self._bag_flavor_tags.get(bag.id, {}).values():
+            recent = tags_by_axis
+            tag = recent[0] if recent else None
+            recommendation = recommend_flavor_correction(tag, recent, config)
+            if recommendation is None:
+                continue
+            field = recommendation["field"]
+            if field in result:
+                continue
+            current = getattr(bag, field)
+            signed_delta = (
+                recommendation["delta"]
+                if recommendation["direction"] == "increase"
+                else -recommendation["delta"]
+            )
+            result[field] = (current, current + signed_delta, tag)
+        return result
+
+    def _recommended_flavor_note(self, bag: Bag) -> str | None:
+        """"Current -> recommended" text per flavor-correction axis (docs/
+        DESIGN.md section 13), e.g. "target_yield_g: 36.0 -> 41.0 (persistent
+        sour_sharp)", joined with "; " when more than one field currently has
+        a recommendation. None when nothing has reached a persistent pattern
+        yet (see flavor_correction.recommend_flavor_correction) - that's a
+        real "no recommendation" state, not a fault."""
+        notes = [
+            f"{field}: {current:g} → {recommended:g} (persistent {tag})"
+            for field, (current, recommended, tag) in self._flavor_field_recommendations(bag).items()
+        ]
+        return "; ".join(notes) if notes else None
+
+    def _recipe_field_short_note(self, bag: Bag, field: str) -> str | None:
+        """Compact "current -> recommended" text (e.g. "18.0 -> 18.5") for
+        one recipe field, without the "(persistent tag)" annotation
+        _recommended_flavor_note includes - sized for a "recommended"
+        secondary attribute on the same recipe field's own tile (see
+        _recommended_note_for/entity_attributes) rather than a separate
+        tile or the combined dashboard summary."""
+        recommendation = self._flavor_field_recommendations(bag).get(field)
+        if recommendation is None:
+            return None
+        current, recommended, _tag = recommendation
+        return f"{current:g} → {recommended:g}"
+
+    def _recommended_note_for(self, definition: EntityDefinition, bag: Bag | None) -> str | None:
+        """The "recommended" attribute's value for one recipe-field entity
+        (dose/grind/target_yield/temperature_offset) - a decoration on that
+        field's own tile (via dashboard.yaml's state_content), not a
+        separate card. Dispatches by definition.field to whichever
+        recommendation source actually covers it: grind's comes from the
+        last completed shot (_recommended_grind_note, Phase 4); the others
+        come from flavor_correction's persistent-pattern tags on the
+        selected bag (_recipe_field_short_note, Phase 5)."""
+        if definition.field == "grind":
+            return self._recommended_grind_note()
+        if bag is None:
+            return None
+        return self._recipe_field_short_note(bag, str(definition.field))
 
     def entity_attributes(self, definition: EntityDefinition) -> dict[str, Any]:
         if not definition.attributes:
@@ -511,6 +647,8 @@ class BaristaRuntime:
                 value = bag.id if bag else None
             elif attribute == "remaining_g":
                 value = self._bag_remaining.get(self.selected_slot) if bag else None
+            elif attribute == "recommended":
+                value = self._recommended_note_for(definition, bag)
             elif bag and hasattr(bag, attribute):
                 value = getattr(bag, attribute)
             else:
@@ -549,6 +687,7 @@ class BaristaRuntime:
         self, definition: EntityDefinition, value: Any
     ) -> None:
         source, field = definition.source, str(definition.field)
+        _LOGGER.debug("Setting entity value: source=%s field=%s value=%r", source, field, value)
         if source == "bag":
             await self.async_update_recipe_field(field, value)
             return
@@ -589,6 +728,8 @@ class BaristaRuntime:
         if source == "draft":
             if field in {"coffee", "roaster"}:
                 setattr(self.draft, field, str(value).strip())
+            elif field == "roast_level":
+                self.draft.roast_level = str(value).strip()
             elif field == "roast_date":
                 setattr(self.draft, field, value)
             elif field == "starting_mass_g":
@@ -621,6 +762,7 @@ class BaristaRuntime:
         if slot not in self.definitions.slots:
             raise HomeAssistantError(f"Unknown bean slot: {slot}")
         self.selected_slot = slot
+        _LOGGER.debug("Selected bean slot: %s", slot)
         await self._async_save_state()
         self._notify(force=True)
 
@@ -644,10 +786,6 @@ class BaristaRuntime:
             raise HomeAssistantError(
                 f"{field} must be between {definition.minimum} and {definition.maximum}"
             )
-        assert definition.step is not None
-        steps = (numeric - definition.minimum) / definition.step
-        if abs(steps - round(steps)) > 1e-7:
-            raise HomeAssistantError(f"{field} must use {definition.step:g}-unit steps")
         return numeric
 
     async def async_update_recipe_field(self, field: str, value: float | int) -> None:
@@ -655,10 +793,18 @@ class BaristaRuntime:
         if bag is None:
             raise HomeAssistantError("No active bag in the selected slot")
         value = self._validate_recipe_field(field, value)
+        _LOGGER.debug("Updating bag %s recipe field %s: %s -> %s", bag.id, field, getattr(bag, field), value)
         await self.hass.async_add_executor_job(
             self.db.update_recipe_field, bag.id, field, value
         )
         await self.async_refresh_cache()
+
+    def _roast_level_seeded_target_yield_g(self, dose_g: float, roast_level: Any) -> float | None:
+        """expert_rules.roast_level_ratio_prior's dose_g*ratio fallback.
+        None when roast_level isn't a known key (not specified, or a value
+        this prior doesn't cover)."""
+        ratio = self.definitions.expert_rules["roast_level_ratio_prior"].get(roast_level)
+        return dose_g * ratio if ratio is not None else None
 
     async def async_new_bag(self, data: dict[str, Any]) -> Bag:
         slot = str(data["slot"])
@@ -674,16 +820,19 @@ class BaristaRuntime:
                 return getattr(current, field)
             return defaults[field]
 
-        recipe = {
-            field: self._validate_recipe_field(field, recipe_value(field))
-            for field in (
-                "dose_g",
-                "grind",
-                "target_yield_g",
-                "temperature_offset_c",
-                "preinfusion_s",
-            )
-        }
+        recipe: dict[str, Any] = {}
+        for field in ("dose_g", "grind", "target_yield_g", "temperature_offset_c", "preinfusion_s"):
+            seeded = None
+            if field == "target_yield_g" and field not in data and current is None:
+                # A genuinely new bag in an empty slot, nothing to inherit a
+                # recipe from - see roast_level_ratio_prior's own comment in
+                # definitions.yaml for why this is the only case it applies.
+                seeded = self._roast_level_seeded_target_yield_g(
+                    recipe["dose_g"], data.get("roast_level")
+                )
+            value = seeded if seeded is not None else recipe_value(field)
+            recipe[field] = self._validate_recipe_field(field, value)
+
         bag = await self.hass.async_add_executor_job(
             lambda: self.db.new_bag(
                 slot=slot,
@@ -701,7 +850,17 @@ class BaristaRuntime:
                 target_yield_g=float(recipe["target_yield_g"]),
                 temperature_offset_c=int(recipe["temperature_offset_c"]),
                 preinfusion_s=float(recipe["preinfusion_s"]),
+                roast_level=data.get("roast_level") or None,
             )
+        )
+        _LOGGER.info(
+            "Bag created: slot=%s coffee=%s dose=%sg grind=%s target_yield=%sg roast_level=%s",
+            slot,
+            bag.coffee_name,
+            bag.dose_g,
+            bag.grind,
+            bag.target_yield_g,
+            bag.roast_level,
         )
         await self.async_select_slot(slot)
         await self.async_refresh_cache()
@@ -718,9 +877,11 @@ class BaristaRuntime:
                 "roast_date": self.draft.roast_date.isoformat()
                 if self.draft.roast_date
                 else None,
+                "roast_level": self.draft.roast_level,
                 "starting_mass_g": self.draft.starting_mass_g,
             }
         )
+        self.draft.roast_level = "medium"
         self.draft.coffee = ""
         self.draft.roaster = ""
         self.draft.roast_date = date.today()
@@ -1388,14 +1549,146 @@ class BaristaRuntime:
         self.active_shot = None
         self._set_phase(ShotPhase.IDLE if status == "complete" else ShotPhase(status))
         await self.async_refresh_cache()
+        if status == "complete":
+            self._schedule_flavor_feedback_notifications(shot.id)
+
+    def _schedule_flavor_feedback_notifications(self, shot_id: str) -> None:
+        """Schedule the taste-feedback push notifications for a just-
+        completed shot, flavor_feedback_delay_s from now (definitions.yaml's
+        defaults.controller) - skipped entirely if no notify target is
+        configured. A no-op background task either way is fine to fire off
+        and forget; _async_send_flavor_feedback_notifications is kept
+        separately callable so tests can invoke it directly instead of
+        waiting out a real multi-minute sleep."""
+        if not self.entry.options.get(CONF_NOTIFY_SERVICE):
+            return
+
+        async def _after_delay() -> None:
+            try:
+                delay_s = self.definitions.defaults["controller"]["flavor_feedback_delay_s"]
+                await asyncio.sleep(delay_s)
+                await self._async_send_flavor_feedback_notifications(shot_id)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                # A background task's own exception isn't guaranteed to
+                # surface anywhere a user would see it at release time - log
+                # it here, with the one piece of context (which shot) that
+                # matters for diagnosing it, rather than relying on asyncio's
+                # generic "exception was never retrieved" logging.
+                _LOGGER.exception(
+                    "Failed to send flavor-feedback notifications for shot %s", shot_id
+                )
+            finally:
+                self._flavor_notification_tasks.pop(shot_id, None)
+
+        self._flavor_notification_tasks[shot_id] = self.hass.async_create_background_task(
+            _after_delay(), f"barista_assist_flavor_feedback_{shot_id}"
+        )
+
+    async def _async_send_flavor_feedback_notifications(self, shot_id: str) -> None:
+        """Send the two independent per-axis taste-feedback notifications
+        (see _FLAVOR_AXES) - each a plain 3-button actionable notification
+        (2 tags + Balanced), answerable with a single tap with no app-
+        opening required. Each button's action id
+        ("barista_flavor:{shot_id}:{axis}:{tag}") carries everything
+        _handle_flavor_notification_action needs to record the answer."""
+        service = self.entry.options.get(CONF_NOTIFY_SERVICE)
+        if not service:
+            return
+        _LOGGER.debug(
+            "Sending flavor-feedback notifications for shot %s via notify.%s", shot_id, service
+        )
+        for axis, tags in _FLAVOR_AXES.items():
+            actions = [
+                {"action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:{tag}", "title": title}
+                for tag, title in tags
+            ]
+            actions.append(
+                {
+                    "action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:balanced",
+                    "title": "Balanced",
+                }
+            )
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    service,
+                    {
+                        "message": f"How was the {axis} on that last shot?",
+                        "data": {"actions": actions},
+                    },
+                )
+            except Exception:
+                # The two axes are independent notifications - one axis's
+                # notify call failing (e.g. the device is offline) shouldn't
+                # also silently swallow the other axis's, so each is caught
+                # and logged separately rather than letting the first
+                # failure abort the whole loop.
+                _LOGGER.warning(
+                    "Failed to send the %s flavor-feedback notification for shot %s via "
+                    "notify.%s",
+                    axis,
+                    shot_id,
+                    service,
+                    exc_info=True,
+                )
+
+    async def _handle_flavor_notification_action(self, event: Any) -> None:
+        """Fires once per tapped button, for exactly one axis of one shot -
+        the extraction and mouthfeel notifications are answered (or not)
+        completely independently, so this only ever records the one axis
+        the event is actually about. Tapping neither notification for a
+        shot means no event ever fires and no tag is ever recorded for it
+        on either axis; tapping only one means only that axis's column gets
+        written for this shot, and the other stays unanswered - see
+        storage.record_flavor_tag/recent_flavor_tags for how an unanswered
+        axis is then treated (skipped, not defaulted to "balanced" or
+        anything else) when a future recommendation is computed."""
+        action = str(event.data.get("action", ""))
+        prefix = f"{_FLAVOR_ACTION_PREFIX}:"
+        if not action.startswith(prefix):
+            return  # not one of ours - some other integration's notification
+        try:
+            shot_id, axis, tag = action[len(prefix):].split(":")
+        except ValueError:
+            _LOGGER.warning("Malformed flavor-feedback action id: %s", action)
+            return
+        try:
+            recorded = await self.hass.async_add_executor_job(
+                self.db.record_flavor_tag, shot_id, axis, tag
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Failed to record flavor tag %s (axis=%s) for shot %s", tag, axis, shot_id
+            )
+            return
+        if not recorded:
+            # The shot this notification was about no longer exists (e.g.
+            # deleted from shot history before the notification was
+            # answered) - the UPDATE silently affected zero rows rather than
+            # raising, so this is the only place that would ever surface it.
+            _LOGGER.warning(
+                "Flavor-feedback action for unknown shot %s (axis=%s, tag=%s) - shot may "
+                "have been deleted",
+                shot_id,
+                axis,
+                tag,
+            )
+            return
+        _LOGGER.debug("Recorded flavor tag %s (axis=%s) for shot %s", tag, axis, shot_id)
+        await self.async_refresh_cache()
 
     async def async_tare(self) -> None:
+        _LOGGER.debug("Tare requested")
         await self.scale.async_ensure_connected()
         await self.scale.async_tare()
 
-    async def async_export_shots_text(self) -> str:
-        """Return every stored shot and raw time series as paste-friendly text."""
-        return await self.hass.async_add_executor_job(self.db.export_shots_text)
+    async def async_export_shots_text(self, shot_id: str | None = None) -> str:
+        """Return every stored shot and raw time series as paste-friendly
+        text, or just one shot's when shot_id is given."""
+        _LOGGER.debug("Exporting shot text (shot_id=%s)", shot_id or "all")
+        return await self.hass.async_add_executor_job(self.db.export_shots_text, shot_id)
 
     async def async_list_shots(self) -> list[dict[str, Any]]:
         """Every stored shot, most recent first, for the shot-history view."""
@@ -1412,6 +1705,7 @@ class BaristaRuntime:
         if self.active_shot is not None and self.active_shot.id == shot_id:
             raise HomeAssistantError("Cannot delete the shot that is currently brewing")
         deleted = await self.hass.async_add_executor_job(self.db.delete_shot, shot_id)
+        _LOGGER.debug("Delete shot %s: %s", shot_id, "deleted" if deleted else "not found")
         if deleted:
             await self.async_refresh_cache()
         return deleted

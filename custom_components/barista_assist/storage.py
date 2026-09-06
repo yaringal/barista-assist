@@ -11,7 +11,7 @@ import statistics
 from typing import Any, Iterable
 from uuid import uuid4
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 8
 BAG_RECIPE_FIELDS = frozenset(
     {"dose_g", "grind", "target_yield_g", "temperature_offset_c", "preinfusion_s"}
 )
@@ -33,6 +33,7 @@ class Bag:
     target_yield_g: float
     temperature_offset_c: int
     preinfusion_s: float
+    roast_level: str | None
     active: bool = True
 
 
@@ -119,6 +120,7 @@ class BaristaDatabase:
         target_yield_g: float,
         temperature_offset_c: int,
         preinfusion_s: float,
+        roast_level: str | None,
     ) -> Bag:
         bag = Bag(
             id=uuid4().hex,
@@ -133,6 +135,7 @@ class BaristaDatabase:
             target_yield_g=float(target_yield_g),
             temperature_offset_c=int(temperature_offset_c),
             preinfusion_s=float(preinfusion_s),
+            roast_level=roast_level or None,
         )
         with self._connect() as db:
             db.execute("UPDATE bags SET active=0 WHERE slot=? AND active=1", (slot,))
@@ -141,8 +144,8 @@ class BaristaDatabase:
                 INSERT INTO bags(
                     id, slot, coffee_name, roaster, roast_date, opened_at,
                     starting_mass_g, dose_g, grind, target_yield_g,
-                    temperature_offset_c, preinfusion_s, active
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)
+                    temperature_offset_c, preinfusion_s, roast_level, active
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)
                 """,
                 (
                     bag.id,
@@ -157,6 +160,7 @@ class BaristaDatabase:
                     bag.target_yield_g,
                     bag.temperature_offset_c,
                     bag.preinfusion_s,
+                    bag.roast_level,
                 ),
             )
         return bag
@@ -352,27 +356,33 @@ class BaristaDatabase:
             cursor = db.execute("DELETE FROM shots WHERE id=?", (shot_id,))
         return cursor.rowcount > 0
 
-    def export_shots_text(self) -> str:
-        """Export every stored shot and raw scale sample as paste-friendly text."""
+    def export_shots_text(self, shot_id: str | None = None) -> str:
+        """Export a paste-friendly text block for every stored shot and its
+        raw scale samples, or - when shot_id is given - just that one shot
+        (the shot-history card's per-row export button)."""
         with self._connect() as db:
             shots = db.execute(
                 """
                 SELECT
                     s.*,
-                    b.coffee_name, b.slot, b.roaster, b.roast_date,
+                    b.coffee_name, b.slot, b.roaster, b.roast_date, b.roast_level,
                     b.opened_at, b.starting_mass_g
                 FROM shots s
                 JOIN bags b ON b.id=s.bag_id
+                WHERE (? IS NULL OR s.id = ?)
                 ORDER BY s.started_at ASC
-                """
+                """,
+                (shot_id, shot_id),
             ).fetchall()
 
             sample_rows = db.execute(
                 """
                 SELECT shot_id, seq, elapsed_ms, scale_ms, weight_g, flow_g_s, battery_percent
                 FROM samples
+                WHERE (? IS NULL OR shot_id = ?)
                 ORDER BY shot_id ASC, seq ASC
-                """
+                """,
+                (shot_id, shot_id),
             ).fetchall()
 
         samples_by_shot: dict[str, list[sqlite3.Row]] = {}
@@ -403,6 +413,7 @@ class BaristaDatabase:
                 f"coffee_name={clean(shot['coffee_name'])}",
                 f"roaster={clean(shot['roaster'])}",
                 f"roast_date={clean(shot['roast_date'])}",
+                f"roast_level={clean(shot['roast_level'])}",
                 f"bag_opened_at={clean(shot['opened_at'])}",
                 f"started_at={clean(shot['started_at'])}",
                 f"ended_at={clean(shot['ended_at'])}",
@@ -410,6 +421,8 @@ class BaristaDatabase:
                 f"classification={clean(shot['classification'])}",
                 f"channeling_suspicion={shot['channeling_suspicion'] if shot['channeling_suspicion'] is not None else ''}",
                 f"recommended_grind_delta={shot['recommended_grind_delta'] if shot['recommended_grind_delta'] is not None else ''}",
+                f"flavor_extraction_tag={clean(shot['flavor_extraction_tag'])}",
+                f"flavor_mouthfeel_tag={clean(shot['flavor_mouthfeel_tag'])}",
                 f"analysis_json={clean(shot['analysis_json'])}",
                 f"dose_g={shot['dose_g']}",
                 f"grind={shot['grind']}",
@@ -482,3 +495,47 @@ class BaristaDatabase:
             "median_late_accel": statistics.median(late_accels),
             "median_flow_g_s": statistics.median(flow_rates),
         }
+
+    _FLAVOR_AXIS_COLUMNS = {
+        "extraction": "flavor_extraction_tag",
+        "mouthfeel": "flavor_mouthfeel_tag",
+    }
+
+    def record_flavor_tag(self, shot_id: str, axis: str, tag: str) -> bool:
+        """Record one axis of taste feedback for a shot (see
+        expert_rules.flavor_correction in definitions.yaml). axis is
+        "extraction" (sour_sharp/bitter_harsh/balanced) or "mouthfeel"
+        (thin_weak/dry_astringent/balanced) - the two are independent, so
+        answering one never requires or blocks answering the other.
+        Returns whether a matching shot was actually found and updated -
+        mirrors delete_shot's own return convention - so a stale
+        notification action (its shot since deleted) can be logged instead
+        of silently doing nothing."""
+        column = self._FLAVOR_AXIS_COLUMNS[axis]
+        with self._connect() as db:
+            cursor = db.execute(f"UPDATE shots SET {column}=? WHERE id=?", (tag, shot_id))
+        return cursor.rowcount > 0
+
+    def recent_flavor_tags(self, bag_id: str, axis: str, limit: int = 5) -> list[str]:
+        """Most-recent-first answered tags for one axis of a bag's shot
+        history. Shots never answered on this axis are skipped entirely
+        (not counted as a pattern-break) rather than treated as "balanced" -
+        an unanswered notification says nothing about how the shot tasted.
+
+        Concretely: a shot nobody responded to at all is invisible to both
+        axes here, same as if it never happened. A shot answered on only
+        one axis (e.g. extraction tapped, mouthfeel notification ignored)
+        is included for that axis exactly like a fully-answered shot, and
+        skipped for the other - answering one axis never blocks, delays, or
+        counts against the other axis's own persistent-pattern check."""
+        column = self._FLAVOR_AXIS_COLUMNS[axis]
+        with self._connect() as db:
+            rows = db.execute(
+                f"""
+                SELECT {column} AS tag FROM shots
+                WHERE bag_id=? AND {column} IS NOT NULL
+                ORDER BY started_at DESC LIMIT ?
+                """,
+                (bag_id, int(limit)),
+            ).fetchall()
+        return [row["tag"] for row in rows]

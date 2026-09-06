@@ -10,7 +10,8 @@
           "brew_entity": "Brew SwitchBot",
           "machine_max_shot_seconds": "Barista Express programmed maximum shot duration (seconds)",
           "safety_margin_seconds": "Stop safety margin (seconds)",
-          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express"
+          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express",
+          "notify_service": "Taste-feedback notification target"
         }
       },
       "bluetooth_confirm": {
@@ -32,7 +33,8 @@
       "cannot_connect": "The selected scale is not reachable through a connectable Bluetooth adapter.",
       "entity_not_found": "The selected SwitchBot entity is unavailable.",
       "machine_limit_must_be_confirmed": "Confirm the Barista Express programmed maximum shot duration before using automatic brew control.",
-      "brew_address_not_found": "The selected SwitchBot device has no Bluetooth address available in Home Assistant."
+      "brew_address_not_found": "The selected SwitchBot device has no Bluetooth address available in Home Assistant.",
+      "notify_service_not_found": "The selected notify service is not currently registered."
     }
   },
   "options": {
@@ -41,7 +43,8 @@
         "title": "Barista Assist settings",
         "data": {
           "brew_entity": "Brew SwitchBot",
-          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express"
+          "machine_limit_confirmed": "I have programmed and confirmed this maximum on the Barista Express",
+          "notify_service": "Taste-feedback notification target"
         },
         "description": "Confirm the physical shot limit programmed into the Barista Express. Determine this by testing with a real coffee puck (not just water, which flows much faster and can trip the machine's own cutoff far sooner) and holding the button through a full bench-test shot to see how long it takes before the machine stops itself. The maximum shot duration and stop safety margin themselves are edited from the Barista Assist dashboard's \"Connection and control\" card, not here. Barista Assist will stop before that limit and will never press the brew button after the protected window because that could start a new shot - but always supervise the shot yourself, since Barista Assist can't guarantee the machine's own cutoff will land in time."
       }
@@ -49,7 +52,8 @@
     "error": {
       "entity_not_found": "The selected SwitchBot entity is unavailable.",
       "brew_address_not_found": "The selected SwitchBot device has no Bluetooth address available in Home Assistant.",
-      "machine_limit_must_be_confirmed": "Confirm the Barista Express programmed maximum shot duration before using automatic brew control."
+      "machine_limit_must_be_confirmed": "Confirm the Barista Express programmed maximum shot duration before using automatic brew control.",
+      "notify_service_not_found": "The selected notify service is not currently registered."
     }
   },
   "entity": {
@@ -99,6 +103,9 @@
       },
       "recommended_grind": {
         "name": "Recommended grind"
+      },
+      "recommended_flavor": {
+        "name": "Recommended flavor correction"
       },
       "flow_rate": {
         "name": "Flow rate"
@@ -151,6 +158,9 @@
       },
       "temperature_offset": {
         "name": "Brew temperature offset"
+      },
+      "new_bag_roast_level": {
+        "name": "New bag roast level"
       }
     },
     "switch": {

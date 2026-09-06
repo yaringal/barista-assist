@@ -75,6 +75,34 @@ class DefinitionTests(unittest.TestCase):
         self.assertEqual(maximums, sorted(maximums))
         self.assertIsNone(grind_correction["bands"][-1]["duration_ratio_max"])
 
+    def test_flavor_feedback_delay_is_loaded(self):
+        self.assertEqual(self.defs.defaults["controller"]["flavor_feedback_delay_s"], 300)
+
+    def test_flavor_correction_tags_match_flavor_correction_py_s_lever_map(self):
+        """Every non-balanced tag's lever must be one flavor_correction.py's
+        _LEVER_TO_FIELD map actually knows how to translate to a recipe
+        field - a typo'd/renamed lever here would otherwise only surface as
+        a KeyError deep inside recommend_flavor_correction at runtime."""
+        flavor_correction = ha_stubs.import_barista_module("flavor_correction")
+        levers = set(flavor_correction._LEVER_TO_FIELD)
+        tags = self.defs.expert_rules["flavor_correction"]["tags"]
+        for tag, config in tags.items():
+            if tag == "balanced":
+                continue
+            self.assertIn(config["lever"], levers, f"tag {tag!r} has an unmapped lever")
+
+    def test_roast_level_ratio_prior_covers_every_roast_level_select_option(self):
+        """new_bag_roast_level's options (besides "not specified") are the
+        exact set roast_level_ratio_prior must have a fallback ratio for -
+        runtime.py's async_new_bag only ever looks up whatever the user
+        picked in that dropdown."""
+        roast_levels = {
+            value
+            for _label, value in self.defs.entity("select", "new_bag_roast_level").options
+            if value
+        }
+        self.assertEqual(roast_levels, set(self.defs.expert_rules["roast_level_ratio_prior"]))
+
     def test_dashboard_tokens_are_unique(self):
         tokens = self.defs.dashboard_tokens
         self.assertEqual(len(tokens), sum(1 for p in self.defs.entities.values() for e in p if e.token))

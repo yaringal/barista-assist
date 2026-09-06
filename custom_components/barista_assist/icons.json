@@ -24,7 +24,8 @@
     },
     "select": {
       "bean_slot": {"default": "mdi:sack"},
-      "temperature_offset": {"default": "mdi:thermometer"}
+      "temperature_offset": {"default": "mdi:thermometer"},
+      "new_bag_roast_level": {"default": "mdi:circle-half-full"}
     },
     "switch": {
       "adapt_pi": {"default": "mdi:gesture-tap"}

@@ -887,10 +887,18 @@ medium roast normal -> prior from similar normal coffees
 ### No similar coffee — fall back to a roast-level ratio prior
 
 If there's no matching or similar coffee to warm-start from at all, the
-coffee's own `roast_level` (already part of the §16 Coffee model, currently
-unused for this) can still seed a starting ratio — Lance Hedrick's stated
-guideline, but checked against and adjusted toward James Hoffmann's own
-actual dial-in results, not taken as-is:
+bag's own `roast_level` (a flat, optional `bags.roast_level` column — a
+single dropdown on the new-bag form, not the separate Coffee entity §16
+sketches; nothing else in this codebase implements that three-level
+Coffee/Bag/Shot split either, it's all flat bag fields, same as
+coffee_name/roaster/roast_date) can still seed a starting ratio — Lance
+Hedrick's stated guideline, but checked against and adjusted toward James
+Hoffmann's own actual dial-in results, not taken as-is. This *is* now
+implemented: `runtime.py`'s `async_new_bag` applies it only when a brand-new
+bag is opened in a slot with no existing bag to inherit `target_yield_g`
+from (there's still no "similar coffee" warm-start match implemented to
+prefer over it — the paragraphs above this one remain unimplemented design,
+not built code):
 
 ```text
 dark   -> around 1:2
@@ -1504,12 +1512,22 @@ enough classified shots exist to calibrate them for real.
 
 ### Phase 5 — Flavour correction
 
-Add user sensory tags and rules for:
-
-- yield;
-- temperature;
-- small dose adjustment;
-- PI refinement.
+Implemented via two independent taste-feedback push notifications sent
+`flavor_feedback_delay_s` (definitions.yaml) after a shot finishes -
+extraction axis (sour/sharp, bitter/harsh, balanced) and mouthfeel axis
+(thin/weak, dry/astringent, balanced), each answerable with a single tap and
+no app-opening required (a plain actionable notification, 3 buttons). The
+two axes are independent because the underlying symptoms are not mutually
+exclusive - a shot can be sour and astringent at once - so collapsing them
+into one notification with one winning tag would lose real signal.
+`flavor_correction.py`'s `recommend_flavor_correction` gates every
+recommendation on `require_persistent_pattern_shots` answered shots in a row
+reporting the same tag (a single report is noise, not evidence - see Stage
+3's own reasoning above), and only recommends the tag's *base* lever/delta:
+`escalation` (stepping up to a second lever, e.g. yield → temperature, once
+the first correction is tried and the tag still persists) is not yet
+implemented - see the `TODO` on `expert_rules.flavor_correction` in
+definitions.yaml and `flavor_correction.py`'s own module docstring for why.
 
 Success criterion:
 

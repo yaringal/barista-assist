@@ -19,6 +19,7 @@ from .const import (
     CONF_BREW_ENTITY,
     CONF_MACHINE_LIMIT_CONFIRMED,
     CONF_MACHINE_MAX_SHOT_SECONDS,
+    CONF_NOTIFY_SERVICE,
     CONF_SAFETY_MARGIN_SECONDS,
     CONF_SCALE_ADDRESS,
     DOMAIN,
@@ -55,8 +56,27 @@ def _confirmation_selector() -> selector.BooleanSelector:
     return selector.BooleanSelector()
 
 
+def _notify_service_selector(hass: HomeAssistant) -> selector.SelectSelector:
+    """Every currently-registered notify.* service (e.g. mobile_app_pixel for
+    notify.mobile_app_pixel) - scoped to what's live on this system, the same
+    way _brew_selector() scopes to live discovered entities. Includes an
+    explicit "disabled" option (empty string) since the feature is opt-in."""
+    options = [
+        selector.SelectOptionDict(value="", label="Disabled - no taste-feedback notifications")
+    ] + [
+        selector.SelectOptionDict(value=name, label=name)
+        for name in sorted(hass.services.async_services().get("notify", {}))
+    ]
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(options=options, mode=selector.SelectSelectorMode.DROPDOWN)
+    )
+
+
 def _settings_schema(
-    defaults: dict[str, Any] | None = None, *, include_machine_settings: bool = True
+    hass: HomeAssistant,
+    defaults: dict[str, Any] | None = None,
+    *,
+    include_machine_settings: bool = True,
 ) -> vol.Schema:
     """Shared by every flow that edits brew_entity/machine_limit_confirmed.
 
@@ -92,6 +112,10 @@ def _settings_schema(
     schema[vol.Required(CONF_MACHINE_LIMIT_CONFIRMED, default=confirmation)] = (
         _confirmation_selector()
     )
+    notify_default = defaults.get(CONF_NOTIFY_SERVICE, "")
+    schema[vol.Optional(CONF_NOTIFY_SERVICE, default=notify_default)] = (
+        _notify_service_selector(hass)
+    )
     return vol.Schema(schema)
 
 
@@ -124,6 +148,16 @@ def _validate_brew_entity(
         errors[CONF_BREW_ENTITY] = "entity_not_found"
     elif resolve_bluetooth_address(hass, user_input[CONF_BREW_ENTITY]) is None:
         errors[CONF_BREW_ENTITY] = "brew_address_not_found"
+
+
+def _validate_notify_service(
+    hass: HomeAssistant, user_input: dict[str, Any], errors: dict[str, str]
+) -> None:
+    """Empty (feature disabled) is always valid; a non-empty value must be a
+    currently-registered notify.* service."""
+    service = user_input.get(CONF_NOTIFY_SERVICE)
+    if service and not hass.services.has_service("notify", service):
+        errors[CONF_NOTIFY_SERVICE] = "notify_service_not_found"
 
 
 class BaristaAssistConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -173,6 +207,7 @@ class BaristaAssistConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             _validate_machine_settings(user_input, errors)
             _validate_brew_entity(self.hass, user_input, errors)
+            _validate_notify_service(self.hass, user_input, errors)
             if not errors:
                 return self.async_create_entry(
                     title=f"Barista Assist — {self._discovery.name}",
@@ -181,7 +216,7 @@ class BaristaAssistConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
         return self.async_show_form(
             step_id="bluetooth_confirm",
-            data_schema=_settings_schema(user_input),
+            data_schema=_settings_schema(self.hass, user_input),
             errors=errors,
             description_placeholders={"name": self._discovery.name},
         )
@@ -210,6 +245,7 @@ class BaristaAssistConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors and device is None:
                 errors[CONF_SCALE_ADDRESS] = "cannot_connect"
             _validate_brew_entity(self.hass, user_input, errors)
+            _validate_notify_service(self.hass, user_input, errors)
             if not errors:
                 settings = dict(user_input)
                 settings.pop(CONF_SCALE_ADDRESS, None)
@@ -222,7 +258,7 @@ class BaristaAssistConfigFlow(ConfigFlow, domain=DOMAIN):
         devices = {
             address: f"{info.name} ({address})" for address, info in self._devices.items()
         }
-        schema = _settings_schema(user_input).extend(
+        schema = _settings_schema(self.hass, user_input).extend(
             {vol.Required(CONF_SCALE_ADDRESS): vol.In(devices)}
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
@@ -243,11 +279,12 @@ class BaristaAssistOptionsFlow(OptionsFlow):
         if user_input is not None:
             _validate_machine_settings(user_input, errors)
             _validate_brew_entity(self.hass, user_input, errors)
+            _validate_notify_service(self.hass, user_input, errors)
             if not errors:
                 return self.async_create_entry(title="", data=user_input)
         current = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(
             step_id="init",
-            data_schema=_settings_schema(current, include_machine_settings=False),
+            data_schema=_settings_schema(self.hass, current, include_machine_settings=False),
             errors=errors,
         )
