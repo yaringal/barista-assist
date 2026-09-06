@@ -138,7 +138,7 @@ class BaselineFeatures:
     median_flow_g_s feeds a symmetric Bayesian blend of the expected flow
     rate (see module docstring); median_late_accel feeds the asymmetric,
     escalation-only mechanical-suspicion check. They are updated differently
-    on purpose - see _blended_expected_flow_g_s vs _baseline_deviation_suspicion.
+    on purpose - see blended_expected_flow_g_s vs _baseline_deviation_suspicion.
     """
 
     shot_count: int
@@ -156,7 +156,7 @@ class ShotAnalysis:
     invalid_reason: str | None
     # actual shot duration / expected duration for this bag (expected_s =
     # target_yield_g / expected_flow_g_s, itself Bayesian-shrunk toward this
-    # bag's own history - see _blended_expected_flow_g_s). Below 1.0 = ran
+    # bag's own history - see blended_expected_flow_g_s). Below 1.0 = ran
     # fast, above 1.0 = ran slow/restrictive. None when a shot couldn't be
     # classified at all (t90 never reached and no samples to fall back on,
     # or too few samples). This is what expert_rules.grind_correction's
@@ -377,8 +377,14 @@ def _mean_second_derivative(times_s: list[float], values: list[float]) -> float:
 # --- Expected-flow-rate blending and channeling-suspicion scoring ----------
 
 
-def _blended_expected_flow_g_s(baseline: BaselineFeatures | None, config: FlowAnalysisConfig) -> float:
+def blended_expected_flow_g_s(baseline: BaselineFeatures | None, config: FlowAnalysisConfig) -> float:
     """Bayesian shrinkage toward this bag's own observed flow rate.
+
+    Public (not analyze_shot-only) because runtime.py's async_brew also
+    calls this directly, once per shot at brew time, to seed
+    ActiveShot.expected_flow_g_s - the idealized-curve overlay the Live
+    Shot/Shot History charts draw needs this rate available immediately,
+    not only after the shot finishes and analyze_shot runs.
 
     A bag's characteristic pace is a reference point, not a safety boundary -
     unlike mechanical suspicion below, there's nothing to protect against
@@ -422,7 +428,7 @@ def _baseline_deviation_suspicion(late_accel: float, baseline: BaselineFeatures)
 
     TODO(revisit once real, verified shot data exists): this doesn't grow
     more bag-dependent as shot_count increases past config.min_baseline_shots,
-    unlike _blended_expected_flow_g_s. That's deliberate for now, not an
+    unlike blended_expected_flow_g_s. That's deliberate for now, not an
     oversight: median_late_accel is built only from shots THIS classifier
     already called "healthy" - self-labeled, not independently verified. If
     the fixed prior below is even slightly lenient, mildly-bad shots leak
@@ -581,7 +587,7 @@ def analyze_shot(
     late_accel = _linear_slope(late_times, late_values)
 
     duration_s = (t90_ms if t90_ms is not None else times_ms[-1]) / 1000.0
-    expected_s = target_yield_g / _blended_expected_flow_g_s(baseline, config)
+    expected_s = target_yield_g / blended_expected_flow_g_s(baseline, config)
     duration_ratio = duration_s / expected_s if expected_s > 0 else None
 
     absolute_score = _absolute_mechanical_suspicion(mid_accel, late_accel, config)

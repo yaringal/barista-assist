@@ -57,6 +57,32 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(updated.target_yield_g, 36.0)
         self.assertEqual(updated.preinfusion_s, 7)
 
+    def test_create_shot_persists_expected_flow_g_s(self) -> None:
+        """Fixed once at brew time (see runtime.py's async_brew) - feeds the
+        Live Shot/Shot History charts' idealized-curve overlay."""
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+            expected_flow_g_s=1.35,
+        )
+        self.assertAlmostEqual(self.db.last_shot()["expected_flow_g_s"], 1.35)
+        self.assertEqual(shot_id, self.db.last_shot()["id"])
+
+    def test_create_shot_expected_flow_g_s_defaults_to_none(self) -> None:
+        bag = self.new_bag()
+        self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.assertIsNone(self.db.last_shot()["expected_flow_g_s"])
+
     def test_completed_shot_reduces_estimated_remaining(self) -> None:
         bag = self.new_bag()
         shot_id = self.db.create_shot(

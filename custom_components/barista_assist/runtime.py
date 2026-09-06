@@ -34,7 +34,12 @@ from .const import (
 )
 from .definitions import EntityDefinition, load_definitions
 from .flavor_correction import recommend_flavor_correction
-from .flow_analysis import BaselineFeatures, FlowAnalysisConfig, analyze_shot
+from .flow_analysis import (
+    BaselineFeatures,
+    FlowAnalysisConfig,
+    analyze_shot,
+    blended_expected_flow_g_s,
+)
 from .grind_correction import recommend_grind_delta
 from .protocol import BookooReading
 from .storage import Bag, BaristaDatabase, ShotSample
@@ -197,6 +202,12 @@ class ActiveShot:
     target_yield_g: float
     early_stop_margin_min_g: float
     preinfusion_s: float
+    # flow_analysis.blended_expected_flow_g_s's rate for this bag, fixed
+    # once at brew time (see async_brew) - feeds the Live Shot/Shot History
+    # charts' idealized-curve overlay (_shot_markers) so it stays stable
+    # for this shot even if the bag's own healthy-shot history changes
+    # before it finishes.
+    expected_flow_g_s: float
     samples: list[ShotSample]
     # Set once the initial brew Bot press actually lands (see async_brew).
     # started_monotonic marks when brewing was *requested*, which can be
@@ -643,6 +654,8 @@ class BaristaRuntime:
                 value = self.early_stop_margin_max_g
             elif attribute == "shot_plot":
                 value = self._shot_plot_points()
+            elif attribute == "shot_markers":
+                value = self._shot_markers()
             elif attribute == "bag_id":
                 value = bag.id if bag else None
             elif attribute == "remaining_g":
@@ -682,6 +695,34 @@ class BaristaRuntime:
             [sample.elapsed_ms, sample.weight_g, round(sample.flow_g_s, 2)]
             for sample in samples[::step]
         ]
+
+    def _shot_markers(self) -> dict[str, float | int | None]:
+        """Metadata the Live Shot/Shot History charts overlay on top of
+        _shot_plot_points' raw [elapsed_ms, weight_g, flow_g_s] points: the
+        pre-infusion/extraction boundary, the stop-press instant once it's
+        actually happened, and this bag's own expected flow rate (fixed
+        once per shot at brew time - see async_brew, ActiveShot.
+        expected_flow_g_s) for the frontend's flat-then-ramp idealized
+        curve, derived there from target_yield_g. Same live-vs-frozen
+        dual source as _shot_plot_points. None values mean "not known
+        yet" (e.g. stop_command_elapsed_ms before the shot has actually
+        stopped) - the frontend must not treat that as zero."""
+        shot = self.active_shot
+        if shot is not None and shot.press_monotonic is not None:
+            return {
+                "preinfusion_ms": int(shot.preinfusion_s * 1000),
+                "stop_command_elapsed_ms": shot.stop_command_elapsed_ms,
+                "expected_flow_g_s": shot.expected_flow_g_s,
+                "target_yield_g": shot.target_yield_g,
+            }
+        if self.last_shot:
+            return {
+                "preinfusion_ms": int(self.last_shot["preinfusion_s"] * 1000),
+                "stop_command_elapsed_ms": self.last_shot.get("stop_command_elapsed_ms"),
+                "expected_flow_g_s": self.last_shot.get("expected_flow_g_s"),
+                "target_yield_g": self.last_shot["target_yield_g"],
+            }
+        return {}
 
     async def async_set_entity_value(
         self, definition: EntityDefinition, value: Any
@@ -1172,6 +1213,18 @@ class BaristaRuntime:
             await self.scale.async_ensure_connected()
             await self.scale.async_wait_for_fresh_reading()
 
+            # Fixed once here, at brew time, rather than left to be computed
+            # only after the shot finishes (analyze_shot's own use of this)
+            # - the Live Shot/Shot History charts' idealized-curve overlay
+            # (_shot_markers) needs it available from the very first sample.
+            baseline_features = await self.hass.async_add_executor_job(
+                self.db.recent_healthy_features, bag.id
+            )
+            expected_flow_g_s = blended_expected_flow_g_s(
+                BaselineFeatures(**baseline_features) if baseline_features else None,
+                FlowAnalysisConfig(**self.definitions.flow_analysis_constants),
+            )
+
             started_at = datetime.now(timezone.utc).isoformat()
             shot_id = await self.hass.async_add_executor_job(
                 lambda: self.db.create_shot(
@@ -1180,6 +1233,7 @@ class BaristaRuntime:
                     stop_compensation_g=self.early_stop_margin_min_g,
                     preinfusion_s=preinfusion_s,
                     adapt_pi=self.adapt_pi,
+                    expected_flow_g_s=expected_flow_g_s,
                 )
             )
             self.active_shot = ActiveShot(
@@ -1190,6 +1244,7 @@ class BaristaRuntime:
                 target_yield_g=bag.target_yield_g,
                 early_stop_margin_min_g=self.early_stop_margin_min_g,
                 preinfusion_s=preinfusion_s,
+                expected_flow_g_s=expected_flow_g_s,
                 samples=[],
                 # With Adapt PI off, the machine runs its own pre-infusion on
                 # a single short tap - the Bot is never reprogrammed away

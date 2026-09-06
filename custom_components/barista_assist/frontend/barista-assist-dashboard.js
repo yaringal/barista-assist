@@ -181,38 +181,93 @@ const CHART_STYLES = `
   .legend-weight::before, .legend-flow::before { content: "—"; margin-right: 4px; font-weight: 700; }
   .legend-weight::before { color: #2196f3; }
   .legend-flow::before { color: #00bcd4; }
+  .legend-expected::before { content: "- -"; margin-right: 4px; font-weight: 700; color: var(--secondary-text-color, #888); }
   .empty { opacity: 0.7; padding: 8px 0; }
+  .pi-band { fill: var(--secondary-text-color, #888); opacity: 0.08; }
+  .expected-line { stroke: var(--secondary-text-color, #888); stroke-width: 1.5; stroke-dasharray: 5,4; }
+  .stop-line { stroke: var(--error-color, #c62828); stroke-width: 1.5; stroke-dasharray: 2,3; }
+  .event-labels { position: relative; height: 14px; font-size: 0.65rem; opacity: 0.75; }
+  .event-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  .event-labels .stop-label { color: var(--error-color, #c62828); }
 `;
+
+// The idealized ("expected") weight trajectory for a shot: flat at 0
+// through pre-infusion, then a straight ramp to target_yield_g at
+// markers.expected_flow_g_s (flow_analysis.blended_expected_flow_g_s,
+// fixed per-shot at brew time - see runtime.py's ActiveShot.
+// expected_flow_g_s/_shot_markers). Not a curve shape sourced from
+// anywhere - just the same flat-rate model duration_ratio itself already
+// uses for classification, drawn instead of only compared against.
+// Returns [] (nothing to draw) until both figures are actually known.
+function idealizedWeightPoints(markers) {
+  const { preinfusion_ms, expected_flow_g_s, target_yield_g } = markers || {};
+  if (expected_flow_g_s == null || target_yield_g == null) return [];
+  const pi = preinfusion_ms ?? 0;
+  const expectedDurationMs = (target_yield_g / expected_flow_g_s) * 1000;
+  return [
+    { elapsed_ms: 0, weight_g: 0 },
+    { elapsed_ms: pi, weight_g: 0 },
+    { elapsed_ms: pi + expectedDurationMs, weight_g: target_yield_g },
+  ];
+}
+
+// Cosmetic-only smoothing for the flow line: real per-reading flow_g_s is
+// naturally jumpy (it's a derivative of noisy scale readings) even for a
+// perfectly healthy shot. A simple time-windowed moving average - for each
+// sample, average flow_g_s over every sample within windowMs/2 of its own
+// elapsed_ms. Purely a chart-rendering concern: independent of, and never
+// fed back into, anything the backend computes from the real flow_g_s
+// (classification, grind correction, storage) - display only. O(n^2) in
+// sample count, which is fine at a shot's actual sample counts (a few
+// hundred at most) and this only re-runs on state changes, not per frame.
+function smoothedFlowSeries(samples, windowMs = 600) {
+  const half = windowMs / 2;
+  return samples.map((sample) => {
+    const inWindow = samples.filter((s) => Math.abs(s.elapsed_ms - sample.elapsed_ms) <= half);
+    const avg = inWindow.reduce((sum, s) => sum + s.flow_g_s, 0) / inWindow.length;
+    return { ...sample, flow_g_s: avg };
+  });
+}
 
 // Shared geometry between renderShotChart's static markup and
 // attachChartTooltip's hit-testing, so the two can never drift out of sync.
-function chartGeometry(samples) {
+// markers (see runtime.py's _shot_markers) factors the idealized curve's
+// own endpoint into maxT/maxWeight too, so the chart auto-scales to fit
+// both curves even when the real shot hasn't caught up to (or has
+// overshot) the ideal line yet.
+function chartGeometry(samples, markers = {}) {
   const width = 600;
   const height = 200;
   const padding = 28;
-  const maxT = Math.max(1, ...samples.map((s) => s.elapsed_ms));
-  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g));
+  const idealPoints = idealizedWeightPoints(markers);
+  const maxT = Math.max(1, ...samples.map((s) => s.elapsed_ms), ...idealPoints.map((p) => p.elapsed_ms));
+  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...idealPoints.map((p) => p.weight_g));
   const maxFlow = Math.max(1, ...samples.map((s) => s.flow_g_s));
   const x = (t) => padding + (t / maxT) * (width - 2 * padding);
   const yFor = (max) => (v) => height - padding - (Math.max(0, v) / max) * (height - 2 * padding);
   return { width, height, padding, maxT, maxWeight, maxFlow, x, yWeight: yFor(maxWeight), yFlow: yFor(maxFlow) };
 }
 
-// samples: [{elapsed_ms, weight_g, flow_g_s}, ...]. SVG text isn't used for
-// the axis labels because preserveAspectRatio="none" (needed so the chart
-// fills its card regardless of aspect ratio) non-uniformly scales - and
-// distorts - any text drawn inside the same viewBox; plain positioned HTML
-// spans avoid that entirely. The touch/hover tooltip (attachChartTooltip)
-// follows the same rule for its own label.
-function renderShotChart(samples) {
+// samples: [{elapsed_ms, weight_g, flow_g_s}, ...]. markers: see
+// runtime.py's _shot_markers - {preinfusion_ms, stop_command_elapsed_ms,
+// expected_flow_g_s, target_yield_g}, any of which may be null/absent (not
+// yet known, or nothing to show). SVG text isn't used for the axis labels
+// because preserveAspectRatio="none" (needed so the chart fills its card
+// regardless of aspect ratio) non-uniformly scales - and distorts - any
+// text drawn inside the same viewBox; plain positioned HTML spans avoid
+// that entirely. The touch/hover tooltip (attachChartTooltip) and the
+// event-time labels below follow the same rule.
+function renderShotChart(samples, markers = {}) {
   if (!samples || !samples.length) {
     return `<div class="empty">No samples recorded for this shot.</div>`;
   }
-  const { width, height, padding, maxT, maxWeight, maxFlow, x, yWeight, yFlow } = chartGeometry(samples);
-  const path = (accessor) =>
-    samples
-      .map((s, i) => `${i === 0 ? "M" : "L"}${x(s.elapsed_ms).toFixed(1)},${accessor(s).toFixed(1)}`)
+  const { width, height, padding, maxT, maxWeight, maxFlow, x, yWeight, yFlow } = chartGeometry(samples, markers);
+  const pathFor = (points, yAccessor) =>
+    points
+      .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.elapsed_ms).toFixed(1)},${yAccessor(p).toFixed(1)}`)
       .join(" ");
+  const smoothedFlow = smoothedFlowSeries(samples);
+  const idealPoints = idealizedWeightPoints(markers);
 
   const step = niceStepSeconds(maxT / 1000);
   const ticks = [];
@@ -223,21 +278,43 @@ function renderShotChart(samples) {
     )
     .join("");
 
+  const preinfusionMs = markers?.preinfusion_ms;
+  const piBand =
+    preinfusionMs > 0
+      ? `<rect x="${padding}" y="${padding}" width="${(x(preinfusionMs) - padding).toFixed(1)}" height="${height - 2 * padding}" class="pi-band" />`
+      : "";
+  const idealPath = idealPoints.length
+    ? `<path d="${pathFor(idealPoints, (p) => yWeight(p.weight_g))}" class="expected-line" fill="none" />`
+    : "";
+  const stopMs = markers?.stop_command_elapsed_ms;
+  const hasStopMarker = stopMs != null;
+  const stopLine = hasStopMarker
+    ? `<line class="stop-line" x1="${x(stopMs).toFixed(1)}" y1="${padding}" x2="${x(stopMs).toFixed(1)}" y2="${height - padding}" />`
+    : "";
+  const eventLabels = hasStopMarker
+    ? `<div class="event-labels"><span class="stop-label" style="left:${((x(stopMs) / width) * 100).toFixed(2)}%">Stop</span></div>`
+    : "";
+
   return `
     <div class="chart-wrap">
       <svg viewBox="0 0 ${width} ${height}" class="chart" preserveAspectRatio="none">
+        ${piBand}
         <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" class="axis" />
         <line x1="${padding}" y1="${padding}" x2="${padding}" y2="${height - padding}" class="axis" />
-        <path d="${path((s) => yWeight(s.weight_g))}" class="weight-line" fill="none" />
-        <path d="${path((s) => yFlow(s.flow_g_s))}" class="flow-line" fill="none" />
+        ${idealPath}
+        ${stopLine}
+        <path d="${pathFor(samples, (s) => yWeight(s.weight_g))}" class="weight-line" fill="none" />
+        <path d="${pathFor(smoothedFlow, (s) => yFlow(s.flow_g_s))}" class="flow-line" fill="none" />
         <line class="cursor-line" x1="0" y1="${padding}" x2="0" y2="${height - padding}" />
       </svg>
       <div class="axis-labels">${axisLabels}</div>
+      ${eventLabels}
       <div class="chart-tooltip"></div>
     </div>
     <div class="legend">
       <span class="legend-weight">Weight (max ${maxWeight.toFixed(1)}g)</span>
       <span class="legend-flow">Flow (max ${maxFlow.toFixed(1)} g/s)</span>
+      ${idealPath ? `<span class="legend-expected">Expected</span>` : ""}
     </div>`;
 }
 
@@ -253,7 +330,7 @@ const CHART_TOOLTIP_ENABLED = true;
 // mouse and touch handling - the mousedown/touchstart split isn't needed.
 // Must be called again after every re-render, since innerHTML replacement
 // discards any previously-attached listeners along with the old elements.
-function attachChartTooltip(root, samples) {
+function attachChartTooltip(root, samples, markers = {}) {
   if (!CHART_TOOLTIP_ENABLED || !samples || !samples.length) return;
   const wrap = root.querySelector(".chart-wrap");
   const svg = wrap?.querySelector("svg.chart");
@@ -261,24 +338,35 @@ function attachChartTooltip(root, samples) {
   const tooltip = wrap?.querySelector(".chart-tooltip");
   if (!wrap || !svg || !cursorLine || !tooltip) return;
 
-  const { width, x } = chartGeometry(samples);
+  // markers must match whatever was passed to the renderShotChart call
+  // that produced this DOM - the idealized curve can inflate maxT/the x
+  // scale, and a mismatched geometry here would put the cursor line and
+  // tooltip in the wrong place relative to the paths actually drawn.
+  const { width, x } = chartGeometry(samples, markers);
+  // Same smoothing the flow line itself is drawn with, so the tooltip's
+  // flow reading matches what the cursor is actually pointing at instead
+  // of contradicting it with a raw, jumpier number.
+  const smoothedFlow = smoothedFlowSeries(samples);
 
-  const nearestSample = (svgX) =>
-    samples.reduce((nearest, sample) =>
-      Math.abs(x(sample.elapsed_ms) - svgX) < Math.abs(x(nearest.elapsed_ms) - svgX) ? sample : nearest
+  const nearestIndex = (svgX) =>
+    samples.reduce(
+      (nearest, sample, i) =>
+        Math.abs(x(sample.elapsed_ms) - svgX) < Math.abs(x(samples[nearest].elapsed_ms) - svgX) ? i : nearest,
+      0
     );
 
   const show = (clientX) => {
     const rect = svg.getBoundingClientRect();
     const svgX = ((clientX - rect.left) / rect.width) * width;
-    const sample = nearestSample(svgX);
+    const index = nearestIndex(svgX);
+    const sample = samples[index];
     const px = x(sample.elapsed_ms);
     cursorLine.setAttribute("x1", px.toFixed(1));
     cursorLine.setAttribute("x2", px.toFixed(1));
     cursorLine.style.display = "block";
     tooltip.style.display = "block";
     tooltip.style.left = `${((px / width) * 100).toFixed(2)}%`;
-    tooltip.textContent = `${(sample.elapsed_ms / 1000).toFixed(1)}s · ${sample.weight_g.toFixed(1)}g · ${sample.flow_g_s.toFixed(1)} g/s`;
+    tooltip.textContent = `${(sample.elapsed_ms / 1000).toFixed(1)}s · ${sample.weight_g.toFixed(1)}g · ${smoothedFlow[index].flow_g_s.toFixed(1)} g/s`;
   };
 
   const hide = () => {
@@ -420,6 +508,18 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
     return typeof ms === "number" ? `${(ms / 1000).toFixed(1)}s` : "—";
   }
 
+  // renderShotChart/attachChartTooltip's markers shape (see runtime.py's
+  // _shot_markers) built from a stored shot row - list_shots/recent_shots
+  // already carries every field needed, no extra fetch required.
+  _shotMarkers(shot) {
+    return {
+      preinfusion_ms: typeof shot.preinfusion_s === "number" ? shot.preinfusion_s * 1000 : null,
+      stop_command_elapsed_ms: shot.stop_command_elapsed_ms ?? null,
+      expected_flow_g_s: shot.expected_flow_g_s ?? null,
+      target_yield_g: shot.target_yield_g ?? null,
+    };
+  }
+
   _renderDetail(shot) {
     const samples = this._samplesCache.get(shot.id);
     if (samples === undefined) {
@@ -442,7 +542,7 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
           }</div>
           <div><b>Roaster</b> ${this._escape(shot.roaster || "—")}</div>
         </div>
-        ${renderShotChart(samples)}
+        ${renderShotChart(samples, this._shotMarkers(shot))}
       </div>`;
   }
 
@@ -573,7 +673,12 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
       });
     });
     if (this._expandedId) {
-      attachChartTooltip(this.shadowRoot, this._samplesCache.get(this._expandedId));
+      const shot = (this._shots || []).find((s) => s.id === this._expandedId);
+      attachChartTooltip(
+        this.shadowRoot,
+        this._samplesCache.get(this._expandedId),
+        shot ? this._shotMarkers(shot) : {}
+      );
     }
   }
 
@@ -636,11 +741,12 @@ class BaristaAssistLiveShotCard extends HTMLElement {
       weight_g,
       flow_g_s,
     }));
+    const markers = this._lastState?.attributes?.shot_markers || {};
     this.shadowRoot.innerHTML = `
       <ha-card>
         <div class="wrap">
           <div class="title">${title}</div>
-          ${renderShotChart(samples)}
+          ${renderShotChart(samples, markers)}
         </div>
       </ha-card>
       <style>
@@ -648,7 +754,7 @@ class BaristaAssistLiveShotCard extends HTMLElement {
         .title { font-size: 1.1rem; font-weight: 600; margin-bottom: 12px; }
         ${CHART_STYLES}
       </style>`;
-    attachChartTooltip(this.shadowRoot, samples);
+    attachChartTooltip(this.shadowRoot, samples, markers);
   }
 
   getCardSize() {

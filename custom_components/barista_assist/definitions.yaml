@@ -171,7 +171,7 @@ flow_analysis_constants:
   # expected_flow_g_s: the flow rate (target_yield_g / total shot seconds,
   # t90-ish) a "normal" shot is expected to run at, before any per-bag
   # history exists (flow_analysis blends this with the bag's own recent
-  # median as shots accumulate - see flow_analysis._blended_expected_flow_g_s,
+  # median as shots accumulate - see flow_analysis.blended_expected_flow_g_s,
   # unaffected by this change). too_fast_factor/too_restrictive_factor
   # bound how far duration_s may deviate from expected_s (=
   # target_yield_g / expected_flow_g_s) before a shot leaves "healthy":
@@ -422,7 +422,7 @@ entities:
       field: status
       translation_key: status
       token: __STATUS__
-      attributes: [scale_connected, selected_slot, early_stop_margin_min_g, early_stop_margin_max_g, shot_plot]
+      attributes: [scale_connected, selected_slot, early_stop_margin_min_g, early_stop_margin_max_g, shot_plot, shot_markers]
 
     stop_latency_normal:
       source: controller

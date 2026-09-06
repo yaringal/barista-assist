@@ -517,6 +517,44 @@ class ShotPlotPointsTests(RuntimeTestCase):
         self.assertEqual(restarted_runtime._shot_plot_points(), frozen)
 
 
+class ShotMarkersTests(RuntimeTestCase):
+    """_shot_markers feeds the Live Shot/Shot History charts' idealized-
+    curve overlay and event markers (pre-infusion end, stop press) - same
+    live-vs-frozen dual source as _shot_plot_points."""
+
+    async def test_reflects_the_active_shot(self):
+        await self.start_shot(preinfusion_s=2.0, target_yield_g=36.0)
+
+        markers = self.runtime._shot_markers()
+
+        self.assertEqual(markers["preinfusion_ms"], 2000)
+        self.assertIsNone(markers["stop_command_elapsed_ms"])
+        # No prior healthy shots for this brand-new bag - falls back to the
+        # global prior (flow_analysis_constants.expected_flow_g_s = 1.3).
+        self.assertAlmostEqual(markers["expected_flow_g_s"], 1.3)
+        self.assertEqual(markers["target_yield_g"], 36.0)
+
+    async def test_reflects_the_last_finished_shot(self):
+        await self.start_shot(preinfusion_s=1.0)
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))
+        await self.runtime._async_finalize("complete")
+
+        markers = self.runtime._shot_markers()
+
+        self.assertEqual(markers["preinfusion_ms"], 1000)
+        self.assertIsNotNone(markers["expected_flow_g_s"])
+        self.assertEqual(markers["target_yield_g"], 36.0)
+
+    async def test_is_empty_with_no_shot_ever(self):
+        self.assertEqual(self.runtime._shot_markers(), {})
+
+    async def test_async_brew_stores_a_real_expected_flow_rate_on_the_active_shot(self):
+        await self.start_shot()
+        self.assertIsInstance(self.runtime.active_shot.expected_flow_g_s, float)
+        self.assertGreater(self.runtime.active_shot.expected_flow_g_s, 0.0)
+
+
 class BotLockSerializationTests(RuntimeTestCase):
     async def test_press_waits_for_an_in_flight_prepare_call(self):
         """Regression test: _async_prepare_brew_bot (used by brew and the

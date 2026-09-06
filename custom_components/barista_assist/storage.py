@@ -11,7 +11,7 @@ import statistics
 from typing import Any, Iterable
 from uuid import uuid4
 
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 BAG_RECIPE_FIELDS = frozenset(
     {"dose_g", "grind", "target_yield_g", "temperature_offset_c", "preinfusion_s"}
 )
@@ -194,19 +194,27 @@ class BaristaDatabase:
         stop_compensation_g: float,
         preinfusion_s: float,
         adapt_pi: bool,
+        expected_flow_g_s: float | None = None,
     ) -> str:
         """preinfusion_s is the shot's actual effective pre-infusion duration
         (whichever of bag.preinfusion_s / the machine's own default was truly
         used - see BaristaRuntime.async_brew), not necessarily bag.preinfusion_s
-        itself: a bag's recipe field only applies when Adapt PI is on."""
+        itself: a bag's recipe field only applies when Adapt PI is on.
+        expected_flow_g_s is flow_analysis.blended_expected_flow_g_s's own
+        rate for this bag, fixed once here at brew time (see async_brew) so
+        the Live Shot/Shot History charts' idealized-curve overlay stays
+        consistent for this shot even if the bag's healthy-shot history
+        changes before it finishes - None only for shots created without
+        that computation (e.g. most direct storage-layer tests)."""
         shot_id = uuid4().hex
         with self._connect() as db:
             db.execute(
                 """
                 INSERT INTO shots(
                     id, bag_id, started_at, dose_g, grind, target_yield_g,
-                    temperature_offset_c, preinfusion_s, stop_compensation_g, status, adapt_pi
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    temperature_offset_c, preinfusion_s, stop_compensation_g, status, adapt_pi,
+                    expected_flow_g_s
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     shot_id,
@@ -220,6 +228,7 @@ class BaristaDatabase:
                     float(stop_compensation_g),
                     "running",
                     int(adapt_pi),
+                    expected_flow_g_s,
                 ),
             )
         return shot_id
@@ -421,6 +430,7 @@ class BaristaDatabase:
                 f"classification={clean(shot['classification'])}",
                 f"channeling_suspicion={shot['channeling_suspicion'] if shot['channeling_suspicion'] is not None else ''}",
                 f"recommended_grind_delta={shot['recommended_grind_delta'] if shot['recommended_grind_delta'] is not None else ''}",
+                f"expected_flow_g_s={shot['expected_flow_g_s'] if shot['expected_flow_g_s'] is not None else ''}",
                 f"flavor_extraction_tag={clean(shot['flavor_extraction_tag'])}",
                 f"flavor_mouthfeel_tag={clean(shot['flavor_mouthfeel_tag'])}",
                 f"analysis_json={clean(shot['analysis_json'])}",

@@ -425,12 +425,12 @@ class FlowAnalysisTests(unittest.TestCase):
 
     def test_blended_flow_rate_shifts_toward_bag_history_as_shot_count_grows(self) -> None:
         bag_rate = 1.8
-        prior_only = flow_analysis._blended_expected_flow_g_s(None, CONFIG)
-        weak = flow_analysis._blended_expected_flow_g_s(
+        prior_only = flow_analysis.blended_expected_flow_g_s(None, CONFIG)
+        weak = flow_analysis.blended_expected_flow_g_s(
             BaselineFeatures(shot_count=1, median_late_accel=0.0, median_flow_g_s=bag_rate),
             CONFIG,
         )
-        strong = flow_analysis._blended_expected_flow_g_s(
+        strong = flow_analysis.blended_expected_flow_g_s(
             BaselineFeatures(shot_count=50, median_late_accel=0.0, median_flow_g_s=bag_rate),
             CONFIG,
         )
