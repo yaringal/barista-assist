@@ -103,6 +103,25 @@ class DefinitionTests(unittest.TestCase):
         }
         self.assertEqual(roast_levels, set(self.defs.expert_rules["roast_level_ratio_prior"]))
 
+    def test_roast_level_temperature_prior_covers_every_roast_level_select_option(self):
+        roast_levels = {
+            value
+            for _label, value in self.defs.entity("select", "new_bag_roast_level").options
+            if value
+        }
+        self.assertEqual(
+            roast_levels, set(self.defs.expert_rules["roast_level_temperature_prior"])
+        )
+
+    def test_roast_level_temperature_prior_values_are_valid_offset_options(self):
+        """Every value must be one of temperature_offset's own select
+        options - runtime._validate_recipe_field rejects anything else."""
+        valid_offsets = {
+            value for _label, value in self.defs.entity("select", "temperature_offset").options
+        }
+        prior_values = set(self.defs.expert_rules["roast_level_temperature_prior"].values())
+        self.assertTrue(prior_values.issubset(valid_offsets))
+
     def test_dashboard_tokens_are_unique(self):
         tokens = self.defs.dashboard_tokens
         self.assertEqual(len(tokens), sum(1 for p in self.defs.entities.values() for e in p if e.token))

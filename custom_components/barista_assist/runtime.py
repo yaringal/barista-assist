@@ -847,6 +847,14 @@ class BaristaRuntime:
         ratio = self.definitions.expert_rules["roast_level_ratio_prior"].get(roast_level)
         return dose_g * ratio if ratio is not None else None
 
+    def _roast_level_seeded_temperature_offset_c(self, roast_level: Any) -> int | None:
+        """expert_rules.roast_level_temperature_prior's fallback - same
+        shape and same "new bag, empty slot only" scope as
+        _roast_level_seeded_target_yield_g, just for temperature_offset_c
+        instead of target_yield_g. None when roast_level isn't a known key."""
+        offset = self.definitions.expert_rules["roast_level_temperature_prior"].get(roast_level)
+        return int(offset) if offset is not None else None
+
     async def async_new_bag(self, data: dict[str, Any]) -> Bag:
         slot = str(data["slot"])
         if slot not in self.definitions.slots:
@@ -871,6 +879,11 @@ class BaristaRuntime:
                 seeded = self._roast_level_seeded_target_yield_g(
                     recipe["dose_g"], data.get("roast_level")
                 )
+            elif field == "temperature_offset_c" and field not in data and current is None:
+                # Same scope/reasoning as target_yield_g above, see
+                # roast_level_temperature_prior's own comment in
+                # definitions.yaml.
+                seeded = self._roast_level_seeded_temperature_offset_c(data.get("roast_level"))
             value = seeded if seeded is not None else recipe_value(field)
             recipe[field] = self._validate_recipe_field(field, value)
 

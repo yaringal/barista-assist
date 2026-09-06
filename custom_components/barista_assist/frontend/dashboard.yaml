@@ -172,8 +172,10 @@ views:
             content: >-
               **Create or replace the selected Normal/Decaf bag.**
 
-              A replacement bag inherits that slot's current recipe. The first bag
-              starts at **18.0 g dose / DF54 15 / 36.0 g yield / 0 °C / 7 s PI**.
+              A replacement bag inherits that slot's current recipe. The first bag in an
+              empty slot starts at **18.0 g dose / DF54 15 / 7 s PI**, with target yield
+              and temperature seeded from the roast level selected below (medium:
+              **39.6 g / 0 °C**) - change "New bag roast level" to adjust.
 
           - type: tile
             entity: __BEAN_SLOT__

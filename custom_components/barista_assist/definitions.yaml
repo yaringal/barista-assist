@@ -415,6 +415,49 @@ expert_rules:
     # way flow_analysis_constants' expected_flow_g_s prior yields to a bag's
     # own history.
 
+  # --- Phase 5/6: roast_level_temperature_prior ---------------------------------
+  # Same scope/consumer as roast_level_ratio_prior directly above (runtime.py's
+  # async_new_bag, only for a brand-new bag in an empty slot) - seeds
+  # temperature_offset_c instead of target_yield_g.
+  #
+  # Sourced from Hoffmann's Temperature episode, which gives roast-level
+  # starting-temperature *ballparks* - by his own description "his own
+  # benchmarks, taken loosely from roasters' recommendations", not a precise
+  # rule: darker/developed roasts 85-90C, medium 88-92C, lighter 90-95C
+  # (docs/DIAL_IN_RULES.md). This project's target machine is the Breville/
+  # Sage Barista Express (BES870), whose factory-default brew temperature is
+  # 93C/200F, documented independently by multiple sources
+  # (mikaeljasin.com/machine-mastery/breville-temperature-settings,
+  # corroborated by other community write-ups found the same way) as a
+  # deliberate "middle-ground that works for most medium roasts" - i.e. the
+  # machine's own factory default is already medium-roast-oriented, which
+  # corroborates (not just by this project's own convention) anchoring
+  # `medium` at `temperature_offset_c`'s existing 0 (the same zero-point
+  # roast_level_ratio_prior's own medium value already treats as the
+  # reference tier), rather than a number pulled from Hoffmann's own
+  # absolute-degree ballparks (which are on a different machine and don't
+  # transfer directly). What the ballparks *do* give cleanly, independent of
+  # any specific machine, is direction and rough relative spacing between
+  # roast levels: dark sits about 2-2.5C below medium's own center, light
+  # about 2-2.5C above it. Mapping that ~2.5C spread onto
+  # temperature_offset_c's discrete -2..+2 step scale, this uses only 1 step
+  # each way rather than the full 2 - a deliberately conservative choice
+  # given the remaining uncertainty in translating Hoffmann's *relative*
+  # spacing onto this specific machine's steps, not a claim that 1 step is
+  # exactly what the spread "should" be.
+  #
+  # The Barista Express's real physical
+  # temperature adjustment is documented (same sources as above) as ±2F
+  # (~1.1C) per step, max ±4F from default - i.e. only 2 real steps in each
+  # direction, each closer to 1.1C than the flat 1C this entity's own
+  # -2/-1/0/+1/+2 °C option labels imply. The total range these labels claim
+  # (±2C) is coincidentally close to the machine's real total range (±4F ≈
+  # ±2.2C), but the per-step labels are off by a small, consistent amount.
+  roast_level_temperature_prior:
+    dark: -1
+    medium: 0
+    light: 1
+
 entities:
   sensor:
     status:
@@ -724,11 +767,13 @@ entities:
           value: 2
 
     new_bag_roast_level:
-      # Feeds expert_rules.roast_level_ratio_prior (see runtime.py's
-      # async_new_bag) - a fallback used only when a brand-new bag is opened
-      # in a slot with no existing bag to inherit target_yield_g from.
-      # "Not specified" (the default) means that fallback is skipped, same
-      # as leaving new_bag_roaster/new_bag_roast_date blank.
+      # Feeds expert_rules.roast_level_ratio_prior/roast_level_temperature_prior
+      # (see runtime.py's async_new_bag) - fallbacks used only when a
+      # brand-new bag is opened in a slot with no existing bag to inherit
+      # target_yield_g/temperature_offset_c from. "Not specified" means
+      # both fallbacks are skipped, same as leaving new_bag_roaster/
+      # new_bag_roast_date blank - it's just no longer this field's own
+      # default (see BagDraft.roast_level's own comment for why "medium" is).
       source: draft
       field: roast_level
       translation_key: new_bag_roast_level

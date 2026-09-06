@@ -48,9 +48,12 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('custom:barista-assist-live-shot-card', text)
         self.assertNotIn('apexcharts-card', text)
 
-    def test_dashboard_documents_new_default_yield(self):
+    def test_dashboard_documents_roast_level_seeded_defaults(self):
+        """The new-bag card must describe the actual seeding mechanism
+        (roast_level_ratio_prior/roast_level_temperature_prior), not stale
+        flat numbers from before roast level seeded target yield/temperature."""
         text = DASHBOARD.read_text(encoding="utf-8")
-        self.assertIn("36.0 g yield", text)
+        self.assertIn("39.6 g / 0 °C", text)
         self.assertNotIn("38 g / 0", text)
 
     def test_every_tile_card_has_an_explicit_short_name(self):

@@ -931,6 +931,24 @@ shots, the same way the flow classifier's fixed prior yields to a bag's own
 history. See `expert_rules.roast_level_ratio_prior` in `definitions.yaml`
 and `docs/CROSS_CREATOR_RULE_CHECK.md`.
 
+The same fallback now also seeds `temperature_offset_c`
+(`expert_rules.roast_level_temperature_prior`), from Hoffmann's Temperature
+episode's own roast-level starting-temperature ballparks (darker/developed
+85-90°C, medium 88-92°C, lighter 90-95°C - "his own benchmarks, taken
+loosely from roasters' recommendations", not a precise rule). Those are
+absolute temperatures on his own machine, though, and `temperature_offset_c`
+is relative to whatever this installation's machine (the Breville/Sage
+Barista Express, this project's target hardware) is already set to. The
+Barista Express's own factory-default brew temperature is independently
+documented as 93°C/200°F, explicitly described by that documentation as a
+"middle-ground that works for most medium roasts" - i.e. the machine's own
+default is already medium-oriented, corroborating (not just asserting) this
+system's choice to anchor `medium` at `temperature_offset_c`'s existing 0.
+See that key's own comment in `definitions.yaml` for how Hoffmann's
+*relative* spacing between roast levels (not his absolute degree numbers,
+which are a different machine) was mapped onto this system's discrete
+offset scale.
+
 ### Decaf
 
 Maintain a separate decaf prior.
@@ -1468,6 +1486,11 @@ there's a way to check a bag's own baseline against real, independently
 verified outcomes (not just shots this same classifier already called
 "healthy"), since only then can more bag-dependence be added there without
 risking a recurring problem normalizing itself out of detection.
+
+See `docs/ADAPTIVE_LEARNING_PLAN.md` for the fuller critical pass over this
+phase - which of these constants should actually become adaptive, which
+should stay fixed/human-recalibrated, and why (including revising the
+per-bag flow-rate shrinkage itself, not just recalibrating around it).
 
 ---
 

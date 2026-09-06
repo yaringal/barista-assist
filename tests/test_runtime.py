@@ -1366,9 +1366,10 @@ class FlavorFeedbackTests(RuntimeTestCase):
 
 
 class RoastLevelRatioPriorTests(RuntimeTestCase):
-    """runtime.py's async_new_bag seeds target_yield_g from
-    expert_rules.roast_level_ratio_prior only for a genuinely new bag in an
-    empty slot (docs/DESIGN.md section 19's roast-level fallback)."""
+    """runtime.py's async_new_bag seeds target_yield_g/temperature_offset_c
+    from expert_rules.roast_level_ratio_prior/roast_level_temperature_prior
+    only for a genuinely new bag in an empty slot (docs/DESIGN.md section 19's
+    roast-level fallback)."""
 
     async def test_seeds_target_yield_from_roast_level_in_an_empty_slot(self):
         """dose_g defaults to 18.0, medium's ratio is 2.2 -> 18.0*2.2=39.6."""
@@ -1407,6 +1408,41 @@ class RoastLevelRatioPriorTests(RuntimeTestCase):
             {"slot": slot, "coffee_name": "Second", "roast_level": "dark"}
         )
         self.assertEqual(second.target_yield_g, 36.0)  # inherited from "First", not re-seeded
+
+    async def test_seeds_temperature_offset_from_roast_level_in_an_empty_slot(self):
+        bag = await self.runtime.async_new_bag(
+            {
+                "slot": self.runtime.definitions.slots[0],
+                "coffee_name": "Test Coffee",
+                "roast_level": "dark",
+            }
+        )
+        self.assertEqual(bag.temperature_offset_c, -1)
+
+    async def test_does_not_override_an_explicit_temperature_offset(self):
+        bag = await self.runtime.async_new_bag(
+            {
+                "slot": self.runtime.definitions.slots[0],
+                "coffee_name": "Test Coffee",
+                "roast_level": "dark",
+                "temperature_offset_c": 2,
+            }
+        )
+        self.assertEqual(bag.temperature_offset_c, 2)
+
+    async def test_temperature_offset_does_not_apply_without_a_known_roast_level(self):
+        bag = await self.runtime.async_new_bag(
+            {"slot": self.runtime.definitions.slots[0], "coffee_name": "Test Coffee"}
+        )
+        self.assertEqual(bag.temperature_offset_c, 0)  # flat default, unaffected
+
+    async def test_temperature_offset_does_not_apply_when_a_bag_already_exists_in_the_slot(self):
+        slot = self.runtime.definitions.slots[0]
+        await self.runtime.async_new_bag({"slot": slot, "coffee_name": "First"})
+        second = await self.runtime.async_new_bag(
+            {"slot": slot, "coffee_name": "Second", "roast_level": "light"}
+        )
+        self.assertEqual(second.temperature_offset_c, 0)  # inherited from "First", not re-seeded
 
 
 class ShotHistoryTests(RuntimeTestCase):
