@@ -71,6 +71,14 @@ def recommend_flavor_correction(
     tag_config = tags.get(tag)
     if tag_config is None:
         return None
+    # "Persistent" means the required count *consecutively*, not merely that
+    # the tag has occurred before - the same tag showing up twice with a
+    # different tag (including "balanced") in between resets the streak.
+    # recent_tags only ever contains answered shots (see
+    # storage.recent_flavor_tags), so "consecutive" is relative to answered
+    # shots for this axis, not literal back-to-back shot numbers - a shot
+    # nobody responded to is invisible here, so it can neither break a
+    # streak in progress nor count toward one.
     required = int(config.get("require_persistent_pattern_shots", 1))
     if len(recent_tags) < required or any(t != tag for t in recent_tags[:required]):
         return None
