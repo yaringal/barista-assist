@@ -703,8 +703,10 @@ class BaristaRuntime:
         """Metadata the Live Shot/Shot History charts overlay on top of
         _shot_plot_points' raw [elapsed_ms, weight_g, flow_g_s] points: the
         pre-infusion/extraction boundary, the stop-press instant once it's
-        actually happened, and this bag's own expected flow rate (fixed
-        once per shot at brew time - see async_brew, ActiveShot.
+        actually happened, and this shot's own expected flow rate (roast-
+        level-keyed, not derived from this bag's own history - see
+        docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1 - fixed once per shot at
+        brew time - see async_brew, ActiveShot.
         expected_flow_g_s) for the frontend's flat-then-ramp idealized
         curve, derived there from target_yield_g. Same live-vs-frozen
         dual source as _shot_plot_points. None values mean "not known

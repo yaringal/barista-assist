@@ -173,7 +173,8 @@ class ShotAnalysis:
     invalid_reason: str | None
     # actual shot duration / expected duration for this bag (expected_s =
     # target_yield_g / expected_flow_g_s, itself Bayesian-shrunk toward this
-    # bag's own history - see blended_expected_flow_g_s). Below 1.0 = ran
+    # bag's roast_level - other bags sharing it, not this bag's own history,
+    # see blended_expected_flow_g_s). Below 1.0 = ran
     # fast, above 1.0 = ran slow/restrictive. None when a shot couldn't be
     # classified at all (t90 never reached and no samples to fall back on,
     # or too few samples). This is what expert_rules.grind_correction's

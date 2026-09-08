@@ -916,16 +916,24 @@ tasted. Worth weighing this whole prior lightly regardless of the exact
 numbers: Hoffmann's own "Episode 0" is an extended argument against exactly
 this kind of simplification ("not all two-to-ones are created equal" —
 ratio depends on dose, basket, grinder, and water at least as much as roast
-level). This should be overridden immediately by the bag's own accepted
-shots, the same way the flow classifier's fixed prior yields to a bag's own
-history. See `expert_rules.roast_level_ratio_prior` in `definitions.yaml`
-and `docs/CROSS_CREATOR_RULE_CHECK.md`.
+level). This is blended toward this installation's own accumulated ratio for
+the same `roast_level`, across *other* bags that share it, as that pool
+grows (`storage.roast_level_baseline`) — deliberately not toward the current
+bag's own accepted shots, which would let bean-aging drift within one bag's
+life quietly feed back into its own reference point; see
+`docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1/§2.3 for the full reasoning (the
+flow classifier's own fixed prior is blended the same roast-level-keyed way,
+for the same reason). See `expert_rules.roast_level_ratio_prior` in
+`definitions.yaml` and `docs/CROSS_CREATOR_RULE_CHECK.md`.
 
-The same fallback now also seeds `temperature_offset_c`
-(`expert_rules.roast_level_temperature_prior`), from Hoffmann's Temperature
-episode's own roast-level starting-temperature ballparks (darker/developed
-85-90°C, medium 88-92°C, lighter 90-95°C - "his own benchmarks, taken
-loosely from roasters' recommendations", not a precise rule). Those are
+The same fallback now also seeds `dose_g` (`expert_rules.roast_level_dose_prior`,
+sourced from Hoffmann's Dose episode's "the darker the roast... the less
+work you need to do to extract it... lighter roasts, go for a lower dose")
+and `temperature_offset_c` (`expert_rules.roast_level_temperature_prior`),
+from Hoffmann's Temperature episode's own roast-level starting-temperature
+ballparks (darker/developed 85-90°C, medium 88-92°C, lighter 90-95°C - "his
+own benchmarks, taken loosely from roasters' recommendations", not a precise
+rule). Those are
 absolute temperatures on his own machine, though, and `temperature_offset_c`
 is relative to whatever this installation's machine (the Breville/Sage
 Barista Express, this project's target hardware) is already set to. The
@@ -1429,12 +1437,18 @@ see Phase 3b. The mechanical-suspicion threshold remains an unvalidated
 guess.
 
 The expected flow rate is also a Bayesian shrinkage estimate, not just a
-fixed constant: it blends the global prior with a bag's own median flow
-rate from its recent healthy shots, weighted by how many such shots exist,
-so a bag that genuinely runs faster or slower than the generic guess stops
-being called "too fast"/"too restrictive" once its own history says
-otherwise. This is deliberately different treatment from mechanical
-suspicion above: a bag's characteristic pace is a reference point with
+fixed constant: it blends the global prior with the median flow rate across
+*other* bags sharing the same `roast_level`, weighted by how many such
+shots exist, so a roast level that genuinely runs faster or slower than the
+generic guess stops being called "too fast"/"too restrictive" once this
+installation's own history for that roast level says otherwise. Deliberately
+not blended toward the current bag's own history, unlike an earlier version
+of this design — bean-aging drift within one bag's life is handled by grind
+correction chasing a fixed reference instead, so a bag's own shots never
+feed back into its own reference point (see
+`docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1 for the full reasoning). This is
+deliberately different treatment from mechanical suspicion above: a
+roast level's characteristic pace is a reference point with
 nothing to protect against, so it's allowed to fully self-normalize,
 whereas the channeling-suspicion boundary is not, or a bag with a
 recurring puck-prep problem would train the model to stop catching it.
@@ -1468,9 +1482,10 @@ Success criterion:
 > shot history rather than fixed guesses.
 
 Also revisit then: `_baseline_deviation_suspicion` in `flow_analysis.py`
-doesn't grow more bag-dependent as a bag's healthy-shot count increases,
-unlike the flow-rate expectation (which already does, via Bayesian
-shrinkage). This is deliberate, not an oversight — see
+doesn't grow more bag-dependent as a bag's healthy-shot count increases -
+unlike an earlier version of the flow-rate expectation, which used to,
+before that per-bag shrinkage was itself removed (see
+`docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1). This is deliberate, not an oversight — see
 `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.8 for the full reasoning — but it's
 worth reconsidering once there's a way to check a bag's own baseline against
 real, independently verified outcomes (not just shots this same classifier
@@ -1480,8 +1495,9 @@ detection.
 
 See `docs/todo/ADAPTIVE_LEARNING_PLAN.md` for the fuller critical pass over this
 phase - which of these constants should actually become adaptive, which
-should stay fixed/human-recalibrated, and why (including revising the
-per-bag flow-rate shrinkage itself, not just recalibrating around it).
+should stay fixed/human-recalibrated, and why (the per-bag flow-rate
+shrinkage described above was itself one outcome of that pass, replaced with
+the roast-level-keyed version this section now describes).
 
 ---
 

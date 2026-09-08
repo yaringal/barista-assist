@@ -163,16 +163,24 @@ flow_analysis_constants:
 
   # --- Flow-rate classification (the Hoffmann-calibrated trio) ---------------
 
-  # How many "pseudo-shots" the expected_flow_g_s prior below is worth when
-  # blending with a bag's own healthy-shot history - shrinks toward the
-  # bag-specific median as shot_count grows. Unvalidated placeholder.
+  # How many "pseudo-shots" the expected_flow_g_s prior below (and, per
+  # docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.3/§2.4, roast_level_ratio_prior/
+  # roast_level_dose_prior in expert_rules) is worth when blending with this
+  # installation's own accumulated data for the same roast_level - shrinks
+  # toward that roast-level pool as its shot count grows. Deliberately not
+  # blended toward any one bag's own history (see flow_analysis.py's module
+  # docstring and docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1 for why). One
+  # shared shrinkage-weight constant, not a separate one per prior.
+  # Unvalidated placeholder.
   prior_weight_shots: 1.0
 
   # expected_flow_g_s: the flow rate (target_yield_g / total shot seconds,
-  # t90-ish) a "normal" shot is expected to run at, before any per-bag
-  # history exists (flow_analysis blends this with the bag's own recent
-  # median as shots accumulate - see flow_analysis.blended_expected_flow_g_s,
-  # unaffected by this change). too_fast_factor/too_restrictive_factor
+  # t90-ish) a "normal" shot is expected to run at, before this installation
+  # has accumulated any shots for that bag's roast_level (flow_analysis
+  # blends this with the median flow rate across *other* bags sharing that
+  # roast_level as such shots accumulate - see
+  # flow_analysis.blended_expected_flow_g_s; deliberately not blended toward
+  # this bag's own history). too_fast_factor/too_restrictive_factor
   # bound how far duration_s may deviate from expected_s (=
   # target_yield_g / expected_flow_g_s) before a shot leaves "healthy":
   # too_fast if duration_s < expected_s * too_fast_factor, too_restrictive
