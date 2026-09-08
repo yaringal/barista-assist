@@ -229,13 +229,9 @@ expert_rules:
   # can't yet tell them apart from the weight curve alone, so defaulting to
   # "repeat the recipe, don't touch grind" is the safe choice until it can.
   #
-  # TODO, queued: that "repeat, don't touch grind" default is applied the
-  # same way no matter how many consecutive shots at this recipe have come
-  # back puck_prep_issue - nothing tracks the streak or reconsiders the
-  # exclusion once it's happened repeatedly, even though a recurring result
-  # is evidence against "one-off bad tamp" and toward "grind genuinely too
-  # fine for this recipe" (see flow_analysis.py's classification TODO and
-  # docs/DESIGN.md §12).
+  # TODO: that "repeat, don't touch grind" default doesn't yet track
+  # consecutive puck_prep_issue shots at the same recipe - see
+  # docs/todo/LEVER_SEQUENCING_PLAN.md §3.1 for the full reasoning.
   grind_correction:
     applies_to_classification: [too_fast, too_restrictive]
     excludes_classification: [puck_prep_issue, invalid_measurement]
@@ -289,12 +285,8 @@ expert_rules:
   # consensus/mechanism over any one creator's personal preference - see
   # docs/CROSS_CREATOR_RULE_CHECK.md.
   #
-  # TODO(revisit once real, verified shot data exists): every tag's
-  # `escalation` block below is not yet implemented - flavor_correction.py
-  # only ever recommends a tag's own base lever/delta, never escalates to a
-  # second lever after a first correction is tried and the tag still
-  # persists. See flavor_correction.py's own module docstring for why this
-  # was deferred rather than built now.
+  # TODO: every tag's `escalation` block below is not yet implemented - see
+  # docs/todo/LEVER_SEQUENCING_PLAN.md §3.2 for the full proposed mechanism.
   flavor_correction:
     lever_order: [yield, temperature, dose, preinfusion]
 
@@ -308,7 +300,7 @@ expert_rules:
     minimum_meaningful_step:
       temperature_offset_c: 1
       dose_g: 0.5
-      target_yield_g: 2.5
+      target_yield_g: 4
 
     tags:
       sour_sharp:
@@ -324,7 +316,7 @@ expert_rules:
         # docs/DESIGN.md's Phase 4 section). Picked once here, in data,
         # rather than recomputed from a stored range every time
         # flavor_correction.py reads this tag.
-        delta_g: 5
+        delta_g: 4
         # Escalates to temperature only once the issue is
         # confirmed to persist across shots (Brew Temperature ep) and ratio
         # alone hasn't fixed it - if a milk drink comes out too weak as a

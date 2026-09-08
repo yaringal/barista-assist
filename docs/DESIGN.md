@@ -535,19 +535,9 @@ This prevents poor puck preparation from contaminating the model.
 
 **TODO, queued for later:** this section's "repeat the recipe, don't update
 it" response is applied identically no matter how many times in a row it
-happens for the same recipe. An occasional bad shot is exactly what this
-policy is for, but a recipe that keeps landing on `puck_prep_issue` shot
-after shot is no longer just evidence of inconsistent technique — it's
-evidence of something systematic (e.g. a grind set fine enough to channel
-reliably, which per `docs/CROSS_CREATOR_RULE_CHECK.md`'s Lance Hedrick
-cross-check is itself a case for coarsening the grind, not repeating puck
-prep). Nothing today tracks a consecutive run of this classification at an
-unchanged recipe or reacts differently once it's happened several times —
-see the `TODO` comment on `flow_analysis.py`'s classification function.
-Unlike Phase 3b above, this doesn't need to wait on real shot history to
-calibrate against — it's a bookkeeping gap (a per-bag+recipe consecutive
-counter, surfaced past some threshold), not a data one — so it can be picked
-up whenever, independent of the other phases.
+happens for the same recipe — see `docs/todo/LEVER_SEQUENCING_PLAN.md` §3.1
+for the full reasoning and the proposed fix (a bookkeeping gap, not a data
+one, so it doesn't need to wait on real shot history).
 
 ---
 
@@ -1480,14 +1470,15 @@ Success criterion:
 Also revisit then: `_baseline_deviation_suspicion` in `flow_analysis.py`
 doesn't grow more bag-dependent as a bag's healthy-shot count increases,
 unlike the flow-rate expectation (which already does, via Bayesian
-shrinkage). This is deliberate, not an oversight — see the `TODO` comment
-on that function for the full reasoning — but it's worth reconsidering once
-there's a way to check a bag's own baseline against real, independently
-verified outcomes (not just shots this same classifier already called
-"healthy"), since only then can more bag-dependence be added there without
-risking a recurring problem normalizing itself out of detection.
+shrinkage). This is deliberate, not an oversight — see
+`docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.8 for the full reasoning — but it's
+worth reconsidering once there's a way to check a bag's own baseline against
+real, independently verified outcomes (not just shots this same classifier
+already called "healthy"), since only then can more bag-dependence be added
+there without risking a recurring problem normalizing itself out of
+detection.
 
-See `docs/ADAPTIVE_LEARNING_PLAN.md` for the fuller critical pass over this
+See `docs/todo/ADAPTIVE_LEARNING_PLAN.md` for the fuller critical pass over this
 phase - which of these constants should actually become adaptive, which
 should stay fixed/human-recalibrated, and why (including revising the
 per-bag flow-rate shrinkage itself, not just recalibrating around it).
@@ -1549,8 +1540,8 @@ reporting the same tag (a single report is noise, not evidence - see Stage
 3's own reasoning above), and only recommends the tag's *base* lever/delta:
 `escalation` (stepping up to a second lever, e.g. yield → temperature, once
 the first correction is tried and the tag still persists) is not yet
-implemented - see the `TODO` on `expert_rules.flavor_correction` in
-definitions.yaml and `flavor_correction.py`'s own module docstring for why.
+implemented - see `docs/todo/LEVER_SEQUENCING_PLAN.md` §3.2 for the full
+proposed mechanism.
 
 Success criterion:
 

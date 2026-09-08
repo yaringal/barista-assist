@@ -17,13 +17,11 @@ recent *answered* shots in a row (see storage.recent_flavor_tags for what
 already been tried and the tag still persists) is intentionally not
 implemented yet.
 
-TODO(revisit once real, verified shot data exists): escalation requires
-knowing whether a previous recommendation on this tag was actually acted on
-- detectable in principle by checking whether target_yield_g (or whichever
-lever was recommended) actually moved in the recommended direction between
-the shot that carried the recommendation and now, using only data already in
-the shots table - but that is a second layer of judgment worth building once
-the base (non-escalated) recommendation below has real usage behind it.
+TODO: escalation is unimplemented - see docs/todo/LEVER_SEQUENCING_PLAN.md
+§3.2 for the full proposed mechanism (repetition-gated escalation, plus how
+to detect a prior recommendation was actually acted on) and why it's worth
+building only once the base, non-escalated recommendation below has real
+usage behind it.
 """
 
 from __future__ import annotations

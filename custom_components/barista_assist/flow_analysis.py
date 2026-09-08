@@ -27,6 +27,11 @@ baseline, and deliberately treats them differently:
   below is a Bayesian shrinkage estimate: a weighted blend of the fixed
   prior and this bag's own median flow rate, sliding smoothly toward the
   bag's data as `baseline.shot_count` grows, with no hard cutover point.
+  This per-`bag_id` design is under active review, not settled: see
+  `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1, which concludes per-bag
+  shrinkage should be dropped entirely (grind correction alone already
+  handles within-bag aging drift) in favor of shrinkage keyed on
+  `roast_level` across *other* bags' shots instead (§2.3).
 
 - Mechanical-health suspicion (docs/DESIGN.md section 13's "did resistance
   appear to collapse unexpectedly?") is judged primarily against a fixed
@@ -161,6 +166,8 @@ class ShotAnalysis:
     # classified at all (t90 never reached and no samples to fall back on,
     # or too few samples). This is what expert_rules.grind_correction's
     # bands (definitions.yaml) key off of - see grind_correction.py.
+    # expected_s scaling with target_yield_g is deliberate - see the
+    # computation site below (analyze_shot) for why.
     duration_ratio: float | None
     t_first_flow_ms: int | None
     t10_ms: int | None
@@ -391,20 +398,11 @@ def blended_expected_flow_g_s(baseline: BaselineFeatures | None, config: FlowAna
     here, so the global prior is allowed to fully wash out as real shots
     accumulate rather than only ever being overridden, never replaced.
 
-    TODO(revisit once real, verified shot data exists): fully bidirectional
-    shrinkage has a "boiling frog" risk symmetrical to the one
-    _baseline_deviation_suspicion's TODO describes for channeling. As beans
-    age, true flow rate drifts and grind corrections (Phase 4) chase it back
-    toward config.expected_flow_g_s - but median_flow_g_s is built only from
-    this bag's own recent shots, already reflecting those corrections. Once
-    enough corrected shots accumulate, the blended expected rate just tracks
-    wherever the corrections have settled, so duration_ratio (which this
-    feeds, at the call site below) stops being able to see the underlying
-    drift at all - the classifier and the corrector end up chasing each
-    other's tail instead of one checking the other. Unlike the channeling
-    case there's no independent "healthy" self-labeling loop here (flow rate
-    isn't an evaluative judgment), so this may be an acceptable trade-off in
-    practice - but it hasn't been checked against real multi-week bag data.
+    TODO: this function's whole per-`bag_id`-scoped design is under review,
+    not settled - see `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1/§2.3 for the
+    full reasoning (a "boiling frog" risk where grind corrections and this
+    blend end up chasing each other's tail) and the proposed fix (drop
+    per-bag shrinkage entirely, replace with `roast_level`-keyed shrinkage).
     """
     if baseline is None or baseline.shot_count <= 0:
         return config.expected_flow_g_s
@@ -426,22 +424,11 @@ def _baseline_deviation_suspicion(late_accel: float, baseline: BaselineFeatures)
     the same "rising flow only" rule _absolute_mechanical_suspicion uses.
     An unusually low/declining late_accel is not a channeling signal.
 
-    TODO(revisit once real, verified shot data exists): this doesn't grow
-    more bag-dependent as shot_count increases past config.min_baseline_shots,
-    unlike blended_expected_flow_g_s. That's deliberate for now, not an
-    oversight: median_late_accel is built only from shots THIS classifier
-    already called "healthy" - self-labeled, not independently verified. If
-    the fixed prior below is even slightly lenient, mildly-bad shots leak
-    into that pool and pull the bag's own baseline toward tolerating exactly
-    that badness, which then judges future shots - a closed loop with
-    nothing to correct it (the docs/DESIGN.md section 12 contamination
-    risk). Flow rate has no equivalent risk (a bag's pace is just a fact,
-    not an evaluative judgment), which is why only it gets Bayesian
-    shrinkage today. A safer path to more bag-dependence here, once we can
-    check it against real outcomes: keep config.absolute_accel_limit_g_s2 as a
-    permanent floor, but let growing shot_count increase how *sensitive*
-    this deviation check is (smaller deviations start counting), rather
-    than moving the floor itself.
+    TODO: deliberately doesn't grow more bag-dependent as shot_count
+    increases past config.min_baseline_shots, unlike blended_expected_flow_g_s
+    - see `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.8 for the full reasoning
+    (a contamination/closed-loop risk on this specific baseline) and the
+    proposed safer path (widen sensitivity, not the floor).
     """
     reference = max(abs(baseline.median_late_accel), 0.1)
     rise_above_baseline = max(late_accel - baseline.median_late_accel, 0.0)
@@ -587,6 +574,19 @@ def analyze_shot(
     late_accel = _linear_slope(late_times, late_values)
 
     duration_s = (t90_ms if t90_ms is not None else times_ms[-1]) / 1000.0
+    # expected_s scales with target_yield_g on purpose - this is a statement
+    # about the bag's characteristic flow RATE, not a fixed personal time
+    # preference. "How I Dial-In Espresso" Episode 1 holds grind (hence
+    # rate) constant while deliberately pushing yield up (38g->42g, "keep
+    # the grind where it is and just push a little bit more liquid through
+    # it") and never compensates to keep the shot's absolute time fixed - a
+    # mechanically unchanged shot (same rate) that's deliberately pulled to
+    # a larger yield should take longer and still read as healthy. If
+    # expected_s didn't scale with target_yield_g, that same shot would be
+    # wrongly flagged too_restrictive purely for running longer, with
+    # nothing actually wrong. Full justification and an open caveat (flow
+    # rate isn't necessarily constant across a whole pour) in
+    # docs/todo/ADAPTIVE_LEARNING_PLAN.md's expected_s addendum (§2.1).
     expected_s = target_yield_g / blended_expected_flow_g_s(baseline, config)
     duration_ratio = duration_s / expected_s if expected_s > 0 else None
 
@@ -603,26 +603,10 @@ def analyze_shot(
     # after - a shot that both finishes fast and shows a channeling signature
     # is a puck-prep problem to fix before grind is even worth adjusting.
     #
-    # TODO(revisit - no dependency on real shot data, this could be built now):
-    # every PUCK_PREP_ISSUE shot gets treated identically - "repeat the
-    # recipe, don't learn from it" (DESIGN.md section 12,
-    # definitions.yaml's expert_rules.grind_correction.excludes_classification)
-    # - with nothing tracking whether the SAME recipe keeps landing here
-    # across consecutive shots. That's a meaningful gap: an occasional bad
-    # tamp is exactly what "repeat and don't learn" is for, but a recipe that
-    # produces this classification shot after shot is no longer evidence of
-    # random technique variance - it's evidence of something systematic
-    # (e.g. a genuinely too-fine grind producing a stable channel, which
-    # Lance Hedrick's "Fix Sour Espresso" video treats as a case for
-    # coarsening the grind, not repeating puck prep - see
-    # docs/CROSS_CREATOR_RULE_CHECK.md's "new gap surfaced" note). Nothing
-    # here or in runtime.py/storage.py currently notices a consecutive run of
-    # PUCK_PREP_ISSUE classifications at an unchanged recipe, or does
-    # anything differently because of it - each one is scored independently
-    # of the shots before it. Unlike _baseline_deviation_suspicion's TODO
-    # above, this doesn't need to wait on real recorded shot data - it's a
-    # bookkeeping gap (a per-bag+recipe consecutive-count, surfaced past some
-    # threshold), not a calibration one.
+    # TODO: every PUCK_PREP_ISSUE shot is treated identically regardless of
+    # how many consecutive shots at this same recipe landed here - see
+    # docs/todo/LEVER_SEQUENCING_PLAN.md §3.1 for the full reasoning and why
+    # this doesn't need real shot data to build.
     if t90_ms is None:
         classification = ShotClassification.TOO_RESTRICTIVE
     elif channeling_suspicion >= config.suspicion_threshold:
