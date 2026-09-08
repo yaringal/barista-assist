@@ -4,10 +4,12 @@ each hand-annotated with the barista's own judgment of the shot. Complements
 test_flow_analysis.py's synthetic curves - see that module's docstring for
 why synthetic curves were used first (real shot data wasn't available yet).
 
-analyze_shot is called with baseline=None throughout: fixtures don't carry
-the actual historical baseline that was live at export time, and the point
-here is whether the classifier's fixed-prior logic agrees with the human's
-own call on the shot, not bit-for-bit reproduction of a historical DB row.
+analyze_shot is called with baseline=None and expected_flow_g_s=CONFIG.
+expected_flow_g_s (the fixed global prior, no roast-level pool) throughout:
+fixtures don't carry the actual historical baseline/pool that was live at
+export time, and the point here is whether the classifier's fixed-prior
+logic agrees with the human's own call on the shot, not bit-for-bit
+reproduction of a historical DB row.
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ class GoodShotAdaptPiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
@@ -62,7 +64,7 @@ class GoodShotAdaptPiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertGreater(result.t_first_flow_ms, self.shot.preinfusion_s * 1000)
 
@@ -97,7 +99,7 @@ class TooFastMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
@@ -128,7 +130,7 @@ class LateCupMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, "flow_started_before_preinfusion_end")
@@ -157,7 +159,7 @@ class ChokedMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
@@ -187,7 +189,7 @@ class TooRestrictiveMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
@@ -229,7 +231,7 @@ class GoodButFlaggedMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)  # no longer wrongly discarded
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
@@ -265,7 +267,7 @@ class StaleScaleClockMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
@@ -310,7 +312,7 @@ class ViolentGushMachinePiTests(unittest.TestCase):
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertIsNotNone(result.t90_ms)

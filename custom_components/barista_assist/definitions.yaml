@@ -310,12 +310,12 @@ expert_rules:
         # independent cross-creator examples (Lance x2, Perger) all used
         # bigger jumps - 5g, 8-10g, +10g - a 3-source majority, not "trust
         # Lance over Hoffmann". None of the sources agree on one exact
-        # number though, so 5 (this spread's own low end) is a project-level
-        # implementation choice, not itself sourced from any one video -
-        # same category as Phase 4's grind_correction magnitudes (see
-        # docs/DESIGN.md's Phase 4 section). Picked once here, in data,
-        # rather than recomputed from a stored range every time
-        # flavor_correction.py reads this tag.
+        # number though, so 4 (just below this spread's own low end) is a
+        # project-level implementation choice, not itself sourced from any
+        # one video - same category as Phase 4's grind_correction
+        # magnitudes (see docs/DESIGN.md's Phase 4 section). Picked once
+        # here, in data, rather than recomputed from a stored range every
+        # time flavor_correction.py reads this tag.
         delta_g: 4
         # Escalates to temperature only once the issue is
         # confirmed to persist across shots (Brew Temperature ep) and ratio
@@ -381,7 +381,13 @@ expert_rules:
   # inherit a recipe from (there is still no "similar coffee" warm-start
   # match to prefer over this; DESIGN.md §19's own warm-start logic remains
   # unimplemented, so this prior is used whenever roast_level is known and
-  # there's nothing else at all to seed from).
+  # there's nothing else at all to seed from). Blended toward this
+  # installation's own accumulated ratio for the same roast_level once other
+  # bags of that roast level have shots (docs/todo/ADAPTIVE_LEARNING_PLAN.md
+  # §2.3) - see storage.roast_level_baseline, shared with
+  # flow_analysis_constants.expected_flow_g_s's own roast-level shrinkage
+  # (§2.1) and roast_level_dose_prior below (§2.4): one aggregate, not three
+  # independent lookups.
   #
   # dark/light are Lance Hedrick's stated guideline (two videos agree
   # closely). medium was cross-checked against Hoffmann's own actual
@@ -402,10 +408,12 @@ expert_rules:
     medium: 2.2
     light: 3.0
     # Both Lance sources are explicit these are loose starting points, not
-    # fixed targets - use only to seed target_yield_g for a brand-new bag; a
-    # bag's own accepted shots should override this immediately, the same
-    # way flow_analysis_constants' expected_flow_g_s prior yields to a bag's
-    # own history.
+    # fixed targets - use only to seed target_yield_g for a brand-new bag;
+    # this installation's own accumulated ratio for the same roast_level
+    # should override this as that pool grows, the same way
+    # flow_analysis_constants' expected_flow_g_s prior yields to the
+    # roast-level pool, not to any one bag's own history (see this key's own
+    # intro comment above).
 
   # --- Phase 5/6: roast_level_temperature_prior ---------------------------------
   # Same scope/consumer as roast_level_ratio_prior directly above (runtime.py's
@@ -449,6 +457,30 @@ expert_rules:
     dark: -1
     medium: 0
     light: 1
+
+  # --- Phase 5/6: roast_level_dose_prior ---------------------------------------
+  # Same scope/consumer as roast_level_ratio_prior above (runtime.py's
+  # async_new_bag, only for a brand-new bag in an empty slot) - seeds dose_g.
+  # Blended toward this installation's own accumulated dose for the same
+  # roast_level the same way (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.4),
+  # sharing one aggregate with roast_level_ratio_prior/expected_flow_g_s
+  # above rather than an independent lookup.
+  #
+  # Sourced from Hoffmann's Dose episode: "generally speaking the darker the
+  # roast of a coffee the less work you need to do to extract it... I would
+  # recommend with lighter roasts go for a lower dose." This gives explicit
+  # direction only for light roasts - dark/medium are left at today's flat
+  # default (18.0, defaults.recipe.dose_g) since the quote doesn't say dark
+  # should move either way. light's -2.0g step mirrors the same conservative
+  # single-step magnitude roast_level_temperature_prior already uses above,
+  # for the same reason: real uncertainty in translating a qualitative
+  # direction into a specific number. A placeholder anchor, not a validated
+  # rule - keep it loose, same caution as roast_level_ratio_prior's own
+  # comment above.
+  roast_level_dose_prior:
+    dark: 18.0
+    medium: 18.0
+    light: 18.0
 
 entities:
   sensor:
@@ -559,7 +591,7 @@ entities:
     recommended_flavor:
       # Phase 5 (docs/DESIGN.md section 13) - a human-readable "current
       # setting -> recommended setting" note per axis (e.g. "Target yield:
-      # 36.0 -> 41.0 (persistent sour_sharp)"), computed in
+      # 36.0 -> 40.0 (persistent sour_sharp)"), computed in
       # BaristaRuntime.entity_value from the selected bag's own recent,
       # answered taste-feedback tags (storage.recent_flavor_tags) plus
       # flavor_correction.py's recommend_flavor_correction() output. Both

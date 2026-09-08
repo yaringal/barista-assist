@@ -16,22 +16,23 @@ project's own shot data yet, and replacing them with data-driven thresholds
 is tracked as its own follow-up phase in docs/DESIGN.md - but that's a
 property of the YAML values, not of this module.
 
-This module blends two different kinds of "prior" against a per-bag
-baseline, and deliberately treats them differently:
+This module blends two different kinds of "prior," against two differently
+scoped baselines, and deliberately treats them differently:
 
-- The expected flow rate (what pace counts as "too fast"/"too restrictive"
-  for this bag) is a reference point, not a safety boundary: there's no
-  problem in a bag genuinely pouring faster or slower than the generic
-  global guess, so it's fine - correct, even - for the model to shift fully
-  toward this bag's own observed pace as shots accumulate. `expected_s`
-  below is a Bayesian shrinkage estimate: a weighted blend of the fixed
-  prior and this bag's own median flow rate, sliding smoothly toward the
-  bag's data as `baseline.shot_count` grows, with no hard cutover point.
-  This per-`bag_id` design is under active review, not settled: see
-  `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1, which concludes per-bag
-  shrinkage should be dropped entirely (grind correction alone already
-  handles within-bag aging drift) in favor of shrinkage keyed on
-  `roast_level` across *other* bags' shots instead (§2.3).
+- The expected flow rate (what pace counts as "too fast"/"too restrictive")
+  is a reference point, not a safety boundary: there's no problem in a
+  roast level genuinely pouring faster or slower than the generic global
+  guess, so it's fine - correct, even - for the model to shift fully toward
+  this installation's own observed pace for that roast level as shots
+  accumulate. `expected_s` below is a Bayesian shrinkage estimate: a
+  weighted blend of the fixed prior and the median flow rate across *other*
+  bags' shots sharing the same `roast_level`, sliding smoothly toward that
+  pool's data as its shot count grows, with no hard cutover point. This is
+  deliberately keyed on roast level, not on the current bag's own history -
+  see `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1: bean-aging drift within one
+  bag's life is handled by grind correction chasing a fixed reference
+  instead, so a bag's own shots never feed back into its own reference
+  point. §2.3 covers the same mechanism for `roast_level_ratio_prior`.
 
 - Mechanical-health suspicion (docs/DESIGN.md section 13's "did resistance
   appear to collapse unexpectedly?") is judged primarily against a fixed
@@ -44,8 +45,10 @@ baseline, and deliberately treats them differently:
   problem"), not just a reference point - letting it drift down would let a
   bag whose shots have consistently had a channeling problem "normalize"
   that pattern and stop flagging it, which is exactly the contamination
-  docs/DESIGN.md section 12 warns against. The asymmetry is deliberate, not
-  an inconsistency with the flow-rate blending above.
+  docs/DESIGN.md section 12 warns against. This one stays scoped to the
+  current bag's own shot history (unlike flow-rate above) precisely because
+  self-normalization is the failure mode being guarded against here - see
+  `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.8.
 
 Not implemented: section 13 also asks "did the flow change smoothly?" /
 "is the scale trace noisy or otherwise unreliable?" `flow_variance` and
@@ -138,16 +141,25 @@ class InvalidReason(str, Enum):
 
 @dataclass(slots=True)
 class BaselineFeatures:
-    """Summary of a bag's recent healthy shots.
-
-    median_flow_g_s feeds a symmetric Bayesian blend of the expected flow
-    rate (see module docstring); median_late_accel feeds the asymmetric,
-    escalation-only mechanical-suspicion check. They are updated differently
-    on purpose - see blended_expected_flow_g_s vs _baseline_deviation_suspicion.
+    """Summary of a bag's own recent healthy shots, for channeling-suspicion
+    scoring only (_baseline_deviation_suspicion) - see module docstring for
+    why this stays a per-bag baseline while the flow-rate reference
+    (RoastLevelFlowBaseline below) does not.
     """
 
     shot_count: int
     median_late_accel: float
+
+
+@dataclass(slots=True)
+class RoastLevelFlowBaseline:
+    """Summary of other bags' shots sharing the current bag's roast_level,
+    used only by blended_expected_flow_g_s (see module docstring). Deliberately
+    not scoped to the current bag - see docs/todo/ADAPTIVE_LEARNING_PLAN.md
+    §2.1 for why.
+    """
+
+    shot_count: int
     median_flow_g_s: float
 
 
@@ -384,32 +396,48 @@ def _mean_second_derivative(times_s: list[float], values: list[float]) -> float:
 # --- Expected-flow-rate blending and channeling-suspicion scoring ----------
 
 
-def blended_expected_flow_g_s(baseline: BaselineFeatures | None, config: FlowAnalysisConfig) -> float:
-    """Bayesian shrinkage toward this bag's own observed flow rate.
-
-    Public (not analyze_shot-only) because runtime.py's async_brew also
-    calls this directly, once per shot at brew time, to seed
-    ActiveShot.expected_flow_g_s - the idealized-curve overlay the Live
-    Shot/Shot History charts draw needs this rate available immediately,
-    not only after the shot finishes and analyze_shot runs.
-
-    A bag's characteristic pace is a reference point, not a safety boundary -
-    unlike mechanical suspicion below, there's nothing to protect against
-    here, so the global prior is allowed to fully wash out as real shots
-    accumulate rather than only ever being overridden, never replaced.
-
-    TODO: this function's whole per-`bag_id`-scoped design is under review,
-    not settled - see `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1/§2.3 for the
-    full reasoning (a "boiling frog" risk where grind corrections and this
-    blend end up chasing each other's tail) and the proposed fix (drop
-    per-bag shrinkage entirely, replace with `roast_level`-keyed shrinkage).
+def blend_toward_observed(prior: float, observed: float, shot_count: int, weight: float) -> float:
+    """Bayesian shrinkage of a fixed prior toward an observed value, weighted
+    by how much data backs the observed value - shared shrinkage-weight
+    formula for blended_expected_flow_g_s below and, per
+    docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.3/§2.4, runtime.py's
+    roast-level-seeded ratio/dose priors. `weight` is
+    flow_analysis_constants.prior_weight_shots in every current caller - one
+    shrinkage-weight constant shared across all of them, not a separate one
+    per prior.
     """
-    if baseline is None or baseline.shot_count <= 0:
+    if shot_count <= 0:
+        return prior
+    return (weight * prior + shot_count * observed) / (weight + shot_count)
+
+
+def blended_expected_flow_g_s(
+    baseline: RoastLevelFlowBaseline | None, config: FlowAnalysisConfig
+) -> float:
+    """Bayesian shrinkage toward *other* bags' observed flow rate, pooled by
+    roast_level - see module docstring for why this is roast-level-scoped,
+    not scoped to the current bag.
+
+    Public because runtime.py's async_brew calls this directly, once per
+    shot at brew time, to seed ActiveShot.expected_flow_g_s - the
+    idealized-curve overlay the Live Shot/Shot History charts draw needs
+    this rate available immediately, not only after the shot finishes.
+    analyze_shot itself does NOT call this - it takes the already-computed
+    rate as its own expected_flow_g_s param instead, so classification at
+    finalize time can never diverge from what async_brew already computed
+    and the user already saw (see analyze_shot's own docstring for why
+    re-deriving it here would be a real, not just redundant, bug).
+
+    A roast level's characteristic pace is a reference point, not a safety
+    boundary - unlike mechanical suspicion below, there's nothing to protect
+    against here, so the global prior is allowed to fully wash out as real
+    shots accumulate rather than only ever being overridden, never replaced.
+    """
+    if baseline is None:
         return config.expected_flow_g_s
-    return (
-        config.prior_weight_shots * config.expected_flow_g_s
-        + baseline.shot_count * baseline.median_flow_g_s
-    ) / (config.prior_weight_shots + baseline.shot_count)
+    return blend_toward_observed(
+        config.expected_flow_g_s, baseline.median_flow_g_s, baseline.shot_count, config.prior_weight_shots
+    )
 
 
 def _absolute_mechanical_suspicion(mid_accel: float, late_accel: float, config: FlowAnalysisConfig) -> float:
@@ -472,6 +500,7 @@ def analyze_shot(
     target_yield_g: float,
     preinfusion_s: float,
     baseline: BaselineFeatures | None,
+    expected_flow_g_s: float,
     config: FlowAnalysisConfig,
 ) -> ShotAnalysis:
     """Classify one shot's flow curve (docs/DESIGN.md section 13, Stage 1).
@@ -481,7 +510,18 @@ def analyze_shot(
     (FlowAnalysisConfig(**load_definitions().flow_analysis_constants)) - see
     that key's own comment in definitions.yaml for the full derivation of
     each value, and FlowAnalysisConfig's own docstring for why this module
-    holds no default numbers at all.
+    holds no default numbers at all. baseline feeds channeling-suspicion
+    scoring only. expected_flow_g_s feeds expected_s's flow-rate reference
+    only (see module docstring for why these are two differently-scoped
+    baselines, not one) - it's the caller's own already-computed
+    blended_expected_flow_g_s(roast_level_baseline, config) result, not a
+    baseline to blend here: runtime.py's async_brew computes and persists
+    this once, at brew time, and _async_finalize must reuse that exact same
+    value rather than re-fetching/re-blending the roast-level pool again at
+    finalize time - the pool can genuinely change in between (a different
+    bag's shot finishing), and classification must match what the Live
+    Shot/Shot History charts' idealized-curve overlay already showed the
+    user, not silently diverge from it.
     """
     if len(samples) < config.min_samples:
         return _invalid(InvalidReason.TOO_FEW_SAMPLES)
@@ -587,7 +627,7 @@ def analyze_shot(
     # nothing actually wrong. Full justification and an open caveat (flow
     # rate isn't necessarily constant across a whole pour) in
     # docs/todo/ADAPTIVE_LEARNING_PLAN.md's expected_s addendum (§2.1).
-    expected_s = target_yield_g / blended_expected_flow_g_s(baseline, config)
+    expected_s = target_yield_g / expected_flow_g_s if expected_flow_g_s > 0 else 0.0
     duration_ratio = duration_s / expected_s if expected_s > 0 else None
 
     absolute_score = _absolute_mechanical_suspicion(mid_accel, late_accel, config)

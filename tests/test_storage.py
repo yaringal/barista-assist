@@ -433,16 +433,52 @@ class StorageTests(unittest.TestCase):
 
     def test_recent_healthy_features_medians_recent_healthy_shots(self) -> None:
         bag = self.new_bag()
-        # target_yield_g=36, t90_ms=20000 -> flow rate 1.8 g/s
         self.finalize_with_analysis(bag, classification="healthy", late_accel=0.0, t90_ms=20000)
-        # target_yield_g=36, t90_ms=30000 -> flow rate 1.2 g/s
         self.finalize_with_analysis(bag, classification="healthy", late_accel=0.2, t90_ms=30000)
         self.finalize_with_analysis(bag, classification="puck_prep_issue", late_accel=5.0, t90_ms=9000)
 
         features = self.db.recent_healthy_features(bag.id)
         self.assertEqual(features["shot_count"], 2)
         self.assertAlmostEqual(features["median_late_accel"], 0.1)
-        self.assertAlmostEqual(features["median_flow_g_s"], 1.5)
+
+    def test_roast_level_baseline_is_none_with_no_roast_level(self) -> None:
+        self.assertIsNone(self.db.roast_level_baseline(None))
+
+    def test_roast_level_baseline_is_none_with_no_matching_shots(self) -> None:
+        self.assertIsNone(self.db.roast_level_baseline("medium"))
+
+    def test_roast_level_baseline_excludes_the_given_bag(self) -> None:
+        bag = self.new_bag(roast_level="medium")
+        self.finalize_with_analysis(bag, classification="healthy", late_accel=0.0, t90_ms=20000)
+        self.assertIsNone(self.db.roast_level_baseline("medium", exclude_bag_id=bag.id))
+        self.assertIsNotNone(self.db.roast_level_baseline("medium"))
+
+    def test_roast_level_baseline_includes_too_fast_and_too_restrictive_but_not_puck_prep_issue(
+        self,
+    ) -> None:
+        bag = self.new_bag(roast_level="medium")
+        self.finalize_with_analysis(bag, classification="too_fast", late_accel=0.0, t90_ms=10000)
+        self.finalize_with_analysis(bag, classification="too_restrictive", late_accel=0.0, t90_ms=40000)
+        self.finalize_with_analysis(bag, classification="puck_prep_issue", late_accel=5.0, t90_ms=9000)
+
+        self.assertEqual(self.db.roast_level_baseline("medium")["shot_count"], 2)
+
+    def test_roast_level_baseline_medians_across_bags_sharing_roast_level(self) -> None:
+        bag_a = self.new_bag(roast_level="medium")
+        # target_yield_g=36, dose_g=18 -> flow rate 1.8 g/s, ratio 2.0
+        self.finalize_with_analysis(bag_a, classification="healthy", late_accel=0.0, t90_ms=20000)
+        # Replaces bag_a in the slot, but bag_a's own row/shots stay queryable.
+        bag_b = self.new_bag(roast_level="medium")
+        # target_yield_g=36, dose_g=18 -> flow rate 1.2 g/s, ratio 2.0
+        self.finalize_with_analysis(bag_b, classification="healthy", late_accel=0.0, t90_ms=30000)
+        bag_c = self.new_bag(roast_level="dark")
+        self.finalize_with_analysis(bag_c, classification="healthy", late_accel=0.0, t90_ms=12000)
+
+        baseline = self.db.roast_level_baseline("medium", exclude_bag_id=bag_b.id)
+        self.assertEqual(baseline["shot_count"], 1)
+        self.assertAlmostEqual(baseline["median_flow_g_s"], 1.8)
+        self.assertAlmostEqual(baseline["median_ratio"], 2.0)
+        self.assertAlmostEqual(baseline["median_dose_g"], 18.0)
 
     def test_recent_shots_with_no_limit_returns_every_shot(self) -> None:
         bag = self.new_bag()

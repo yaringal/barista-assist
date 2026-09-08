@@ -24,6 +24,7 @@ storage = ha_stubs.import_barista_module("storage")
 definitions = ha_stubs.import_barista_module("definitions")
 
 BaselineFeatures = flow_analysis.BaselineFeatures
+RoastLevelFlowBaseline = flow_analysis.RoastLevelFlowBaseline
 ShotClassification = flow_analysis.ShotClassification
 InvalidReason = flow_analysis.InvalidReason
 analyze_shot = flow_analysis.analyze_shot
@@ -36,11 +37,7 @@ ShotSample = storage.ShotSample
 CONFIG = flow_analysis.FlowAnalysisConfig(**definitions.load_definitions().flow_analysis_constants)
 
 TARGET_YIELD_G = 36.0
-# median_flow_g_s matches the module's own prior everywhere except the
-# dedicated blending test, so it's a no-op for tests not about that.
-HEALTHY_BASELINE = BaselineFeatures(
-    shot_count=3, median_late_accel=0.0, median_flow_g_s=CONFIG.expected_flow_g_s
-)
+HEALTHY_BASELINE = BaselineFeatures(shot_count=3, median_late_accel=0.0)
 
 
 def _simulate(flow_fn, duration_s: float, hz: float = 10.0) -> list[ShotSample]:
@@ -80,7 +77,7 @@ class FlowAnalysisTests(unittest.TestCase):
     def test_too_few_samples_is_invalid(self) -> None:
         samples = _steady_flow_samples(18.0)[:3]
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertFalse(result.baseline_eligible)
@@ -90,7 +87,7 @@ class FlowAnalysisTests(unittest.TestCase):
         """A scale fault or empty cup: plenty of samples, but almost no beverage mass."""
         samples = _simulate(lambda _t: 0.02, 18.0)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, InvalidReason.NEAR_ZERO_FINAL_WEIGHT)
@@ -104,7 +101,7 @@ class FlowAnalysisTests(unittest.TestCase):
         """
         samples = _steady_flow_samples(duration_s=24.0)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=7.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=7.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, InvalidReason.FLOW_STARTED_BEFORE_PREINFUSION_END)
@@ -114,7 +111,7 @@ class FlowAnalysisTests(unittest.TestCase):
         flow at any point: an implausible combination, not a genuinely slow pour."""
         samples = _simulate(lambda _t: 0.05, 30.0)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.t_first_flow_ms)
         self.assertEqual(result.classification, ShotClassification.INVALID)
@@ -124,7 +121,7 @@ class FlowAnalysisTests(unittest.TestCase):
         expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         samples = _steady_flow_samples(duration_s=expected_s)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
         self.assertIsNotNone(result.t50_ms)
@@ -140,7 +137,7 @@ class FlowAnalysisTests(unittest.TestCase):
     def test_duration_ratio_is_none_for_an_invalid_shot(self) -> None:
         samples = _steady_flow_samples(18.0)[:3]  # too few samples
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertIsNone(result.duration_ratio)
@@ -155,7 +152,7 @@ class FlowAnalysisTests(unittest.TestCase):
         samples = _steady_flow_samples(duration_s=expected_s)
 
         under_real_config = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(under_real_config.classification, ShotClassification.HEALTHY)
 
@@ -167,6 +164,7 @@ class FlowAnalysisTests(unittest.TestCase):
             target_yield_g=TARGET_YIELD_G,
             preinfusion_s=0.0,
             baseline=HEALTHY_BASELINE,
+            expected_flow_g_s=CONFIG.expected_flow_g_s,
             config=tighter_config,
         )
         self.assertEqual(under_explicit_config.classification, ShotClassification.TOO_FAST)
@@ -178,7 +176,7 @@ class FlowAnalysisTests(unittest.TestCase):
         expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         clean = _steady_flow_samples(duration_s=expected_s)
         clean_result = analyze_shot(
-            clean, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, config=CONFIG
+            clean, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(clean_result.classification, ShotClassification.HEALTHY)
 
@@ -205,7 +203,7 @@ class FlowAnalysisTests(unittest.TestCase):
             clean + disturbed_tail,
             target_yield_g=TARGET_YIELD_G,
             preinfusion_s=0.0,
-            baseline=None, config=CONFIG
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
         self.assertEqual(result.t90_ms, clean_result.t90_ms)
@@ -243,7 +241,7 @@ class FlowAnalysisTests(unittest.TestCase):
             noisy_preinfusion + shifted_pour,
             target_yield_g=TARGET_YIELD_G,
             preinfusion_s=0.0,
-            baseline=HEALTHY_BASELINE, config=CONFIG
+            baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
 
@@ -291,7 +289,7 @@ class FlowAnalysisTests(unittest.TestCase):
             )
         ]
         result = analyze_shot(
-            disturbed, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, config=CONFIG
+            disturbed, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.INVALID)
         self.assertEqual(result.invalid_reason, InvalidReason.DISTURBANCE_LEFT_TOO_FEW_SAMPLES)
@@ -324,7 +322,7 @@ class FlowAnalysisTests(unittest.TestCase):
             [garbage_first_sample] + shifted_pour,
             target_yield_g=TARGET_YIELD_G,
             preinfusion_s=0.0,
-            baseline=HEALTHY_BASELINE, config=CONFIG
+            baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
@@ -346,7 +344,7 @@ class FlowAnalysisTests(unittest.TestCase):
         expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         samples = _steady_flow_samples(duration_s=expected_s * 0.3)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
 
@@ -354,7 +352,7 @@ class FlowAnalysisTests(unittest.TestCase):
         expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         samples = _steady_flow_samples(duration_s=expected_s * 2.2)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
 
@@ -366,7 +364,7 @@ class FlowAnalysisTests(unittest.TestCase):
 
         samples = _simulate(flow_fn, duration_s=20.0)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.t90_ms)
         self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
@@ -383,7 +381,7 @@ class FlowAnalysisTests(unittest.TestCase):
 
         samples = _simulate(flow_fn, duration_s=24.0)
         result = analyze_shot(
-            samples, target_yield_g=target_yield_g, preinfusion_s=preinfusion_s, baseline=None, config=CONFIG
+            samples, target_yield_g=target_yield_g, preinfusion_s=preinfusion_s, baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.TOO_FAST)
 
@@ -391,53 +389,66 @@ class FlowAnalysisTests(unittest.TestCase):
         """No per-bag history yet: fall back entirely on the fixed mechanical prior."""
         expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
         samples = _steady_flow_samples(duration_s=expected_s)
-        sparse_baseline = BaselineFeatures(
-            shot_count=1, median_late_accel=0.0, median_flow_g_s=CONFIG.expected_flow_g_s
-        )
+        sparse_baseline = BaselineFeatures(shot_count=1, median_late_accel=0.0)
         for baseline in (None, sparse_baseline):
             result = analyze_shot(
-                samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=baseline, config=CONFIG
+                samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=baseline, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
             )
             self.assertEqual(result.classification, ShotClassification.HEALTHY)
             self.assertTrue(result.baseline_eligible)
 
-    def test_a_bags_own_characteristic_pace_stops_being_flagged_as_too_fast(self) -> None:
-        """The expected flow rate is a reference point, not a safety boundary
-        (see module docstring): a bag that genuinely runs faster than the
-        generic prior should stop being called "too fast" once enough of its
-        own healthy history says that pace is normal for it - unlike
-        mechanical suspicion, this one is allowed to fully self-normalize."""
+    def test_a_bags_own_history_no_longer_affects_its_flow_classification(self) -> None:
+        """docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1: a bag's own shot history
+        must never feed back into its own flow-rate reference - a bag that
+        genuinely runs faster than the generic prior stays "too fast"
+        regardless of how much of its own healthy history says otherwise,
+        unlike the old per-bag-blended behavior this replaces. Only the
+        roast-level pool (a different bag entirely) can shift the reference."""
         bag_rate = 1.8  # well above the global prior of 1.25 g/s
         samples = _steady_flow_samples(duration_s=TARGET_YIELD_G / bag_rate)
 
         no_history = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(no_history.classification, ShotClassification.TOO_FAST)
 
-        strong_history = BaselineFeatures(
-            shot_count=50, median_late_accel=0.0, median_flow_g_s=bag_rate
-        )
+        strong_own_history = BaselineFeatures(shot_count=50, median_late_accel=0.0)
         result = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=strong_history, config=CONFIG
+            samples,
+            target_yield_g=TARGET_YIELD_G,
+            preinfusion_s=0.0,
+            baseline=strong_own_history,
+            expected_flow_g_s=CONFIG.expected_flow_g_s,
+            config=CONFIG,
+        )
+        self.assertEqual(result.classification, ShotClassification.TOO_FAST)
+
+        strong_roast_level_history = RoastLevelFlowBaseline(shot_count=50, median_flow_g_s=bag_rate)
+        result = analyze_shot(
+            samples,
+            target_yield_g=TARGET_YIELD_G,
+            preinfusion_s=0.0,
+            baseline=None,
+            expected_flow_g_s=flow_analysis.blended_expected_flow_g_s(strong_roast_level_history, CONFIG),
+            config=CONFIG,
         )
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
 
-    def test_blended_flow_rate_shifts_toward_bag_history_as_shot_count_grows(self) -> None:
-        bag_rate = 1.8
+    def test_blended_flow_rate_shifts_toward_roast_level_pool_as_shot_count_grows(self) -> None:
+        pool_rate = 1.8
         prior_only = flow_analysis.blended_expected_flow_g_s(None, CONFIG)
         weak = flow_analysis.blended_expected_flow_g_s(
-            BaselineFeatures(shot_count=1, median_late_accel=0.0, median_flow_g_s=bag_rate),
+            RoastLevelFlowBaseline(shot_count=1, median_flow_g_s=pool_rate),
             CONFIG,
         )
         strong = flow_analysis.blended_expected_flow_g_s(
-            BaselineFeatures(shot_count=50, median_late_accel=0.0, median_flow_g_s=bag_rate),
+            RoastLevelFlowBaseline(shot_count=50, median_flow_g_s=pool_rate),
             CONFIG,
         )
         self.assertEqual(prior_only, CONFIG.expected_flow_g_s)
         self.assertLess(prior_only, weak)
         self.assertLess(weak, strong)
-        self.assertLess(strong, bag_rate)  # even 50 shots don't fully erase the prior
+        self.assertLess(strong, pool_rate)  # even 50 shots don't fully erase the prior
 
     def test_late_flow_runaway_is_flagged_as_puck_prep_issue_even_with_no_baseline(self) -> None:
         """Normal start, then flow accelerates hard in the final third: channeling-like.
@@ -455,7 +466,7 @@ class FlowAnalysisTests(unittest.TestCase):
         samples = _simulate(flow_fn, duration_s=20.0)
         for baseline in (None, HEALTHY_BASELINE):
             result = analyze_shot(
-                samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=baseline, config=CONFIG
+                samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=baseline, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
             )
             self.assertNotIn(
                 result.classification,
@@ -480,14 +491,12 @@ class FlowAnalysisTests(unittest.TestCase):
             return 2.0 + 1.0 * (t - switch_s)
 
         samples = _simulate(flow_fn, duration_s=20.0)
-        matching_baseline = BaselineFeatures(
-            shot_count=5, median_late_accel=1.0, median_flow_g_s=CONFIG.expected_flow_g_s
-        )
+        matching_baseline = BaselineFeatures(shot_count=5, median_late_accel=1.0)
         result = analyze_shot(
             samples,
             target_yield_g=TARGET_YIELD_G,
             preinfusion_s=0.0,
-            baseline=matching_baseline, config=CONFIG
+            baseline=matching_baseline, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(result.classification, ShotClassification.PUCK_PREP_ISSUE)
 
@@ -505,15 +514,13 @@ class FlowAnalysisTests(unittest.TestCase):
         samples = _simulate(flow_fn, duration_s=32.0)
 
         unflagged = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(unflagged.classification, ShotClassification.HEALTHY)
 
-        tight_baseline = BaselineFeatures(
-            shot_count=5, median_late_accel=0.0, median_flow_g_s=CONFIG.expected_flow_g_s
-        )
+        tight_baseline = BaselineFeatures(shot_count=5, median_late_accel=0.0)
         escalated = analyze_shot(
-            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=tight_baseline, config=CONFIG
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=tight_baseline, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertEqual(escalated.classification, ShotClassification.PUCK_PREP_ISSUE)
         self.assertGreater(escalated.channeling_suspicion, unflagged.channeling_suspicion)

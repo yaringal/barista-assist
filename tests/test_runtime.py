@@ -117,6 +117,7 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         preinfusion_s: float = 1.0,
         target_yield_g: float = 36.0,
         early_stop_margin_min_g: float = 1.5,
+        roast_level: str | None = None,
     ) -> None:
         """Create and select a bag, without brewing."""
         self.runtime.early_stop_margin_min_g = early_stop_margin_min_g
@@ -126,6 +127,7 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
                 "coffee_name": "Test Coffee",
                 "preinfusion_s": preinfusion_s,
                 "target_yield_g": target_yield_g,
+                "roast_level": roast_level,
             }
         )
 
@@ -135,12 +137,14 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         preinfusion_s: float = 1.0,
         target_yield_g: float = 36.0,
         early_stop_margin_min_g: float = 1.5,
+        roast_level: str | None = None,
     ) -> str:
         """Create a bag and brew. Real wait of about preinfusion_s + 0.2s."""
         await self.create_bag(
             preinfusion_s=preinfusion_s,
             target_yield_g=target_yield_g,
             early_stop_margin_min_g=early_stop_margin_min_g,
+            roast_level=roast_level,
         )
         return await self.runtime.async_brew()
 
@@ -553,6 +557,45 @@ class ShotMarkersTests(RuntimeTestCase):
         await self.start_shot()
         self.assertIsInstance(self.runtime.active_shot.expected_flow_g_s, float)
         self.assertGreater(self.runtime.active_shot.expected_flow_g_s, 0.0)
+
+    async def test_async_brew_blends_toward_other_bags_sharing_roast_level(self):
+        """docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1: the flow-rate reference
+        is roast-level-keyed, not per-bag - a *different* bag's own healthy
+        shots (never this brand-new bag's own, nonexistent history) shift
+        expected_flow_g_s at brew time."""
+        pool_bag = await self.runtime.async_new_bag(
+            {
+                "slot": self.runtime.definitions.slots[0],
+                "coffee_name": "Pool bag",
+                "roast_level": "medium",
+                "target_yield_g": 50.0,
+            }
+        )
+        for _ in range(20):
+            shot_id = self.runtime.db.create_shot(
+                bag=pool_bag,
+                started_at="2026-08-16T17:00:00+00:00",
+                stop_compensation_g=1.5,
+                preinfusion_s=7.0,
+                adapt_pi=False,
+            )
+            self.runtime.db.finalize_shot(
+                shot_id,
+                ended_at="2026-08-16T17:00:20+00:00",
+                actual_yield_g=50.0,
+                status="complete",
+                stop_command_elapsed_ms=None,
+                samples=[ShotSample(0, 0, 0, 0.0, 0.0, 90)],
+                classification="healthy",
+                channeling_suspicion=0.1,
+                # 50g / 20s = 2.5 g/s, well above the global prior.
+                analysis_json=json.dumps({"late_accel": 0.0, "t90_ms": 20000}),
+            )
+
+        await self.start_shot(roast_level="medium")
+
+        global_prior = self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"]
+        self.assertGreater(self.runtime.active_shot.expected_flow_g_s, global_prior)
 
 
 class BotLockSerializationTests(RuntimeTestCase):
@@ -1320,6 +1363,15 @@ class FlavorFeedbackTests(RuntimeTestCase):
         definition = self.runtime.definitions.entity(platform, key)
         return self.runtime.entity_attributes(definition).get("recommended")
 
+    def _tag_signed_delta(self, tag: str) -> float:
+        """The real, loaded expert_rules.flavor_correction.tags[tag] delta,
+        signed by its own direction - read live rather than hardcoded, so
+        retuning delta_g/direction in definitions.yaml can't break these
+        tests."""
+        tag_config = self.runtime.definitions.expert_rules["flavor_correction"]["tags"][tag]
+        delta = tag_config["delta_g"]
+        return delta if tag_config["direction"] == "increase" else -delta
+
     async def test_recommended_dose_attribute_shows_a_short_note_without_the_tag(self):
         """A decoration on the dose tile itself (state_content), not a
         separate tile - just "current -> recommended", no "(persistent
@@ -1329,7 +1381,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self._brew_and_tag("mouthfeel", "thin_weak", times=2)
 
         note = self._recommended_attribute("number", "dose")
-        self.assertEqual(note, f"{dose:g} → {dose + 0.5:g}")
+        self.assertEqual(note, f"{dose:g} → {dose + self._tag_signed_delta('thin_weak'):g}")
         self.assertNotIn("persistent", note)
 
     async def test_recommended_target_yield_attribute_shows_a_short_note(self):
@@ -1338,7 +1390,9 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self._brew_and_tag("extraction", "sour_sharp", times=2)
 
         note = self._recommended_attribute("number", "target_yield")
-        self.assertEqual(note, f"{target_yield:g} → {target_yield + 5:g}")
+        self.assertEqual(
+            note, f"{target_yield:g} → {target_yield + self._tag_signed_delta('sour_sharp'):g}"
+        )
 
     async def test_recommended_temperature_attribute_is_none_without_a_persistent_pattern(self):
         await self.create_bag()
@@ -1366,13 +1420,27 @@ class FlavorFeedbackTests(RuntimeTestCase):
 
 
 class RoastLevelRatioPriorTests(RuntimeTestCase):
-    """runtime.py's async_new_bag seeds target_yield_g/temperature_offset_c
-    from expert_rules.roast_level_ratio_prior/roast_level_temperature_prior
-    only for a genuinely new bag in an empty slot (docs/DESIGN.md section 19's
-    roast-level fallback)."""
+    """runtime.py's async_new_bag seeds dose_g/target_yield_g/
+    temperature_offset_c from expert_rules.roast_level_dose_prior/
+    roast_level_ratio_prior/roast_level_temperature_prior only for a
+    genuinely new bag in an empty slot (docs/DESIGN.md section 19's
+    roast-level fallback). Every expected value below is read from the real,
+    loaded config rather than hardcoded, so retuning any of these three
+    priors in definitions.yaml can't break these tests."""
+
+    def _ratio_prior(self, roast_level: str) -> float:
+        return self.runtime.definitions.expert_rules["roast_level_ratio_prior"][roast_level]
+
+    def _temperature_prior(self, roast_level: str) -> int:
+        return self.runtime.definitions.expert_rules["roast_level_temperature_prior"][roast_level]
+
+    def _dose_prior(self, roast_level: str) -> float:
+        return self.runtime.definitions.expert_rules["roast_level_dose_prior"][roast_level]
 
     async def test_seeds_target_yield_from_roast_level_in_an_empty_slot(self):
-        """dose_g defaults to 18.0, medium's ratio is 2.2 -> 18.0*2.2=39.6."""
+        """dose_g is itself seeded from roast_level_dose_prior first (medium's
+        own value, per the field-resolution order in async_new_bag), then
+        target_yield_g = that seeded dose * roast_level_ratio_prior."""
         bag = await self.runtime.async_new_bag(
             {
                 "slot": self.runtime.definitions.slots[0],
@@ -1380,7 +1448,8 @@ class RoastLevelRatioPriorTests(RuntimeTestCase):
                 "roast_level": "medium",
             }
         )
-        self.assertEqual(bag.target_yield_g, 39.6)
+        self.assertEqual(bag.dose_g, self._dose_prior("medium"))
+        self.assertAlmostEqual(bag.target_yield_g, bag.dose_g * self._ratio_prior("medium"))
 
     async def test_does_not_override_an_explicit_target_yield(self):
         bag = await self.runtime.async_new_bag(
@@ -1397,17 +1466,18 @@ class RoastLevelRatioPriorTests(RuntimeTestCase):
         bag = await self.runtime.async_new_bag(
             {"slot": self.runtime.definitions.slots[0], "coffee_name": "Test Coffee"}
         )
-        self.assertEqual(bag.target_yield_g, 36.0)  # flat default, unaffected
+        # flat default, unaffected
+        self.assertEqual(bag.target_yield_g, self.runtime.definitions.defaults["recipe"]["target_yield_g"])
 
     async def test_does_not_apply_when_a_bag_already_exists_in_the_slot(self):
         """A same-slot refill has a real recipe to inherit from - the
         roast-level prior is only a fallback for nothing-to-inherit-at-all."""
         slot = self.runtime.definitions.slots[0]
-        await self.runtime.async_new_bag({"slot": slot, "coffee_name": "First"})
+        first = await self.runtime.async_new_bag({"slot": slot, "coffee_name": "First"})
         second = await self.runtime.async_new_bag(
             {"slot": slot, "coffee_name": "Second", "roast_level": "dark"}
         )
-        self.assertEqual(second.target_yield_g, 36.0)  # inherited from "First", not re-seeded
+        self.assertEqual(second.target_yield_g, first.target_yield_g)  # inherited, not re-seeded
 
     async def test_seeds_temperature_offset_from_roast_level_in_an_empty_slot(self):
         bag = await self.runtime.async_new_bag(
@@ -1417,7 +1487,7 @@ class RoastLevelRatioPriorTests(RuntimeTestCase):
                 "roast_level": "dark",
             }
         )
-        self.assertEqual(bag.temperature_offset_c, -1)
+        self.assertEqual(bag.temperature_offset_c, self._temperature_prior("dark"))
 
     async def test_does_not_override_an_explicit_temperature_offset(self):
         bag = await self.runtime.async_new_bag(
@@ -1434,15 +1504,113 @@ class RoastLevelRatioPriorTests(RuntimeTestCase):
         bag = await self.runtime.async_new_bag(
             {"slot": self.runtime.definitions.slots[0], "coffee_name": "Test Coffee"}
         )
-        self.assertEqual(bag.temperature_offset_c, 0)  # flat default, unaffected
+        # flat default, unaffected
+        self.assertEqual(
+            bag.temperature_offset_c, self.runtime.definitions.defaults["recipe"]["temperature_offset_c"]
+        )
 
     async def test_temperature_offset_does_not_apply_when_a_bag_already_exists_in_the_slot(self):
         slot = self.runtime.definitions.slots[0]
-        await self.runtime.async_new_bag({"slot": slot, "coffee_name": "First"})
+        first = await self.runtime.async_new_bag({"slot": slot, "coffee_name": "First"})
         second = await self.runtime.async_new_bag(
             {"slot": slot, "coffee_name": "Second", "roast_level": "light"}
         )
-        self.assertEqual(second.temperature_offset_c, 0)  # inherited from "First", not re-seeded
+        self.assertEqual(second.temperature_offset_c, first.temperature_offset_c)  # inherited, not re-seeded
+
+    async def test_seeds_dose_from_roast_level_in_an_empty_slot(self):
+        """docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.4: same shape as
+        target_yield_g/temperature_offset_c above, for expert_rules.
+        roast_level_dose_prior."""
+        bag = await self.runtime.async_new_bag(
+            {
+                "slot": self.runtime.definitions.slots[0],
+                "coffee_name": "Test Coffee",
+                "roast_level": "light",
+            }
+        )
+        self.assertEqual(bag.dose_g, self._dose_prior("light"))
+
+    async def test_does_not_override_an_explicit_dose(self):
+        bag = await self.runtime.async_new_bag(
+            {
+                "slot": self.runtime.definitions.slots[0],
+                "coffee_name": "Test Coffee",
+                "roast_level": "light",
+                "dose_g": 19.0,
+            }
+        )
+        self.assertEqual(bag.dose_g, 19.0)
+
+    async def test_dose_does_not_apply_without_a_known_roast_level(self):
+        bag = await self.runtime.async_new_bag(
+            {"slot": self.runtime.definitions.slots[0], "coffee_name": "Test Coffee"}
+        )
+        # flat default, unaffected
+        self.assertEqual(bag.dose_g, self.runtime.definitions.defaults["recipe"]["dose_g"])
+
+    async def test_dose_does_not_apply_when_a_bag_already_exists_in_the_slot(self):
+        slot = self.runtime.definitions.slots[0]
+        first = await self.runtime.async_new_bag({"slot": slot, "coffee_name": "First"})
+        second = await self.runtime.async_new_bag(
+            {"slot": slot, "coffee_name": "Second", "roast_level": "light"}
+        )
+        self.assertEqual(second.dose_g, first.dose_g)  # inherited from "First", not re-seeded
+
+    async def test_seeds_blend_toward_this_installations_own_shots_for_the_roast_level(self):
+        """docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.3/§2.4: once other bags
+        of the same roast_level have shots, the fixed roast_level_dose_prior/
+        roast_level_ratio_prior tables blend toward this installation's own
+        accumulated dose/ratio for that roast_level - a different bag/slot
+        entirely, never this new bag's own (nonexistent) history. "First"'s
+        own dose/ratio are built relative to the real, loaded priors (not
+        hardcoded numbers), so retuning either prior in definitions.yaml
+        can't break this test."""
+        slots = self.runtime.definitions.slots
+        dose_prior = self._dose_prior("light")
+        ratio_prior = self._ratio_prior("light")
+        first_dose = dose_prior - 1.0  # deliberately different, whatever the prior is
+        first_target_yield = first_dose * ratio_prior  # matches the prior ratio exactly
+
+        first = await self.runtime.async_new_bag(
+            {
+                "slot": slots[0],
+                "coffee_name": "First",
+                "roast_level": "light",
+                "dose_g": first_dose,
+                "target_yield_g": first_target_yield,
+            }
+        )
+        shot_id = self.runtime.db.create_shot(
+            bag=first,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.runtime.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=first_target_yield,
+            status="complete",
+            stop_command_elapsed_ms=None,
+            samples=[ShotSample(0, 0, 0, 0.0, 0.0, 90)],
+            classification="healthy",
+            channeling_suspicion=0.1,
+            analysis_json=json.dumps({"late_accel": 0.0, "t90_ms": 20000}),
+        )
+
+        second = await self.runtime.async_new_bag(
+            {"slot": slots[1], "coffee_name": "Second", "roast_level": "light"}
+        )
+        # dose_g: fixed prior blended toward first's own dose - strictly
+        # between the two, neither the raw prior nor first's exact dose.
+        self.assertNotEqual(second.dose_g, dose_prior)
+        self.assertNotEqual(second.dose_g, first_dose)
+        self.assertTrue(min(first_dose, dose_prior) < second.dose_g < max(first_dose, dose_prior))
+        # target_yield_g: fixed ratio blended toward first's own ratio - here
+        # they coincide by construction, so this mainly checks the blend
+        # didn't error or silently ignore the pool.
+        self.assertAlmostEqual(second.target_yield_g, second.dose_g * ratio_prior)
 
 
 class ShotHistoryTests(RuntimeTestCase):

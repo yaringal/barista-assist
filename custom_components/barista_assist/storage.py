@@ -201,11 +201,12 @@ class BaristaDatabase:
         used - see BaristaRuntime.async_brew), not necessarily bag.preinfusion_s
         itself: a bag's recipe field only applies when Adapt PI is on.
         expected_flow_g_s is flow_analysis.blended_expected_flow_g_s's own
-        rate for this bag, fixed once here at brew time (see async_brew) so
-        the Live Shot/Shot History charts' idealized-curve overlay stays
-        consistent for this shot even if the bag's healthy-shot history
-        changes before it finishes - None only for shots created without
-        that computation (e.g. most direct storage-layer tests)."""
+        rate for this bag's roast_level (docs/todo/ADAPTIVE_LEARNING_PLAN.md
+        §2.1 - not this bag's own history), fixed once here at brew time
+        (see async_brew) so the Live Shot/Shot History charts' idealized-
+        curve overlay stays consistent for this shot even if the roast-level
+        pool changes before it finishes - None only for shots created
+        without that computation (e.g. most direct storage-layer tests)."""
         shot_id = uuid4().hex
         with self._connect() as db:
             db.execute(
@@ -476,16 +477,18 @@ class BaristaDatabase:
         return float(row["remaining"]) if row and row["remaining"] is not None else None
 
     def recent_healthy_features(self, bag_id: str, limit: int = 5) -> dict[str, Any] | None:
-        """Median flow-analysis features from a bag's recent healthy shots.
-
-        Shaped for `flow_analysis.BaselineFeatures(**result)`; returns None
-        when the bag has no healthy shot history yet, matching analyze_shot's
-        own handling of a missing baseline.
+        """Median channeling-suspicion features from a bag's own recent
+        healthy shots (flow_analysis.BaselineFeatures - the current bag's
+        median_late_accel only; the flow-rate reference is roast_level_baseline
+        below, not scoped to this bag - see docs/todo/ADAPTIVE_LEARNING_PLAN.md
+        §2.1/§2.8 for why). Returns None when the bag has no healthy shot
+        history yet, matching analyze_shot's own handling of a missing
+        baseline.
         """
         with self._connect() as db:
             rows = db.execute(
                 """
-                SELECT target_yield_g, analysis_json
+                SELECT analysis_json
                 FROM shots
                 WHERE bag_id=? AND classification='healthy' AND analysis_json IS NOT NULL
                 ORDER BY started_at DESC LIMIT ?
@@ -494,16 +497,64 @@ class BaristaDatabase:
             ).fetchall()
         if not rows:
             return None
-        late_accels = []
-        flow_rates = []
-        for row in rows:
-            data = json.loads(row["analysis_json"])
-            late_accels.append(float(data["late_accel"]))
-            flow_rates.append(float(row["target_yield_g"]) / (float(data["t90_ms"]) / 1000.0))
+        late_accels = [float(json.loads(row["analysis_json"])["late_accel"]) for row in rows]
         return {
             "shot_count": len(rows),
             "median_late_accel": statistics.median(late_accels),
+        }
+
+    def roast_level_baseline(
+        self, roast_level: str | None, exclude_bag_id: str | None = None, limit: int = 200
+    ) -> dict[str, Any] | None:
+        """Pooled flow-rate/ratio/dose features from *other* bags' shots
+        sharing roast_level - the shared roast-level-keyed aggregate
+        `flow_analysis.RoastLevelFlowBaseline` and runtime.py's
+        `_roast_level_seeded_target_yield_g`/`_roast_level_seeded_dose_g` all
+        read from (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1/§2.3/§2.4 - one
+        aggregate, not three independent lookups). Deliberately not scoped
+        to any one bag's own history, unlike recent_healthy_features above -
+        exclude_bag_id only prevents a bag from feeding its own reference
+        point when one exists (async_new_bag has no bag yet, so passes None).
+        `limit=200` is a generous cap for query cost, not a tight recency
+        window - this pool is a slow-moving installation-level prior, not a
+        fast-reacting per-bag one, so it doesn't need recent_healthy_features'
+        own tight default.
+
+        Includes too_fast/too_restrictive shots alongside healthy ones (only
+        puck_prep_issue/invalid_measurement excluded) - see
+        docs/todo/ADAPTIVE_LEARNING_PLAN.md §3 for why healthy-only would risk
+        a bootstrapping deadlock here. Returns None when roast_level is None
+        (nothing to bucket by) or no matching shots exist yet.
+        """
+        if roast_level is None:
+            return None
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT s.dose_g, s.target_yield_g, s.analysis_json
+                FROM shots s JOIN bags b ON s.bag_id = b.id
+                WHERE b.roast_level=? AND b.id IS NOT ?
+                  AND s.classification IN ('healthy', 'too_fast', 'too_restrictive')
+                  AND s.analysis_json IS NOT NULL
+                ORDER BY s.started_at DESC LIMIT ?
+                """,
+                (roast_level, exclude_bag_id, int(limit)),
+            ).fetchall()
+        if not rows:
+            return None
+        flow_rates = []
+        ratios = []
+        doses = []
+        for row in rows:
+            data = json.loads(row["analysis_json"])
+            flow_rates.append(float(row["target_yield_g"]) / (float(data["t90_ms"]) / 1000.0))
+            ratios.append(float(row["target_yield_g"]) / float(row["dose_g"]))
+            doses.append(float(row["dose_g"]))
+        return {
+            "shot_count": len(rows),
             "median_flow_g_s": statistics.median(flow_rates),
+            "median_ratio": statistics.median(ratios),
+            "median_dose_g": statistics.median(doses),
         }
 
     _FLAVOR_AXIS_COLUMNS = {

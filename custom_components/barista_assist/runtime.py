@@ -37,7 +37,9 @@ from .flavor_correction import recommend_flavor_correction
 from .flow_analysis import (
     BaselineFeatures,
     FlowAnalysisConfig,
+    RoastLevelFlowBaseline,
     analyze_shot,
+    blend_toward_observed,
     blended_expected_flow_g_s,
 )
 from .grind_correction import recommend_grind_delta
@@ -202,10 +204,11 @@ class ActiveShot:
     target_yield_g: float
     early_stop_margin_min_g: float
     preinfusion_s: float
-    # flow_analysis.blended_expected_flow_g_s's rate for this bag, fixed
-    # once at brew time (see async_brew) - feeds the Live Shot/Shot History
-    # charts' idealized-curve overlay (_shot_markers) so it stays stable
-    # for this shot even if the bag's own healthy-shot history changes
+    # flow_analysis.blended_expected_flow_g_s's rate for this bag's
+    # roast_level (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1 - not this bag's
+    # own history), fixed once at brew time (see async_brew) - feeds the
+    # Live Shot/Shot History charts' idealized-curve overlay (_shot_markers)
+    # so it stays stable for this shot even if the roast-level pool changes
     # before it finishes.
     expected_flow_g_s: float
     samples: list[ShotSample]
@@ -840,12 +843,64 @@ class BaristaRuntime:
         )
         await self.async_refresh_cache()
 
-    def _roast_level_seeded_target_yield_g(self, dose_g: float, roast_level: Any) -> float | None:
-        """expert_rules.roast_level_ratio_prior's dose_g*ratio fallback.
-        None when roast_level isn't a known key (not specified, or a value
-        this prior doesn't cover)."""
+    def _roast_level_blend_weight(self) -> float:
+        return self.definitions.flow_analysis_constants["prior_weight_shots"]
+
+    async def _async_roast_level_flow_baseline(
+        self, roast_level: str | None, exclude_bag_id: str
+    ) -> RoastLevelFlowBaseline | None:
+        """Fetch+build the roast-level flow-rate reference blended_expected_
+        flow_g_s/analyze_shot need - shared by async_brew and _async_finalize,
+        the only two callers (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1)."""
+        features = await self.hass.async_add_executor_job(
+            self.db.roast_level_baseline, roast_level, exclude_bag_id
+        )
+        if not features:
+            return None
+        return RoastLevelFlowBaseline(
+            shot_count=features["shot_count"], median_flow_g_s=features["median_flow_g_s"]
+        )
+
+    def _roast_level_seeded_target_yield_g(
+        self, dose_g: float, roast_level: Any, roast_level_features: dict[str, Any] | None
+    ) -> float | None:
+        """expert_rules.roast_level_ratio_prior's dose_g*ratio fallback,
+        blended toward this installation's own accumulated ratio for the
+        same roast_level (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.3) when
+        roast_level_features has any - same shared aggregate/shrinkage
+        formula as blended_expected_flow_g_s. None when roast_level isn't a
+        known key (not specified, or a value this prior doesn't cover)."""
         ratio = self.definitions.expert_rules["roast_level_ratio_prior"].get(roast_level)
-        return dose_g * ratio if ratio is not None else None
+        if ratio is None:
+            return None
+        if roast_level_features:
+            ratio = blend_toward_observed(
+                ratio,
+                roast_level_features["median_ratio"],
+                roast_level_features["shot_count"],
+                self._roast_level_blend_weight(),
+            )
+        return dose_g * ratio
+
+    def _roast_level_seeded_dose_g(
+        self, roast_level: Any, roast_level_features: dict[str, Any] | None
+    ) -> float | None:
+        """expert_rules.roast_level_dose_prior's fallback, blended toward
+        this installation's own accumulated dose for the same roast_level -
+        same shape as _roast_level_seeded_target_yield_g above
+        (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.4). None when roast_level
+        isn't a known key."""
+        dose = self.definitions.expert_rules["roast_level_dose_prior"].get(roast_level)
+        if dose is None:
+            return None
+        if roast_level_features:
+            dose = blend_toward_observed(
+                dose,
+                roast_level_features["median_dose_g"],
+                roast_level_features["shot_count"],
+                self._roast_level_blend_weight(),
+            )
+        return dose
 
     def _roast_level_seeded_temperature_offset_c(self, roast_level: Any) -> int | None:
         """expert_rules.roast_level_temperature_prior's fallback - same
@@ -869,15 +924,32 @@ class BaristaRuntime:
                 return getattr(current, field)
             return defaults[field]
 
+        # Fetched once, up front, rather than per-field: target_yield_g's,
+        # dose_g's, and temperature_offset_c's seeds below all read the same
+        # roast-level-keyed aggregate (docs/todo/ADAPTIVE_LEARNING_PLAN.md
+        # §2.1/§2.3/§2.4 - one shared aggregate, not independent lookups).
+        # No bag to exclude yet - this bag doesn't exist until created below.
+        roast_level_features = (
+            await self.hass.async_add_executor_job(
+                self.db.roast_level_baseline, data.get("roast_level"), None
+            )
+            if current is None
+            else None
+        )
+
         recipe: dict[str, Any] = {}
         for field in ("dose_g", "grind", "target_yield_g", "temperature_offset_c", "preinfusion_s"):
             seeded = None
-            if field == "target_yield_g" and field not in data and current is None:
+            if field == "dose_g" and field not in data and current is None:
+                # Same scope as target_yield_g below - see
+                # roast_level_dose_prior's own comment in definitions.yaml.
+                seeded = self._roast_level_seeded_dose_g(data.get("roast_level"), roast_level_features)
+            elif field == "target_yield_g" and field not in data and current is None:
                 # A genuinely new bag in an empty slot, nothing to inherit a
                 # recipe from - see roast_level_ratio_prior's own comment in
                 # definitions.yaml for why this is the only case it applies.
                 seeded = self._roast_level_seeded_target_yield_g(
-                    recipe["dose_g"], data.get("roast_level")
+                    recipe["dose_g"], data.get("roast_level"), roast_level_features
                 )
             elif field == "temperature_offset_c" and field not in data and current is None:
                 # Same scope/reasoning as target_yield_g above, see
@@ -1230,11 +1302,8 @@ class BaristaRuntime:
             # only after the shot finishes (analyze_shot's own use of this)
             # - the Live Shot/Shot History charts' idealized-curve overlay
             # (_shot_markers) needs it available from the very first sample.
-            baseline_features = await self.hass.async_add_executor_job(
-                self.db.recent_healthy_features, bag.id
-            )
             expected_flow_g_s = blended_expected_flow_g_s(
-                BaselineFeatures(**baseline_features) if baseline_features else None,
+                await self._async_roast_level_flow_baseline(bag.roast_level, bag.id),
                 FlowAnalysisConfig(**self.definitions.flow_analysis_constants),
             )
 
@@ -1576,6 +1645,13 @@ class BaristaRuntime:
             target_yield_g=shot.target_yield_g,
             preinfusion_s=shot.preinfusion_s,
             baseline=BaselineFeatures(**baseline_features) if baseline_features else None,
+            # Reuse the exact value async_brew already computed and
+            # persisted, rather than re-fetching/re-blending the roast-level
+            # pool here - the pool can genuinely change between brew and
+            # finalize now (a different bag's shot completing), and
+            # classification must match what the live chart already showed
+            # the user, not silently diverge from it.
+            expected_flow_g_s=shot.expected_flow_g_s,
             config=flow_analysis_config,
         )
         if analysis.invalid_reason is not None:
