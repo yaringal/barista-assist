@@ -1101,6 +1101,35 @@ class BaristaRuntime:
         ceiling = self.early_stop_margin_max_g
         return min(ceiling, max(floor, projected_margin_g))
 
+    @staticmethod
+    def _observed_stop_latency(
+        samples: list[ShotSample], stop_command_elapsed_ms: int, final_weight: float
+    ) -> tuple[float, float] | None:
+        """(flow_at_decision, observed_latency_s) for one completed shot with
+        a recorded stop decision - the same computation
+        _update_learned_stop_latency nudges stop_latency_normal_s/elevated_s
+        with, factored out so tests/test_constant_drift.py's stop-latency
+        bucket-drift report can reuse the exact formula rather than
+        duplicating it. None when there's nothing to learn from: no sample at
+        or before the stop decision, or flow at that decision too slow to
+        divide by meaningfully (_MIN_FLOW_FOR_LATENCY_LEARNING_G_S)."""
+        decision_index = None
+        for i, sample in enumerate(samples):
+            if sample.elapsed_ms <= stop_command_elapsed_ms:
+                decision_index = i
+            else:
+                break
+        if decision_index is None:
+            return None
+        decision_sample = samples[decision_index]
+        flow_at_decision = BaristaRuntime._smoothed_flow_g_s(
+            samples[: decision_index + 1], _STOP_MARGIN_FLOW_WINDOW_MS
+        )
+        if flow_at_decision < _MIN_FLOW_FOR_LATENCY_LEARNING_G_S:
+            return None
+        observed_latency_s = max(0.0, (final_weight - decision_sample.weight_g) / flow_at_decision)
+        return (flow_at_decision, observed_latency_s)
+
     def _update_learned_stop_latency(self, shot: ActiveShot, final_weight: float) -> None:
         """Nudge whichever latency bucket this shot's own flow rate falls
         into (stop_latency_normal_s or stop_latency_elevated_s - see
@@ -1123,27 +1152,18 @@ class BaristaRuntime:
 
         Also skipped for a shot with no recorded stop decision (nothing to
         learn from) or where flow at that decision was too slow to divide by
-        meaningfully (_MIN_FLOW_FOR_LATENCY_LEARNING_G_S).
+        meaningfully (_MIN_FLOW_FOR_LATENCY_LEARNING_G_S) - see
+        _observed_stop_latency, which this delegates the actual computation
+        to.
         """
         if shot.stop_command_elapsed_ms is None:
             return
-        decision_index = None
-        for i, sample in enumerate(shot.samples):
-            if sample.elapsed_ms <= shot.stop_command_elapsed_ms:
-                decision_index = i
-            else:
-                break
-        if decision_index is None:
-            return
-        decision_sample = shot.samples[decision_index]
-        flow_at_decision = self._smoothed_flow_g_s(
-            shot.samples[: decision_index + 1], _STOP_MARGIN_FLOW_WINDOW_MS
+        result = self._observed_stop_latency(
+            shot.samples, shot.stop_command_elapsed_ms, final_weight
         )
-        if flow_at_decision < _MIN_FLOW_FOR_LATENCY_LEARNING_G_S:
+        if result is None:
             return
-        observed_latency_s = max(
-            0.0, (final_weight - decision_sample.weight_g) / flow_at_decision
-        )
+        flow_at_decision, observed_latency_s = result
         elevated = flow_at_decision >= _STOP_LATENCY_BUCKET_CUTOFF_G_S
         previous = self.stop_latency_elevated_s if elevated else self.stop_latency_normal_s
         updated = min(
@@ -1162,7 +1182,7 @@ class BaristaRuntime:
             "decision) -> stop_latency_%s_s %.2fs -> %.2fs",
             shot.id,
             observed_latency_s,
-            final_weight - decision_sample.weight_g,
+            observed_latency_s * flow_at_decision,  # tail_g = observed_latency_s * flow_at_decision, by definition
             flow_at_decision,
             "elevated" if elevated else "normal",
             previous,

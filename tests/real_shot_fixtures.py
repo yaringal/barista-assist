@@ -54,6 +54,20 @@ class RealShot:
         raw = self.fields.get("channeling_suspicion", "")
         return float(raw) if raw else None
 
+    @property
+    def stop_command_elapsed_ms(self) -> int | None:
+        """None when blank - some fixtures are aborted/timeout shots with no
+        real stop decision (see tests/test_constant_drift.py's stop-latency
+        bucket-drift report, the one consumer of this so far)."""
+        raw = self.fields.get("stop_command_elapsed_ms", "")
+        return int(raw) if raw else None
+
+    @property
+    def actual_yield_g(self) -> float | None:
+        """None when blank - same scope as stop_command_elapsed_ms above."""
+        raw = self.fields.get("actual_yield_g", "")
+        return float(raw) if raw else None
+
 
 def load_real_shot(name: str) -> RealShot:
     """Parse tests/fixtures/real_shots/{name}.txt."""
