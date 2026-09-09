@@ -1661,6 +1661,9 @@ class BaristaRuntime:
         baseline_features = await self.hass.async_add_executor_job(
             self.db.recent_healthy_features, shot.bag.id
         )
+        previous_grind_correction_shot = await self.hass.async_add_executor_job(
+            self.db.previous_grind_correction_shot, shot.bag.id, shot.id
+        )
         flow_analysis_config = FlowAnalysisConfig(**self.definitions.flow_analysis_constants)
         analysis = analyze_shot(
             shot.samples,
@@ -1694,6 +1697,13 @@ class BaristaRuntime:
             analysis.classification,
             analysis.duration_ratio,
             self.definitions.expert_rules["grind_correction"],
+            current_recipe={
+                "dose_g": shot.bag.dose_g,
+                "target_yield_g": shot.bag.target_yield_g,
+                "temperature_offset_c": shot.bag.temperature_offset_c,
+                "preinfusion_s": shot.bag.preinfusion_s,
+            },
+            previous_shot=previous_grind_correction_shot,
         )
 
         await self.hass.async_add_executor_job(

@@ -476,6 +476,30 @@ class BaristaDatabase:
             ).fetchone()
         return float(row["remaining"]) if row and row["remaining"] is not None else None
 
+    def previous_grind_correction_shot(
+        self, bag_id: str, exclude_shot_id: str
+    ) -> dict[str, Any] | None:
+        """The most recent already-finalized shot on this bag before the one
+        being finalized now - grind_correction.py's input for detecting
+        whether its last recommended correction overshot into the opposite
+        classification. None if this bag has no prior finalized shot.
+        Scoped strictly by bag_id (never slot): new_bag mints a fresh id for
+        every bag swapped into a slot, so a swap since the previous shot
+        correctly yields None here rather than comparing against the old
+        bag's history."""
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT dose_g, target_yield_g, temperature_offset_c,
+                       preinfusion_s, classification, recommended_grind_delta
+                FROM shots
+                WHERE bag_id=? AND id!=? AND classification IS NOT NULL
+                ORDER BY started_at DESC LIMIT 1
+                """,
+                (bag_id, exclude_shot_id),
+            ).fetchone()
+        return dict(row) if row else None
+
     def recent_healthy_features(self, bag_id: str, limit: int = 5) -> dict[str, Any] | None:
         """Median channeling-suspicion features from a bag's own recent
         healthy shots (flow_analysis.BaselineFeatures - the current bag's

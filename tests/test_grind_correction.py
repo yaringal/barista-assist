@@ -21,6 +21,7 @@ recommend_grind_delta = grind_correction.recommend_grind_delta
 CONFIG = {
     "applies_to_classification": ["too_fast", "too_restrictive"],
     "excludes_classification": ["puck_prep_issue", "invalid_measurement"],
+    "hold_constant": ["dose_g", "target_yield_g", "temperature_offset_c", "preinfusion_s"],
     "bands": [
         {"name": "grossly_fast", "duration_ratio_max": 0.6, "grind_delta": -2.0},
         {"name": "moderately_fast", "duration_ratio_max": 0.75, "grind_delta": -1.0},
@@ -88,6 +89,141 @@ class RecommendGrindDeltaTests(unittest.TestCase):
         stored/serialized form (e.g. a string read back from the database)."""
         delta = recommend_grind_delta("too_fast", 0.5, CONFIG)
         self.assertEqual(delta, -2.0)
+
+
+# Same recipe on every field grind_correction.hold_constant lists.
+CURRENT_RECIPE = {
+    "dose_g": 18.0,
+    "target_yield_g": 36.0,
+    "temperature_offset_c": 0,
+    "preinfusion_s": 5.0,
+}
+
+
+def _previous_shot(*, classification, recommended_grind_delta, recipe_overrides=None):
+    row = dict(CURRENT_RECIPE)
+    row.update(recipe_overrides or {})
+    row["classification"] = classification
+    row["recommended_grind_delta"] = recommended_grind_delta
+    return row
+
+
+class OvershootDampingTests(unittest.TestCase):
+    """docs/todo/GRIND_CORRECTION_PLAN.md §4 - damp the recommendation one
+    band-tier back toward healthy when the previous shot's own recommended
+    correction, on this same recipe, overshot past healthy into the
+    opposite classification."""
+
+    def test_no_previous_shot_is_undamped(self):
+        delta = recommend_grind_delta(
+            ShotClassification.TOO_FAST, 0.5, CONFIG, current_recipe=CURRENT_RECIPE, previous_shot=None
+        )
+        self.assertEqual(delta, -2.0)
+
+    def test_overshoot_into_slightly_restrictive_hits_the_floor(self):
+        """Previous shot was moderately_fast (-1.0, applied), this shot came
+        back too_restrictive matching slightly_restrictive (+0.5 undamped,
+        index 4) - one tier toward healthy (index 3) would land exactly on
+        healthy, so the floor keeps the undamped +0.5 instead (same
+        mechanism as test_floor_never_collapses_to_healthy below, from the
+        opposite direction)."""
+        previous = _previous_shot(classification="too_fast", recommended_grind_delta=-1.0)
+        delta = recommend_grind_delta(
+            ShotClassification.TOO_RESTRICTIVE,
+            1.2,
+            CONFIG,
+            current_recipe=CURRENT_RECIPE,
+            previous_shot=previous,
+        )
+        self.assertEqual(delta, 0.5)
+
+    def test_overshoot_into_moderately_restrictive_damps_to_slightly_restrictive(self):
+        """This shot matches moderately_restrictive (+1.0 undamped, index 5);
+        stepping one tier toward healthy (index 3) lands on
+        slightly_restrictive (+0.5, index 4), not on healthy itself."""
+        previous = _previous_shot(classification="too_fast", recommended_grind_delta=-1.0)
+        delta = recommend_grind_delta(
+            ShotClassification.TOO_RESTRICTIVE,
+            1.45,
+            CONFIG,
+            current_recipe=CURRENT_RECIPE,
+            previous_shot=previous,
+        )
+        self.assertEqual(delta, 0.5)
+
+    def test_overshoot_is_symmetric_too_restrictive_to_too_fast(self):
+        """Previous shot was moderately_restrictive (+1.0, applied), this
+        shot came back grossly_fast (-2.0 undamped, index 0); one tier
+        toward healthy (index 3) lands on moderately_fast (-1.0, index 1)."""
+        previous = _previous_shot(classification="too_restrictive", recommended_grind_delta=1.0)
+        delta = recommend_grind_delta(
+            ShotClassification.TOO_FAST,
+            0.5,
+            CONFIG,
+            current_recipe=CURRENT_RECIPE,
+            previous_shot=previous,
+        )
+        self.assertEqual(delta, -1.0)
+
+    def test_no_damping_when_hold_constant_field_differs(self):
+        """dose_g changed since the previous shot - the too_restrictive
+        swing isn't attributable to grind alone, so no damping even though
+        the classifications look like an overshoot pattern."""
+        previous = _previous_shot(
+            classification="too_fast",
+            recommended_grind_delta=-1.0,
+            recipe_overrides={"dose_g": 17.0},
+        )
+        delta = recommend_grind_delta(
+            ShotClassification.TOO_RESTRICTIVE,
+            1.45,
+            CONFIG,
+            current_recipe=CURRENT_RECIPE,
+            previous_shot=previous,
+        )
+        self.assertEqual(delta, 1.0)
+
+    def test_no_damping_when_previous_shot_was_not_a_candidate(self):
+        """Previous shot was healthy (never a grind-correction candidate, no
+        recommended_grind_delta) - nothing to have overshot from."""
+        previous = _previous_shot(classification="healthy", recommended_grind_delta=None)
+        delta = recommend_grind_delta(
+            ShotClassification.TOO_RESTRICTIVE,
+            1.45,
+            CONFIG,
+            current_recipe=CURRENT_RECIPE,
+            previous_shot=previous,
+        )
+        self.assertEqual(delta, 1.0)
+
+    def test_no_damping_when_classification_did_not_flip_sides(self):
+        """Previous shot was moderately_fast and this shot is still on the
+        too_fast side (slightly_fast) - improved, but not an overshoot past
+        healthy, so the full undamped correction still applies."""
+        previous = _previous_shot(classification="too_fast", recommended_grind_delta=-1.0)
+        delta = recommend_grind_delta(
+            ShotClassification.TOO_FAST,
+            0.85,
+            CONFIG,
+            current_recipe=CURRENT_RECIPE,
+            previous_shot=previous,
+        )
+        self.assertEqual(delta, -0.5)
+
+    def test_floor_never_collapses_to_healthy(self):
+        """This shot matches slightly_fast (-0.5, index 2); one tier toward
+        healthy (index 3) would land exactly on healthy (0.0) - the floor
+        keeps the undamped -0.5 instead, since the shot is still off and
+        needs some correction."""
+        previous = _previous_shot(classification="too_restrictive", recommended_grind_delta=0.5)
+        delta = recommend_grind_delta(
+            ShotClassification.TOO_FAST,
+            0.85,
+            CONFIG,
+            current_recipe=CURRENT_RECIPE,
+            previous_shot=previous,
+        )
+        self.assertEqual(delta, -0.5)
 
 
 if __name__ == "__main__":
