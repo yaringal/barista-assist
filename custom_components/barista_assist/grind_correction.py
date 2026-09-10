@@ -56,9 +56,10 @@ def recommend_grind_delta(
     this shot's duration_ratio is at or under - the last band (typically
     grossly_restrictive) has no max and so always matches if reached.
 
-    current_recipe/previous_shot (both optional, both omitted by every
-    existing caller) enable overshoot damping
-    (docs/todo/GRIND_CORRECTION_PLAN.md §4): current_recipe is this shot's
+    current_recipe/previous_shot (both optional - omitted only by tests
+    exercising the base band lookup in isolation; runtime.py's
+    _async_finalize always passes both) enable overshoot damping
+    (docs/DESIGN.md's Phase 4): current_recipe is this shot's
     own dose_g/target_yield_g/temperature_offset_c/preinfusion_s;
     previous_shot is the matching row from
     storage.previous_grind_correction_shot for the same bag (same fields,
@@ -67,7 +68,7 @@ def recommend_grind_delta(
     past healthy into the opposite classification, the returned delta is
     damped one band-tier back toward healthy instead of the full magnitude
     - derived fresh from the last shot's own stored row each time, nothing
-    new persisted (matching runtime.py's _flavor_field_recommendations
+    new persisted (matching runtime.py's _all_flavor_field_recommendations
     convention).
     """
     classification_value = str(classification)

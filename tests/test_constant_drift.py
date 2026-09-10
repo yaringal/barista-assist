@@ -1,6 +1,6 @@
 """Standing drift-detection reports for constants that can never be
 auto-tuned because there's no automatic ground truth to check them against
-(docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.9/§2.6) - NOT pass/fail gates. As
+(docs/DESIGN.md's Phase 3b) - NOT pass/fail gates. As
 tests/fixtures/real_shots/ accumulates new real shots over time, these flag
 anything worth a human's attention, on the working assumption that the
 fixture set grows representative of real usage as it grows.
@@ -45,14 +45,14 @@ CONFIG = flow_analysis.FlowAnalysisConfig(**definitions.load_definitions().flow_
 
 # How far to nudge each monitored constant when checking whether a fixture
 # sits close to it - not a research-backed number, just enough to catch a
-# near-miss without flagging everything (docs/todo/ADAPTIVE_LEARNING_PLAN.md
-# §2.9). Confirmed this actually discriminates: at this value none of the 8
+# near-miss without flagging everything (docs/DESIGN.md's Phase 3b).
+# Confirmed this actually discriminates: at this value none of the 8
 # fixtures on hand as of this writing flip (a legitimately empty report, not
 # a bug - see module docstring); a much larger nudge (0.8) does produce
 # flips, confirming the mechanism works.
 PERTURBATION_FRACTION = 0.2
 
-# docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.9's own constant names -> the
+# docs/DESIGN.md's own constant names -> the
 # matching FlowAnalysisConfig field.
 MONITORED_CONSTANTS = {
     "_DISTURBANCE_SUSTAIN_MS": "disturbance_sustain_ms",
@@ -102,7 +102,7 @@ class ConstantDriftReport(unittest.TestCase):
         if findings:
             print(
                 "\n=== Constant drift report "
-                "(docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.9) ==="
+                "(docs/DESIGN.md's Phase 3b) ==="
             )
             for line in findings:
                 print(f"  {line}")
@@ -136,7 +136,7 @@ class StopLatencyBucketDriftReport(unittest.TestCase):
 
         print(
             "\n=== Stop-latency bucket drift report "
-            "(docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.6) ==="
+            "(docs/DESIGN.md's Phase 3b) ==="
         )
         print(
             f"  {len(pairs)}/{len(fixture_paths)} fixtures usable "
@@ -171,7 +171,7 @@ class StopLatencyBucketDriftReport(unittest.TestCase):
             "  Not a pass/fail check - eyeball whether the cutoff still sits "
             "in a low-density gap, and whether there's enough data yet to "
             "consider a continuous flow->latency regression instead of the "
-            "two-bucket model (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.6).\n"
+            "two-bucket model (docs/DESIGN.md's Phase 3b).\n"
         )
 
 

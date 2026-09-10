@@ -33,11 +33,12 @@ from .const import (
     SIGNAL_UPDATE,
 )
 from .definitions import EntityDefinition, load_definitions
-from .flavor_correction import recommend_flavor_correction
+from .flavor_correction import resolve_flavor_state
 from .flow_analysis import (
     BaselineFeatures,
     FlowAnalysisConfig,
     RoastLevelFlowBaseline,
+    ShotClassification,
     analyze_shot,
     blend_toward_observed,
     blended_expected_flow_g_s,
@@ -76,6 +77,14 @@ _FLAVOR_AXES = {
     "extraction": [("sour_sharp", "Sour / Sharp"), ("bitter_harsh", "Bitter / Harsh")],
     "mouthfeel": [("thin_weak", "Thin / Weak"), ("dry_astringent", "Dry / Astringent")],
 }
+# How much answered-response history flavor_correction.resolve_flavor_state
+# gets to replay per axis - generously large rather than tightly sized,
+# since a full primary/repeat/confirm/escalate/repeat cycle can span more
+# shots than the old fixed-count persistence check ever needed to look
+# back (recent_flavor_tags's own default of 5). A cycle exceeding this
+# without ever reporting "balanced" (which fully resets the replay) isn't
+# a realistic case to design around ahead of real usage data.
+_FLAVOR_STATE_REPLAY_LIMIT = 20
 # BaristaRuntime.stop_latency_normal_s/stop_latency_elevated_s (a rough
 # estimate of the physical latency between the stop decision and the pour
 # actually stopping - BLE press + pump stop + drip settle - multiplied by
@@ -205,7 +214,7 @@ class ActiveShot:
     early_stop_margin_min_g: float
     preinfusion_s: float
     # flow_analysis.blended_expected_flow_g_s's rate for this bag's
-    # roast_level (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1 - not this bag's
+    # roast_level (docs/DESIGN.md's Phase 3b - not this bag's
     # own history), fixed once at brew time (see async_brew) - feeds the
     # Live Shot/Shot History charts' idealized-curve overlay (_shot_markers)
     # so it stays stable for this shot even if the roast-level pool changes
@@ -234,6 +243,22 @@ class ActiveShot:
     # whatever those settings happen to be *now* instead of what actually
     # applied when it ran.
     effective_stop_margin_g: float | None = None
+
+
+def _recipe_snapshot(bag: Bag) -> dict[str, Any]:
+    """dose_g/target_yield_g/temperature_offset_c/preinfusion_s as a plain
+    dict - grind_correction.hold_constant's own field list, and the base
+    grind_correction.recommend_grind_delta's current_recipe/previous_shot
+    params and storage.consecutive_puck_prep_issue_count's current_recipe
+    both need (the latter adds "grind" on top: {**_recipe_snapshot(bag),
+    "grind": bag.grind}). Built once here so the field list can't drift
+    between call sites."""
+    return {
+        "dose_g": bag.dose_g,
+        "target_yield_g": bag.target_yield_g,
+        "temperature_offset_c": bag.temperature_offset_c,
+        "preinfusion_s": bag.preinfusion_s,
+    }
 
 
 class BaristaRuntime:
@@ -481,17 +506,32 @@ class BaristaRuntime:
             for slot, bag in self._bags.items()
         }
         self._bag_flavor_tags = {}
+        self._bag_shot_health = {}
+        self._bag_puck_prep_streak = {}
         for bag in self._bags.values():
             # A nested comprehension here would need `await` inside a
             # comprehension whose immediate enclosing scope is another
             # comprehension, not this async function itself - not valid
             # Python (unlike the single-level ones above) - hence the loop.
+            # limit=_FLAVOR_STATE_REPLAY_LIMIT (not recent_flavor_tags's own
+            # default of 5, tuned for the old fixed-count persistence check):
+            # flavor_correction.resolve_flavor_state replays a whole
+            # primary/repeat/confirm/escalate cycle from scratch each time,
+            # which can span more than 5 answered shots.
             self._bag_flavor_tags[bag.id] = {
                 axis: await self.hass.async_add_executor_job(
-                    self.db.recent_flavor_tags, bag.id, axis
+                    self.db.recent_flavor_tags, bag.id, axis, _FLAVOR_STATE_REPLAY_LIMIT
                 )
                 for axis in _FLAVOR_AXES
             }
+            self._bag_shot_health[bag.id] = await self.hass.async_add_executor_job(
+                self.db.latest_shot_health, bag.id
+            )
+            self._bag_puck_prep_streak[bag.id] = await self.hass.async_add_executor_job(
+                self.db.consecutive_puck_prep_issue_count,
+                bag.id,
+                {**_recipe_snapshot(bag), "grind": bag.grind},
+            )
         # _last_shot_samples backs the Live Shot card's frozen plot for the
         # last completed shot (_shot_plot_points) - otherwise only ever set
         # in-memory when a shot finishes during this same runtime session
@@ -567,29 +607,43 @@ class BaristaRuntime:
         current = self.last_shot["grind"]
         return f"{current:g} → {current + delta:g}"
 
-    def _flavor_field_recommendations(self, bag: Bag) -> dict[str, tuple[float, float, str]]:
-        """recipe field -> (current, recommended, tag) for every field
-        flavor_correction currently recommends changing on this bag - the
-        shared computation behind both _recommended_flavor_note (the
-        combined dashboard summary) and _recipe_field_short_note (the
-        per-tile recommendation badges), so the two can never drift apart.
+    def _all_flavor_field_recommendations(self, bag: Bag) -> dict[str, tuple[float, float, str]]:
+        """recipe field -> (current, recommended, tag) for every axis's
+        current-stage recommendation on this bag (docs/DESIGN.md's Phase 5
+        escalation model, replayed fresh via
+        flavor_correction.resolve_flavor_state - derived, not
+        persisted, same convention as elsewhere in this class), regardless
+        of whether grind still has something to correct - that suppression
+        only applies to the single *active* recommendation
+        (_active_flavor_field_recommendation below), not this "every lever
+        that could help" diagnostic view backing the last-shot summary.
 
         Two axes can recommend the same field at once (bitter_harsh and
         dry_astringent both use the yield lever, for instance) - the axis
         iteration order (_FLAVOR_AXES: extraction, then mouthfeel) decides
-        which one wins for that field; the other is silently dropped rather
-        than combined. Not yet resolved more precisely than that - a rare
-        enough edge case to leave for once it's actually seen in practice."""
+        which one wins for that field; the other is dropped rather than
+        combined (logged at debug level, not silent, since it's a real
+        collision worth being able to spot). Not yet resolved more precisely
+        than that - a rare enough edge case to leave for once it's actually
+        seen in practice."""
         config = self.definitions.expert_rules["flavor_correction"]
         result: dict[str, tuple[float, float, str]] = {}
         for tags_by_axis in self._bag_flavor_tags.get(bag.id, {}).values():
-            recent = tags_by_axis
-            tag = recent[0] if recent else None
-            recommendation = recommend_flavor_correction(tag, recent, config)
+            # storage.recent_flavor_tags (cached here in async_refresh_cache)
+            # returns newest-first; resolve_flavor_state replays oldest-first.
+            state = resolve_flavor_state(list(reversed(tags_by_axis)), config)
+            recommendation = state["recommendation"]
             if recommendation is None:
                 continue
             field = recommendation["field"]
             if field in result:
+                _LOGGER.debug(
+                    "Bag %s: %s axis's recommendation for %s dropped - %s already claimed it",
+                    bag.id,
+                    state["active_tag"],
+                    field,
+                    result[field][2],
+                )
                 continue
             current = getattr(bag, field)
             signed_delta = (
@@ -597,20 +651,84 @@ class BaristaRuntime:
                 if recommendation["direction"] == "increase"
                 else -recommendation["delta"]
             )
-            result[field] = (current, current + signed_delta, tag)
+            result[field] = (current, current + signed_delta, state["active_tag"])
         return result
+
+    def _active_flavor_field_recommendation(self, bag: Bag) -> dict[str, tuple[float, float, str]]:
+        """The single future-shot recipe recommendation (docs/DESIGN.md's
+        Phase 5 suppress-guard): {} entirely while this bag's last
+        shot still needs grind correcting (not yet classified
+        "healthy", per _bag_shot_health cached in async_refresh_cache), and
+        narrowed to at most one field even when
+        _all_flavor_field_recommendations finds more than one (same
+        axis-iteration-order tie-break that method already uses for a
+        same-field collision, just extended into a cross-field "only one
+        lever active at all" rule)."""
+        health = self._bag_shot_health.get(bag.id)
+        if health is not None and health["classification"] != "healthy":
+            return {}
+        all_recommendations = self._all_flavor_field_recommendations(bag)
+        if not all_recommendations:
+            return {}
+        field = next(iter(all_recommendations))
+        return {field: all_recommendations[field]}
+
+    def _puck_prep_issue_streak_reached(self, streak: int) -> bool:
+        """Whether `streak` consecutive puck_prep_issue-at-unchanged-recipe
+        shots has reached expert_rules.grind_correction.
+        puck_prep_issue_streak_threshold - shared by the actual grind-delta
+        override (_puck_prep_streak_coarsen_override) and the display note
+        (_puck_prep_streak_note) so the two can never disagree."""
+        threshold = self.definitions.expert_rules["grind_correction"]["puck_prep_issue_streak_threshold"]
+        return streak >= threshold
+
+    async def _puck_prep_streak_coarsen_override(
+        self, shot: ActiveShot, current_recipe: dict[str, Any]
+    ) -> float | None:
+        """None unless this shot's own puck_prep_issue-at-unchanged-recipe
+        streak (including itself - the storage query only sees prior
+        shots, since this shot's own row isn't persisted yet) has reached
+        the streak threshold. A bag+recipe landing on puck_prep_issue this
+        many shots in a row is no longer random bad technique - override
+        "repeat, don't touch grind" with a coarsening recommendation
+        instead."""
+        prior_streak = await self.hass.async_add_executor_job(
+            self.db.consecutive_puck_prep_issue_count,
+            shot.bag.id,
+            {**current_recipe, "grind": shot.bag.grind},
+        )
+        if not self._puck_prep_issue_streak_reached(prior_streak + 1):
+            return None
+        grind_config = self.definitions.expert_rules["grind_correction"]
+        return float(grind_config["puck_prep_issue_streak_coarsen_delta"])
+
+    def _puck_prep_streak_note(self, bag: Bag) -> str | None:
+        """A note once this bag's consecutive puck_prep_issue-at-unchanged-
+        recipe streak (_bag_puck_prep_streak, cached in async_refresh_cache)
+        reaches the streak threshold - None below that, a real "nothing to
+        flag" state, not a fault."""
+        streak = self._bag_puck_prep_streak.get(bag.id, 0)
+        if not self._puck_prep_issue_streak_reached(streak):
+            return None
+        return f"puck_prep_issue x{streak} in a row at this recipe - grind overridden to coarsen"
 
     def _recommended_flavor_note(self, bag: Bag) -> str | None:
         """"Current -> recommended" text per flavor-correction axis (docs/
         DESIGN.md section 13), e.g. "target_yield_g: 36.0 -> 41.0 (persistent
         sour_sharp)", joined with "; " when more than one field currently has
-        a recommendation. None when nothing has reached a persistent pattern
-        yet (see flavor_correction.recommend_flavor_correction) - that's a
-        real "no recommendation" state, not a fault."""
+        a recommendation, plus the puck_prep_issue streak note (see
+        _puck_prep_streak_note) when applicable. None when nothing has
+        anything to report at all - that's a real "no recommendation"
+        state, not a fault."""
         notes = [
             f"{field}: {current:g} → {recommended:g} (persistent {tag})"
-            for field, (current, recommended, tag) in self._flavor_field_recommendations(bag).items()
+            for field, (current, recommended, tag) in self._all_flavor_field_recommendations(
+                bag
+            ).items()
         ]
+        streak_note = self._puck_prep_streak_note(bag)
+        if streak_note is not None:
+            notes.append(streak_note)
         return "; ".join(notes) if notes else None
 
     def _recipe_field_short_note(self, bag: Bag, field: str) -> str | None:
@@ -619,8 +737,10 @@ class BaristaRuntime:
         _recommended_flavor_note includes - sized for a "recommended"
         secondary attribute on the same recipe field's own tile (see
         _recommended_note_for/entity_attributes) rather than a separate
-        tile or the combined dashboard summary."""
-        recommendation = self._flavor_field_recommendations(bag).get(field)
+        tile or the combined dashboard summary. Uses
+        _active_flavor_field_recommendation (the single, suppress-gated
+        recommendation), not the full diagnostic set."""
+        recommendation = self._active_flavor_field_recommendation(bag).get(field)
         if recommendation is None:
             return None
         current, recommended, _tag = recommendation
@@ -705,7 +825,7 @@ class BaristaRuntime:
         pre-infusion/extraction boundary, the stop-press instant once it's
         actually happened, and this shot's own expected flow rate (roast-
         level-keyed, not derived from this bag's own history - see
-        docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1 - fixed once per shot at
+        docs/DESIGN.md's Phase 3b - fixed once per shot at
         brew time - see async_brew, ActiveShot.
         expected_flow_g_s) for the frontend's flat-then-ramp idealized
         curve, derived there from target_yield_g. Same live-vs-frozen
@@ -853,7 +973,7 @@ class BaristaRuntime:
     ) -> RoastLevelFlowBaseline | None:
         """Fetch+build the roast-level flow-rate reference blended_expected_
         flow_g_s/analyze_shot need - shared by async_brew and _async_finalize,
-        the only two callers (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1)."""
+        the only two callers (docs/DESIGN.md's Phase 3b)."""
         features = await self.hass.async_add_executor_job(
             self.db.roast_level_baseline, roast_level, exclude_bag_id
         )
@@ -868,7 +988,7 @@ class BaristaRuntime:
     ) -> float | None:
         """expert_rules.roast_level_ratio_prior's dose_g*ratio fallback,
         blended toward this installation's own accumulated ratio for the
-        same roast_level (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.3) when
+        same roast_level (docs/DESIGN.md §19) when
         roast_level_features has any - same shared aggregate/shrinkage
         formula as blended_expected_flow_g_s. None when roast_level isn't a
         known key (not specified, or a value this prior doesn't cover)."""
@@ -890,7 +1010,7 @@ class BaristaRuntime:
         """expert_rules.roast_level_dose_prior's fallback, blended toward
         this installation's own accumulated dose for the same roast_level -
         same shape as _roast_level_seeded_target_yield_g above
-        (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.4). None when roast_level
+        (docs/DESIGN.md §19). None when roast_level
         isn't a known key."""
         dose = self.definitions.expert_rules["roast_level_dose_prior"].get(roast_level)
         if dose is None:
@@ -928,8 +1048,8 @@ class BaristaRuntime:
 
         # Fetched once, up front, rather than per-field: target_yield_g's,
         # dose_g's, and temperature_offset_c's seeds below all read the same
-        # roast-level-keyed aggregate (docs/todo/ADAPTIVE_LEARNING_PLAN.md
-        # §2.1/§2.3/§2.4 - one shared aggregate, not independent lookups).
+        # roast-level-keyed aggregate (docs/DESIGN.md's Phase 3b/§19 - one
+        # shared aggregate, not independent lookups).
         # No bag to exclude yet - this bag doesn't exist until created below.
         roast_level_features = (
             await self.hass.async_add_executor_job(
@@ -1693,18 +1813,19 @@ class BaristaRuntime:
         # this shot's flow-rate deviation, or None if this shot isn't a
         # grind-correction candidate at all (see grind_correction.py and
         # expert_rules.grind_correction's own comment in definitions.yaml).
+        current_recipe = _recipe_snapshot(shot.bag)
         recommended_grind_delta = recommend_grind_delta(
             analysis.classification,
             analysis.duration_ratio,
             self.definitions.expert_rules["grind_correction"],
-            current_recipe={
-                "dose_g": shot.bag.dose_g,
-                "target_yield_g": shot.bag.target_yield_g,
-                "temperature_offset_c": shot.bag.temperature_offset_c,
-                "preinfusion_s": shot.bag.preinfusion_s,
-            },
+            current_recipe=current_recipe,
             previous_shot=previous_grind_correction_shot,
         )
+
+        if analysis.classification == ShotClassification.PUCK_PREP_ISSUE:
+            override = await self._puck_prep_streak_coarsen_override(shot, current_recipe)
+            if override is not None:
+                recommended_grind_delta = override
 
         await self.hass.async_add_executor_job(
             lambda: self.db.finalize_shot(
@@ -1725,10 +1846,13 @@ class BaristaRuntime:
         self.active_shot = None
         self._set_phase(ShotPhase.IDLE if status == "complete" else ShotPhase(status))
         await self.async_refresh_cache()
-        if status == "complete":
-            self._schedule_flavor_feedback_notifications(shot.id)
+        # Stage 2 (taste) only engages once a shot is healthy - no point
+        # asking about flavor on a shot that was still mechanically or
+        # hydraulically broken.
+        if status == "complete" and analysis.classification == ShotClassification.HEALTHY:
+            self._schedule_flavor_feedback_notifications(shot.id, shot.bag.id)
 
-    def _schedule_flavor_feedback_notifications(self, shot_id: str) -> None:
+    def _schedule_flavor_feedback_notifications(self, shot_id: str, bag_id: str) -> None:
         """Schedule the taste-feedback push notifications for a just-
         completed shot, flavor_feedback_delay_s from now (definitions.yaml's
         defaults.controller) - skipped entirely if no notify target is
@@ -1743,7 +1867,7 @@ class BaristaRuntime:
             try:
                 delay_s = self.definitions.defaults["controller"]["flavor_feedback_delay_s"]
                 await asyncio.sleep(delay_s)
-                await self._async_send_flavor_feedback_notifications(shot_id)
+                await self._async_send_flavor_feedback_notifications(shot_id, bag_id)
             except asyncio.CancelledError:
                 return
             except Exception:
@@ -1762,36 +1886,58 @@ class BaristaRuntime:
             _after_delay(), f"barista_assist_flavor_feedback_{shot_id}"
         )
 
-    async def _async_send_flavor_feedback_notifications(self, shot_id: str) -> None:
+    async def _async_send_flavor_feedback_notifications(self, shot_id: str, bag_id: str) -> None:
         """Send the two independent per-axis taste-feedback notifications
-        (see _FLAVOR_AXES) - each a plain 3-button actionable notification
-        (2 tags + Balanced), answerable with a single tap with no app-
-        opening required. Each button's action id
-        ("barista_flavor:{shot_id}:{axis}:{tag}") carries everything
-        _handle_flavor_notification_action needs to record the answer."""
+        (see _FLAVOR_AXES), each a plain 3-button actionable notification
+        answerable with a single tap - no app-opening required. Each
+        button's action id ("barista_flavor:{shot_id}:{axis}:{tag}") carries
+        everything _handle_flavor_notification_action needs to record the
+        answer.
+
+        Per axis, which 3-button question to send depends on
+        flavor_correction.resolve_flavor_state's "next_question" (docs/
+        todo/LEVER_SEQUENCING_PLAN.md §3.2/§3.3): "outcome" - an
+        intervention was just (re-)applied on this axis and its result
+        hasn't been reported yet - sends "did this improve <tag>?
+        Better/Same/Worse" instead of the normal 2-tags-plus-Balanced
+        question; "tag" sends the normal question (this also covers the
+        "still <tag>?" confirmation step - same 3 buttons, no separate
+        wording needed, see resolve_flavor_state's own docstring)."""
         service = self.entry.options.get(CONF_NOTIFY_SERVICE)
         if not service:
             return
         _LOGGER.debug(
             "Sending flavor-feedback notifications for shot %s via notify.%s", shot_id, service
         )
+        config = self.definitions.expert_rules["flavor_correction"]
         for axis, tags in _FLAVOR_AXES.items():
-            actions = [
-                {"action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:{tag}", "title": title}
-                for tag, title in tags
-            ]
-            actions.append(
-                {
-                    "action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:balanced",
-                    "title": "Balanced",
-                }
-            )
+            history = list(reversed(self._bag_flavor_tags.get(bag_id, {}).get(axis, [])))
+            state = resolve_flavor_state(history, config)
+            if state["next_question"] == "outcome":
+                tag_title = dict(tags).get(state["active_tag"], axis)
+                actions = [
+                    {"action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:{response}", "title": title}
+                    for response, title in (("better", "Better"), ("same", "Same"), ("worse", "Worse"))
+                ]
+                message = f"Did that shot improve on {tag_title}?"
+            else:
+                actions = [
+                    {"action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:{tag}", "title": title}
+                    for tag, title in tags
+                ]
+                actions.append(
+                    {
+                        "action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:balanced",
+                        "title": "Balanced",
+                    }
+                )
+                message = f"How was the {axis} on that last shot?"
             try:
                 await self.hass.services.async_call(
                     "notify",
                     service,
                     {
-                        "message": f"How was the {axis} on that last shot?",
+                        "message": message,
                         "data": {"actions": actions},
                     },
                 )

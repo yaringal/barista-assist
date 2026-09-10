@@ -422,6 +422,147 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.db.last_shot()["roaster"], "Test Roaster")
         self.assertEqual(self.db.recent_shots(limit=None)[0]["roaster"], "Test Roaster")
 
+    def _finalize_classified_shot(
+        self, bag, *, classification: str, started_at: str, recommended_grind_delta: float | None = None
+    ) -> None:
+        """Create+finalize a shot at bag's own current recipe snapshot,
+        carrying just a classification (and optionally
+        recommended_grind_delta) - the shared helper behind
+        latest_shot_health/consecutive_puck_prep_issue_count tests below,
+        which only care about classification/recipe fields, not full flow
+        analysis."""
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at=started_at,
+            stop_compensation_g=1.5,
+            preinfusion_s=bag.preinfusion_s,
+            adapt_pi=False,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at=started_at,
+            actual_yield_g=bag.target_yield_g,
+            status="complete",
+            stop_command_elapsed_ms=None,
+            samples=[],
+            classification=classification,
+            recommended_grind_delta=recommended_grind_delta,
+        )
+
+    def test_latest_shot_health_is_none_with_no_classified_shot(self) -> None:
+        bag = self.new_bag()
+        self.assertIsNone(self.db.latest_shot_health(bag.id))
+
+    def test_latest_shot_health_returns_the_most_recent_classified_shot(self) -> None:
+        bag = self.new_bag()
+        self._finalize_classified_shot(
+            bag, classification="too_fast", started_at="2026-08-16T17:00:00+00:00",
+            recommended_grind_delta=-1.0,
+        )
+        self._finalize_classified_shot(
+            bag, classification="healthy", started_at="2026-08-16T17:05:00+00:00",
+        )
+        health = self.db.latest_shot_health(bag.id)
+        self.assertEqual(health["classification"], "healthy")
+        self.assertIsNone(health["recommended_grind_delta"])
+
+    def test_latest_shot_health_is_scoped_to_the_bag(self) -> None:
+        """A bag swap mints a fresh id (new_bag), so a different bag's
+        shots never leak into this one's health check."""
+        bag_a = self.new_bag()
+        self._finalize_classified_shot(
+            bag_a, classification="too_fast", started_at="2026-08-16T17:00:00+00:00"
+        )
+        bag_b = self.new_bag()
+        self.assertIsNone(self.db.latest_shot_health(bag_b.id))
+        self.assertEqual(self.db.latest_shot_health(bag_a.id)["classification"], "too_fast")
+
+    def test_consecutive_puck_prep_issue_count_is_zero_with_no_history(self) -> None:
+        bag = self.new_bag()
+        current_recipe = {
+            "dose_g": bag.dose_g,
+            "target_yield_g": bag.target_yield_g,
+            "temperature_offset_c": bag.temperature_offset_c,
+            "preinfusion_s": bag.preinfusion_s,
+            "grind": bag.grind,
+        }
+        self.assertEqual(self.db.consecutive_puck_prep_issue_count(bag.id, current_recipe), 0)
+
+    def test_consecutive_puck_prep_issue_count_is_zero_when_most_recent_is_not_puck_prep_issue(
+        self,
+    ) -> None:
+        bag = self.new_bag()
+        self._finalize_classified_shot(
+            bag, classification="puck_prep_issue", started_at="2026-08-16T17:00:00+00:00"
+        )
+        self._finalize_classified_shot(
+            bag, classification="healthy", started_at="2026-08-16T17:05:00+00:00"
+        )
+        current_recipe = {
+            "dose_g": bag.dose_g,
+            "target_yield_g": bag.target_yield_g,
+            "temperature_offset_c": bag.temperature_offset_c,
+            "preinfusion_s": bag.preinfusion_s,
+            "grind": bag.grind,
+        }
+        self.assertEqual(self.db.consecutive_puck_prep_issue_count(bag.id, current_recipe), 0)
+
+    def test_consecutive_puck_prep_issue_count_counts_a_real_streak(self) -> None:
+        bag = self.new_bag()
+        for i in range(3):
+            self._finalize_classified_shot(
+                bag, classification="puck_prep_issue", started_at=f"2026-08-16T17:0{i}:00+00:00"
+            )
+        current_recipe = {
+            "dose_g": bag.dose_g,
+            "target_yield_g": bag.target_yield_g,
+            "temperature_offset_c": bag.temperature_offset_c,
+            "preinfusion_s": bag.preinfusion_s,
+            "grind": bag.grind,
+        }
+        self.assertEqual(self.db.consecutive_puck_prep_issue_count(bag.id, current_recipe), 3)
+
+    def test_consecutive_puck_prep_issue_count_stops_at_a_recipe_change(self) -> None:
+        """Grind included in the match (not just grind_correction's own
+        hold_constant) - a self-tried grind change is a new attempt, not a
+        continuation of the same unresolved streak."""
+        bag = self.new_bag()
+        self._finalize_classified_shot(
+            bag, classification="puck_prep_issue", started_at="2026-08-16T17:00:00+00:00"
+        )
+        self.db.update_recipe_field(bag.id, "grind", bag.grind + 1.0)
+        bag = self.db.active_bags()["normal"]
+        self._finalize_classified_shot(
+            bag, classification="puck_prep_issue", started_at="2026-08-16T17:05:00+00:00"
+        )
+        current_recipe = {
+            "dose_g": bag.dose_g,
+            "target_yield_g": bag.target_yield_g,
+            "temperature_offset_c": bag.temperature_offset_c,
+            "preinfusion_s": bag.preinfusion_s,
+            "grind": bag.grind,
+        }
+        self.assertEqual(self.db.consecutive_puck_prep_issue_count(bag.id, current_recipe), 1)
+
+    def test_consecutive_puck_prep_issue_count_stops_at_a_non_matching_classification(
+        self,
+    ) -> None:
+        bag = self.new_bag()
+        self._finalize_classified_shot(
+            bag, classification="healthy", started_at="2026-08-16T17:00:00+00:00"
+        )
+        self._finalize_classified_shot(
+            bag, classification="puck_prep_issue", started_at="2026-08-16T17:05:00+00:00"
+        )
+        current_recipe = {
+            "dose_g": bag.dose_g,
+            "target_yield_g": bag.target_yield_g,
+            "temperature_offset_c": bag.temperature_offset_c,
+            "preinfusion_s": bag.preinfusion_s,
+            "grind": bag.grind,
+        }
+        self.assertEqual(self.db.consecutive_puck_prep_issue_count(bag.id, current_recipe), 1)
+
     def test_recent_healthy_features_is_none_with_no_history(self) -> None:
         bag = self.new_bag()
         self.assertIsNone(self.db.recent_healthy_features(bag.id))

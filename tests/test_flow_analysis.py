@@ -398,7 +398,7 @@ class FlowAnalysisTests(unittest.TestCase):
             self.assertTrue(result.baseline_eligible)
 
     def test_a_bags_own_history_no_longer_affects_its_flow_classification(self) -> None:
-        """docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1: a bag's own shot history
+        """docs/DESIGN.md's Phase 3b: a bag's own shot history
         must never feed back into its own flow-rate reference - a bag that
         genuinely runs faster than the generic prior stays "too fast"
         regardless of how much of its own healthy history says otherwise,

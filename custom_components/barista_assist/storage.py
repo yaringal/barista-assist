@@ -201,8 +201,8 @@ class BaristaDatabase:
         used - see BaristaRuntime.async_brew), not necessarily bag.preinfusion_s
         itself: a bag's recipe field only applies when Adapt PI is on.
         expected_flow_g_s is flow_analysis.blended_expected_flow_g_s's own
-        rate for this bag's roast_level (docs/todo/ADAPTIVE_LEARNING_PLAN.md
-        §2.1 - not this bag's own history), fixed once here at brew time
+        rate for this bag's roast_level (docs/DESIGN.md's Phase 3b - not
+        this bag's own history), fixed once here at brew time
         (see async_brew) so the Live Shot/Shot History charts' idealized-
         curve overlay stays consistent for this shot even if the roast-level
         pool changes before it finishes - None only for shots created
@@ -500,12 +500,67 @@ class BaristaDatabase:
             ).fetchone()
         return dict(row) if row else None
 
+    def latest_shot_health(self, bag_id: str) -> dict[str, Any] | None:
+        """This bag's own most recent classified shot's classification and
+        recommended_grind_delta - runtime.py's input for docs/DESIGN.md's
+        Phase 5 suppress-taste-while-grind-is-correcting guard. None if
+        this bag has no classified shot yet (nothing to suppress against).
+        Scoped strictly by bag_id, same reasoning as
+        previous_grind_correction_shot above."""
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT classification, recommended_grind_delta
+                FROM shots
+                WHERE bag_id=? AND classification IS NOT NULL
+                ORDER BY started_at DESC LIMIT 1
+                """,
+                (bag_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def consecutive_puck_prep_issue_count(
+        self, bag_id: str, current_recipe: dict[str, Any]
+    ) -> int:
+        """How many of this bag's most recent classified shots, in a row
+        (most recent first), are puck_prep_issue with a recipe matching
+        current_recipe's own dose_g/target_yield_g/temperature_offset_c/
+        preinfusion_s/grind (grind included in the match, unlike
+        grind_correction's own hold_constant: a self-tried grind change is
+        a new attempt, not a continuation of the same unresolved problem).
+        current_recipe doesn't need to itself be a persisted shot - this is
+        called both mid-finalize (current_recipe describing the shot being
+        finalized, whose own row doesn't exist yet - the caller adds 1 for
+        it) and afterward, once persisted, to compute the full count for
+        display (current_recipe read live from the bag, matching what the
+        now-persisted latest row already has)."""
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT classification, dose_g, target_yield_g,
+                       temperature_offset_c, preinfusion_s, grind
+                FROM shots
+                WHERE bag_id=? AND classification IS NOT NULL
+                ORDER BY started_at DESC
+                """,
+                (bag_id,),
+            ).fetchall()
+        fields = ("dose_g", "target_yield_g", "temperature_offset_c", "preinfusion_s", "grind")
+        count = 0
+        for row in rows:
+            if row["classification"] != "puck_prep_issue":
+                break
+            if any(row[field] != current_recipe[field] for field in fields):
+                break
+            count += 1
+        return count
+
     def recent_healthy_features(self, bag_id: str, limit: int = 5) -> dict[str, Any] | None:
         """Median channeling-suspicion features from a bag's own recent
         healthy shots (flow_analysis.BaselineFeatures - the current bag's
         median_late_accel only; the flow-rate reference is roast_level_baseline
-        below, not scoped to this bag - see docs/todo/ADAPTIVE_LEARNING_PLAN.md
-        §2.1/§2.8 for why). Returns None when the bag has no healthy shot
+        below, not scoped to this bag - see docs/DESIGN.md's Phase 3b for
+        why). Returns None when the bag has no healthy shot
         history yet, matching analyze_shot's own handling of a missing
         baseline.
         """
@@ -534,7 +589,7 @@ class BaristaDatabase:
         sharing roast_level - the shared roast-level-keyed aggregate
         `flow_analysis.RoastLevelFlowBaseline` and runtime.py's
         `_roast_level_seeded_target_yield_g`/`_roast_level_seeded_dose_g` all
-        read from (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1/§2.3/§2.4 - one
+        read from (docs/DESIGN.md's Phase 3b/§19 - one
         aggregate, not three independent lookups). Deliberately not scoped
         to any one bag's own history, unlike recent_healthy_features above -
         exclude_bag_id only prevents a bag from feeding its own reference
@@ -546,7 +601,7 @@ class BaristaDatabase:
 
         Includes too_fast/too_restrictive shots alongside healthy ones (only
         puck_prep_issue/invalid_measurement excluded) - see
-        docs/todo/ADAPTIVE_LEARNING_PLAN.md §3 for why healthy-only would risk
+        docs/DESIGN.md's Phase 3b for why healthy-only would risk
         a bootstrapping deadlock here. Returns None when roast_level is None
         (nothing to bucket by) or no matching shots exist yet.
         """

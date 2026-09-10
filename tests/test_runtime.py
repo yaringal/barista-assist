@@ -559,7 +559,7 @@ class ShotMarkersTests(RuntimeTestCase):
         self.assertGreater(self.runtime.active_shot.expected_flow_g_s, 0.0)
 
     async def test_async_brew_blends_toward_other_bags_sharing_roast_level(self):
-        """docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1: the flow-rate reference
+        """docs/DESIGN.md's Phase 3b: the flow-rate reference
         is roast-level-keyed, not per-bag - a *different* bag's own healthy
         shots (never this brand-new bag's own, nonexistent history) shift
         expected_flow_g_s at brew time."""
@@ -1202,20 +1202,41 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.assertEqual(self.runtime._flavor_notification_tasks, {})
 
     async def test_a_completed_shot_schedules_a_notification_task(self):
+        """docs/todo/LEVER_SEQUENCING_PLAN.md §3.1: Stage 2 only engages
+        once a shot is healthy - needs a real ramp landing in the healthy
+        band (~27.7s expected for 36g/1.3g/s), not just any completed shot."""
         self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
         await self.start_shot()
-        await self.wait_for_extracting()
-        self.scale.push_reading(make_reading(weight_g=36.0))
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
         await self.runtime._async_finalize("complete")
+        self.assertEqual(self.runtime.last_shot["classification"], "healthy")
         shot_id = self.runtime.last_shot["id"]
         self.assertIn(shot_id, self.runtime._flavor_notification_tasks)
+
+    async def test_a_non_healthy_completed_shot_does_not_schedule_a_notification(self):
+        """The counterpart to the test above - too_fast (or any non-healthy
+        classification) shouldn't prompt for taste feedback at all."""
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=15.0, target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        self.assertEqual(self.runtime.last_shot["classification"], "too_fast")
+        self.assertEqual(self.runtime._flavor_notification_tasks, {})
 
     async def test_send_flavor_feedback_notifications_sends_both_axes(self):
         """Called directly rather than through the real flavor_feedback_delay_s
         sleep - see _schedule_flavor_feedback_notifications' own docstring
         for why it's kept separately callable."""
         self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
-        await self.runtime._async_send_flavor_feedback_notifications("shot-123")
+        await self.runtime._async_send_flavor_feedback_notifications("shot-123", "bag-456")
 
         calls = self.hass.services.calls
         self.assertEqual(len(calls), 2)
@@ -1244,13 +1265,13 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.hass.services.fail_next_call()
 
         with self.assertLogs("custom_components.barista_assist.runtime", level="WARNING") as log:
-            await self.runtime._async_send_flavor_feedback_notifications("shot-123")
+            await self.runtime._async_send_flavor_feedback_notifications("shot-123", "bag-456")
 
         self.assertEqual(len(self.hass.services.calls), 2)  # both axes still attempted
         self.assertTrue(any("shot-123" in message for message in log.output), log.output)
 
     async def test_send_flavor_feedback_notifications_is_a_noop_without_a_service(self):
-        await self.runtime._async_send_flavor_feedback_notifications("shot-123")
+        await self.runtime._async_send_flavor_feedback_notifications("shot-123", "bag-456")
         self.assertEqual(self.hass.services.calls, [])
 
     async def test_notification_action_event_records_the_tag(self):
@@ -1301,24 +1322,27 @@ class FlavorFeedbackTests(RuntimeTestCase):
         definition = self.runtime.definitions.entity("sensor", "recommended_flavor")
         return self.runtime.entity_value(definition)
 
-    async def test_recommended_flavor_note_after_a_persistent_pattern(self):
-        """require_persistent_pattern_shots=2 (definitions.yaml): needs the
-        same tag on the bag's 2 most recent answered shots before it shows
-        up, then reads as "{field}: {current} -> {recommended} (persistent
-        {tag})", the same style as recommended_grind_note."""
+    async def test_recommended_flavor_note_after_a_single_report(self):
+        """docs/todo/LEVER_SEQUENCING_PLAN.md §3.2 point 1: the primary
+        intervention fires on the *first* report, no repetition gate (this
+        replaced the old require_persistent_pattern_shots-gated behavior) -
+        reads as "{field}: {current} -> {recommended} (persistent {tag})",
+        the same style as recommended_grind_note."""
         await self.create_bag()
         bag = self.runtime.selected_bag
-        for _ in range(2):
-            await self.runtime.async_brew()
-            await self.wait_for_extracting()
-            self.scale.push_reading(make_reading(weight_g=36.0))
-            await self.runtime._async_finalize("complete")
-            await self.runtime.hass.async_add_executor_job(
-                self.runtime.db.record_flavor_tag,
-                self.runtime.last_shot["id"],
-                "extraction",
-                "sour_sharp",
-            )
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
         await self.runtime.async_refresh_cache()
 
         note = self._recommended_flavor()
@@ -1326,16 +1350,21 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.assertIn("persistent sour_sharp", note)
         self.assertIn(f"{bag.target_yield_g:g}", note)
 
-    async def test_recommended_flavor_note_is_none_with_only_one_answered_shot(self):
+    async def test_recommended_flavor_note_is_none_after_balanced(self):
+        """docs/todo/LEVER_SEQUENCING_PLAN.md §3.2 point 3: `balanced`
+        fully resets the axis's tracked recommendation."""
         await self.start_shot()
-        await self.wait_for_extracting()
-        self.scale.push_reading(make_reading(weight_g=36.0))
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
         await self.runtime._async_finalize("complete")
         await self.runtime.hass.async_add_executor_job(
             self.runtime.db.record_flavor_tag,
             self.runtime.last_shot["id"],
             "extraction",
-            "sour_sharp",
+            "balanced",
         )
         await self.runtime.async_refresh_cache()
 
@@ -1346,10 +1375,18 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.assertIsNone(self.runtime.entity_value(definition))
 
     async def _brew_and_tag(self, axis: str, tag: str, *, times: int) -> None:
+        """Each shot lands in the healthy band (~27.7s expected for
+        36g/1.3g/s) - docs/todo/LEVER_SEQUENCING_PLAN.md §5's suppress-guard
+        would otherwise blank out _active_flavor_field_recommendation (the
+        per-tile badges this helper's callers check) for a non-healthy last
+        shot, same as real usage."""
         for _ in range(times):
             await self.runtime.async_brew()
-            await self.wait_for_extracting()
-            self.scale.push_reading(make_reading(weight_g=36.0))
+            shot = self.runtime.active_shot
+            shot.samples = FlowAnalysisWiringTests._ramp_samples(
+                flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+            )
+            shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
             await self.runtime._async_finalize("complete")
             await self.runtime.hass.async_add_executor_job(
                 self.runtime.db.record_flavor_tag, self.runtime.last_shot["id"], axis, tag
@@ -1417,6 +1454,160 @@ class FlavorFeedbackTests(RuntimeTestCase):
         sensor_definition = self.runtime.definitions.entity("sensor", "recommended_grind")
         self.assertIsNotNone(grind_note)
         self.assertEqual(grind_note, self.runtime.entity_value(sensor_definition))
+
+    @staticmethod
+    def _puck_prep_issue_samples():
+        """Steady flow, then a sharp late acceleration - the same late-
+        flow-runaway channeling signature test_flow_analysis.py's own
+        test_late_flow_runaway_is_flagged_as_puck_prep_issue_even_with_no_baseline
+        uses, built as a static ShotSample list against this project's real
+        (definitions.yaml-loaded) flow_analysis_constants rather than that
+        test module's own separate CONFIG."""
+        flat_s, switch_s, duration_s, hz = 1.5, 13.5, 22.0, 10.0
+
+        def flow_fn(t: float) -> float:
+            if t < flat_s:
+                return 0.0
+            if t < switch_s:
+                return 2.0
+            return 2.0 + 1.0 * (t - switch_s)
+
+        dt = 1.0 / hz
+        samples = []
+        weight = 0.0
+        for i in range(int(duration_s * hz) + 1):
+            t_s = i * dt
+            if i > 0:
+                weight += flow_fn(t_s - dt) * dt
+            elapsed_ms = int(round(t_s * 1000))
+            samples.append(ShotSample(i, elapsed_ms, elapsed_ms, weight, flow_fn(t_s), 90))
+        return samples
+
+    async def _brew_puck_prep_issue_shot(self) -> None:
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = self._puck_prep_issue_samples()
+        await self.runtime._async_finalize("complete")
+        self.assertEqual(self.runtime.last_shot["classification"], "puck_prep_issue")
+
+    async def test_puck_prep_issue_streak_overrides_grind_recommendation_past_threshold(self):
+        """docs/todo/LEVER_SEQUENCING_PLAN.md §3.1: a bag+recipe landing on
+        puck_prep_issue puck_prep_issue_streak_threshold shots in a row
+        overrides "repeat, don't touch grind" and recommends coarsening by
+        puck_prep_issue_streak_coarsen_delta - read live rather than
+        hardcoded, so retuning either constant can't break this test."""
+        await self.create_bag()
+        grind_config = self.runtime.definitions.expert_rules["grind_correction"]
+        threshold = grind_config["puck_prep_issue_streak_threshold"]
+        coarsen_delta = grind_config["puck_prep_issue_streak_coarsen_delta"]
+
+        for _ in range(threshold - 1):
+            await self._brew_puck_prep_issue_shot()
+            self.assertIsNone(self.runtime.last_shot["recommended_grind_delta"])
+
+        await self._brew_puck_prep_issue_shot()
+        self.assertEqual(self.runtime.last_shot["recommended_grind_delta"], coarsen_delta)
+
+    async def test_puck_prep_streak_note_appears_once_threshold_reached(self):
+        await self.create_bag()
+        bag = self.runtime.selected_bag
+        threshold = self.runtime.definitions.expert_rules["grind_correction"][
+            "puck_prep_issue_streak_threshold"
+        ]
+        for _ in range(threshold):
+            await self._brew_puck_prep_issue_shot()
+
+        note = self._recommended_flavor()
+        self.assertIsNotNone(note)
+        self.assertIn(f"puck_prep_issue x{threshold} in a row", note)
+
+    async def test_suppress_guard_blanks_the_active_recommendation_but_not_the_summary(self):
+        """docs/todo/LEVER_SEQUENCING_PLAN.md §5: once the bag's last shot
+        needs grind correcting again, the single active (per-tile)
+        recommendation is suppressed, but the last-shot summary still shows
+        every lever that could help - the two surfaces split per §3.2/§4."""
+        await self.create_bag()
+        target_yield = self.runtime.selected_bag.target_yield_g
+        # Healthy shot + persistent-looking tag - establishes an active
+        # yield recommendation on both surfaces.
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
+        await self.runtime.async_refresh_cache()
+        self.assertIsNotNone(self._recommended_attribute("number", "target_yield"))
+
+        # Now a too_fast shot - grind still has something to correct.
+        await self._brew_too_fast_shot()
+
+        self.assertIsNone(self._recommended_attribute("number", "target_yield"))
+        note = self._recommended_flavor()
+        self.assertIsNotNone(note)
+        self.assertIn(f"{target_yield:g}", note)
+
+    async def _brew_too_fast_shot(self) -> None:
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=15.0, target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        self.assertEqual(self.runtime.last_shot["classification"], "too_fast")
+
+    async def test_notifications_ask_the_outcome_question_after_an_intervention(self):
+        """docs/todo/LEVER_SEQUENCING_PLAN.md §3.2/§3.3: once a tag has just
+        triggered a fresh recommendation, the next notification for that
+        axis asks "did this improve <tag>?" (better/same/worse) instead of
+        the normal 2-tags-plus-Balanced question."""
+        await self.create_bag()
+        bag_id = self.runtime.selected_bag.id
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
+        await self.runtime.async_refresh_cache()
+
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+        await self.runtime._async_send_flavor_feedback_notifications("some-shot-id", bag_id)
+
+        calls = self.hass.services.calls
+        extraction_call = next(
+            (
+                data
+                for domain, _service, data in calls
+                if domain == "notify" and "improve" in data.get("message", "")
+            ),
+            None,
+        )
+        self.assertIsNotNone(extraction_call)
+        actions = {action["action"] for action in extraction_call["data"]["actions"]}
+        self.assertEqual(
+            actions,
+            {
+                "barista_flavor:some-shot-id:extraction:better",
+                "barista_flavor:some-shot-id:extraction:same",
+                "barista_flavor:some-shot-id:extraction:worse",
+            },
+        )
 
 
 class RoastLevelRatioPriorTests(RuntimeTestCase):
@@ -1518,7 +1709,7 @@ class RoastLevelRatioPriorTests(RuntimeTestCase):
         self.assertEqual(second.temperature_offset_c, first.temperature_offset_c)  # inherited, not re-seeded
 
     async def test_seeds_dose_from_roast_level_in_an_empty_slot(self):
-        """docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.4: same shape as
+        """docs/DESIGN.md §19: same shape as
         target_yield_g/temperature_offset_c above, for expert_rules.
         roast_level_dose_prior."""
         bag = await self.runtime.async_new_bag(
@@ -1557,7 +1748,7 @@ class RoastLevelRatioPriorTests(RuntimeTestCase):
         self.assertEqual(second.dose_g, first.dose_g)  # inherited from "First", not re-seeded
 
     async def test_seeds_blend_toward_this_installations_own_shots_for_the_roast_level(self):
-        """docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.3/§2.4: once other bags
+        """docs/DESIGN.md §19: once other bags
         of the same roast_level have shots, the fixed roast_level_dose_prior/
         roast_level_ratio_prior tables blend toward this installation's own
         accumulated dose/ratio for that roast_level - a different bag/slot

@@ -79,10 +79,11 @@ class DefinitionTests(unittest.TestCase):
         self.assertEqual(self.defs.defaults["controller"]["flavor_feedback_delay_s"], 300)
 
     def test_flavor_correction_tags_match_flavor_correction_py_s_lever_map(self):
-        """Every non-balanced tag's lever must be one flavor_correction.py's
+        """Every non-balanced tag's primary lever, and its escalation
+        lever if one is defined, must be one flavor_correction.py's
         _LEVER_TO_FIELD map actually knows how to translate to a recipe
         field - a typo'd/renamed lever here would otherwise only surface as
-        a KeyError deep inside recommend_flavor_correction at runtime."""
+        a KeyError deep inside resolve_flavor_state at runtime."""
         flavor_correction = ha_stubs.import_barista_module("flavor_correction")
         levers = set(flavor_correction._LEVER_TO_FIELD)
         tags = self.defs.expert_rules["flavor_correction"]["tags"]
@@ -90,6 +91,11 @@ class DefinitionTests(unittest.TestCase):
             if tag == "balanced":
                 continue
             self.assertIn(config["lever"], levers, f"tag {tag!r} has an unmapped lever")
+            escalation = config.get("escalation")
+            if escalation is not None:
+                self.assertIn(
+                    escalation["lever"], levers, f"tag {tag!r}'s escalation has an unmapped lever"
+                )
 
     def test_roast_level_ratio_prior_covers_every_roast_level_select_option(self):
         """new_bag_roast_level's options (besides "not specified") are the

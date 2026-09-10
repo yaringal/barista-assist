@@ -164,12 +164,12 @@ flow_analysis_constants:
   # --- Flow-rate classification (the Hoffmann-calibrated trio) ---------------
 
   # How many "pseudo-shots" the expected_flow_g_s prior below (and, per
-  # docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.3/§2.4, roast_level_ratio_prior/
+  # docs/DESIGN.md §19, roast_level_ratio_prior/
   # roast_level_dose_prior in expert_rules) is worth when blending with this
   # installation's own accumulated data for the same roast_level - shrinks
   # toward that roast-level pool as its shot count grows. Deliberately not
   # blended toward any one bag's own history (see flow_analysis.py's module
-  # docstring and docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.1 for why). One
+  # docstring and docs/DESIGN.md's Phase 3b for why). One
   # shared shrinkage-weight constant, not a separate one per prior.
   # Unvalidated placeholder.
   prior_weight_shots: 1.0
@@ -209,8 +209,8 @@ flow_analysis_constants:
   # better-grounded starting point than an invented example, but still to
   # be replaced once Phase 3b/4b's real recorded shots exist. Full
   # derivation/history: docs/DIAL_IN_RULES.md Part 4.
-  expected_flow_g_s: 1.3
-  too_fast_factor: 0.88
+  expected_flow_g_s: 1.3  # 1.2 to 1.3 g/s for 36g to 40g in 30s
+  too_fast_factor: 0.88  # 
   too_restrictive_factor: 1.10
 
 # =============================================================================
@@ -237,9 +237,9 @@ expert_rules:
   # can't yet tell them apart from the weight curve alone, so defaulting to
   # "repeat the recipe, don't touch grind" is the safe choice until it can.
   #
-  # TODO: that "repeat, don't touch grind" default doesn't yet track
-  # consecutive puck_prep_issue shots at the same recipe - see
-  # docs/todo/LEVER_SEQUENCING_PLAN.md §3.1 for the full reasoning.
+  # That "repeat, don't touch grind" default is overridden once consecutive
+  # puck_prep_issue shots at the same recipe cross a threshold - see
+  # puck_prep_issue_streak_threshold below and docs/DESIGN.md §12/Phase 4.
   grind_correction:
     applies_to_classification: [too_fast, too_restrictive]
     excludes_classification: [puck_prep_issue, invalid_measurement]
@@ -285,6 +285,18 @@ expert_rules:
     # purged, so it isn't a clean comparison to the pre-change baseline.
     requires_purge_before_next_comparison: true
 
+    # A bag+recipe that lands on puck_prep_issue this many shots in a row
+    # (same recipe including grind - see
+    # storage.consecutive_puck_prep_issue_count) is no longer random
+    # bad technique, it's systematic - override "repeat, don't touch grind"
+    # and recommend coarsening by puck_prep_issue_streak_coarsen_delta
+    # instead. Both placeholders, not sourced from any transcript - no
+    # video gives a numeric threshold or step for this case - needing real
+    # accumulated shot data to calibrate, same discipline as every other
+    # not-yet-validated constant in this file.
+    puck_prep_issue_streak_threshold: 2
+    puck_prep_issue_streak_coarsen_delta: 1.0
+
   # --- Phase 5: flavor_correction ----------------------------------------------
   # Consumed by flavor_correction.py, driven by taste-feedback push
   # notifications sent flavor_feedback_delay_s after a shot finishes (see
@@ -293,18 +305,15 @@ expert_rules:
   # consensus/mechanism over any one creator's personal preference - see
   # docs/CROSS_CREATOR_RULE_CHECK.md.
   #
-  # TODO: every tag's `escalation` block below is not yet implemented - see
-  # docs/todo/LEVER_SEQUENCING_PLAN.md §3.2 for the full proposed mechanism.
+  # Each tag's own `escalation` block (lever/direction, no delta_g of its
+  # own - always falls back to minimum_meaningful_step) is consumed by
+  # flavor_correction.resolve_flavor_state's full escalation state machine
+  # (docs/DESIGN.md's Phase 5) - primary lever on first report, repeat on
+  # "better", confirm-then-escalate-or-revert on "same"/"worse", reset on
+  # "balanced". A tag with no `escalation` block (thin_weak/dry_astringent)
+  # has nowhere further to escalate to - confirmation just re-nudges the
+  # primary lever again.
   flavor_correction:
-    lever_order: [yield, temperature, dose, preinfusion]
-
-    # A single shot's taste tag shouldn't trigger a correction on its own
-    # (Brew Temperature ep: "time and time and time again", not one shot -
-    # shot-to-shot variation and bean heterogeneity can produce a false
-    # signal). Applies to flavour tags; flow-classification-driven grind
-    # corrections above are exempt since duration_ratio is measured directly,
-    # not self-reported.
-    require_persistent_pattern_shots: 2
     minimum_meaningful_step:
       temperature_offset_c: 1
       dose_g: 0.5
@@ -391,10 +400,10 @@ expert_rules:
   # unimplemented, so this prior is used whenever roast_level is known and
   # there's nothing else at all to seed from). Blended toward this
   # installation's own accumulated ratio for the same roast_level once other
-  # bags of that roast level have shots (docs/todo/ADAPTIVE_LEARNING_PLAN.md
-  # §2.3) - see storage.roast_level_baseline, shared with
+  # bags of that roast level have shots (docs/DESIGN.md §19) - see
+  # storage.roast_level_baseline, shared with
   # flow_analysis_constants.expected_flow_g_s's own roast-level shrinkage
-  # (§2.1) and roast_level_dose_prior below (§2.4): one aggregate, not three
+  # (Phase 3b) and roast_level_dose_prior below: one aggregate, not three
   # independent lookups.
   #
   # dark/light are Lance Hedrick's stated guideline (two videos agree
@@ -470,7 +479,7 @@ expert_rules:
   # Same scope/consumer as roast_level_ratio_prior above (runtime.py's
   # async_new_bag, only for a brand-new bag in an empty slot) - seeds dose_g.
   # Blended toward this installation's own accumulated dose for the same
-  # roast_level the same way (docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.4),
+  # roast_level the same way (docs/DESIGN.md §19),
   # sharing one aggregate with roast_level_ratio_prior/expected_flow_g_s
   # above rather than an independent lookup.
   #
@@ -488,7 +497,7 @@ expert_rules:
   roast_level_dose_prior:
     dark: 18.0
     medium: 18.0
-    light: 18.0
+    light: 17.0
 
 entities:
   sensor:
@@ -602,10 +611,10 @@ entities:
       # 36.0 -> 40.0 (persistent sour_sharp)"), computed in
       # BaristaRuntime.entity_value from the selected bag's own recent,
       # answered taste-feedback tags (storage.recent_flavor_tags) plus
-      # flavor_correction.py's recommend_flavor_correction() output. Both
+      # flavor_correction.py's resolve_flavor_state() output. Both
       # axes (extraction, mouthfeel) are checked independently and joined
       # with "; " when both currently have a recommendation. None/
-      # unavailable when neither axis has a persistent pattern yet - that's
+      # unavailable when neither axis currently has one - that's
       # a real "no recommendation" state, not a fault. field is a virtual
       # name (not a real bag column) that entity_value special-cases, the
       # same way source: bag's remaining_g/recommended_grind_note do.

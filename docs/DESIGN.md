@@ -174,7 +174,7 @@ Typical increment:
 
 (Per James Hoffmann's "Understanding Espresso: Dose" video — a ~0.5g nudge
 used only on a shot that's already close to good, not for gross corrections;
-see `docs/DIAL_IN_RULES.md`.)
+see `docs/data/DIAL_IN_RULES.md`.)
 
 Dose is a secondary control because changing it also changes:
 
@@ -203,7 +203,7 @@ Half-steps are fine adjustments.
 
 Example policy (mirrored for the coarser/restrictive side; see
 `definitions.yaml`'s `expert_rules.grind_correction` for the full table with
-`duration_ratio` thresholds, and `docs/DIAL_IN_RULES.md` for
+`duration_ratio` thresholds, and `docs/data/DIAL_IN_RULES.md` for
 sourcing):
 
 ```text
@@ -243,8 +243,8 @@ rather than just fine-tuning it — good general guidance, but when
 cross-checked against Lance Hedrick's and Matt Perger's own worked
 sourness-correction examples (5-10g, 25% jumps), all three independently
 use noticeably bigger increments than Hoffmann's stated ceiling for that
-*specific* fix. See `docs/DIAL_IN_RULES.md` and
-`docs/CROSS_CREATOR_RULE_CHECK.md`.
+*specific* fix. See `docs/data/DIAL_IN_RULES.md` and
+`docs/data/CROSS_CREATOR_RULE_CHECK.md`.
 
 Yield should generally be adjusted only after the shot appears hydraulically healthy.
 
@@ -533,11 +533,23 @@ Such a shot should also be excluded from updates to:
 
 This prevents poor puck preparation from contaminating the model.
 
-**TODO, queued for later:** this section's "repeat the recipe, don't update
-it" response is applied identically no matter how many times in a row it
-happens for the same recipe — see `docs/todo/LEVER_SEQUENCING_PLAN.md` §3.1
-for the full reasoning and the proposed fix (a bookkeeping gap, not a data
-one, so it doesn't need to wait on real shot history).
+**Implemented:** this section's "repeat the recipe, don't update it"
+response no longer applies identically no matter how many times in a row
+it happens for the same recipe. `storage.consecutive_puck_prep_issue_count`
+counts how many of a bag's most recent classified shots, in a row, are
+`puck_prep_issue` at an unchanged recipe (dose/yield/temperature/
+preinfusion *and* grind all equal - a self-tried grind change counts as a
+new attempt, not a continuation of the same unresolved problem). Once that
+streak reaches `expert_rules.grind_correction.puck_prep_issue_streak_threshold`
+(a placeholder, `3`, not sourced - no transcript gives a numeric threshold
+for this case, needs real accumulated shot data to validate), an
+occasional bad tamp is no longer a plausible explanation - the system
+overrides "repeat, don't touch grind" and instead recommends coarsening by
+`puck_prep_issue_streak_coarsen_delta` (also a placeholder), surfaced as a
+note on the bag's dashboard summary. `runtime.py`'s `_async_finalize`
+computes the override; `flow_analysis.py`'s classification itself is
+unaffected - the override happens after classification, not by changing
+when a shot is called `puck_prep_issue`.
 
 ---
 
@@ -662,7 +674,7 @@ The bitter/harsh and dry/astringent rows, the sourness-yield magnitude
 (+5 to +10 g, up from an earlier +2 to +3 g), and the fines/bitterness
 caveat were added after cross-checking against Lance Hedrick's and Matt
 Perger's videos alongside James Hoffmann's — see
-`docs/CROSS_CREATOR_RULE_CHECK.md` and `expert_rules.flavor_correction` in
+`docs/data/CROSS_CREATOR_RULE_CHECK.md` and `expert_rules.flavor_correction` in
 `definitions.yaml` for the full sourcing and reasoning. Not everything from
 that cross-check was incorporated: creator-specific personal preferences
 that conflicted with the wider consensus (or, in one case, with a
@@ -920,11 +932,11 @@ level). This is blended toward this installation's own accumulated ratio for
 the same `roast_level`, across *other* bags that share it, as that pool
 grows (`storage.roast_level_baseline`) — deliberately not toward the current
 bag's own accepted shots, which would let bean-aging drift within one bag's
-life quietly feed back into its own reference point; see
-`docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1/§2.3 for the full reasoning (the
-flow classifier's own fixed prior is blended the same roast-level-keyed way,
-for the same reason). See `expert_rules.roast_level_ratio_prior` in
-`definitions.yaml` and `docs/CROSS_CREATOR_RULE_CHECK.md`.
+life quietly feed back into its own reference point - the flow classifier's
+own expected-flow-rate prior is blended the same roast-level-keyed way, for
+the same reason (see Phase 3b's fuller reasoning on that). See
+`expert_rules.roast_level_ratio_prior` in
+`definitions.yaml` and `docs/data/CROSS_CREATOR_RULE_CHECK.md`.
 
 The same fallback now also seeds `dose_g` (`expert_rules.roast_level_dose_prior`,
 sourced from Hoffmann's Dose episode's "the darker the roast... the less
@@ -1445,13 +1457,37 @@ installation's own history for that roast level says otherwise. Deliberately
 not blended toward the current bag's own history, unlike an earlier version
 of this design — bean-aging drift within one bag's life is handled by grind
 correction chasing a fixed reference instead, so a bag's own shots never
-feed back into its own reference point (see
-`docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1 for the full reasoning). This is
+feed back into its own reference point. An earlier per-bag version of this
+shrinkage was circular: `median_flow_g_s` was built only from shots this
+same classifier already called `healthy`, itself defined relative to the
+blended rate, so as grind corrections chased drift back toward that rate,
+the rate just tracked wherever the corrections settled and `duration_ratio`
+lost the ability to see the drift at all - freezing the value per bag only
+delayed the contamination, since even a frozen value was set from that
+bag's own early, possibly still-correcting shots. Roast level is the right
+granularity for the one case a rigid global constant doesn't cover (a bean
+that genuinely can't reach the global pace at any sensible grind without
+sacrificing taste or risking channeling) - a property of the bean, not of
+this individual bag's own history, which is exactly the axis that can
+drift within a bag's life. This is
 deliberately different treatment from mechanical suspicion above: a
 roast level's characteristic pace is a reference point with
 nothing to protect against, so it's allowed to fully self-normalize,
 whereas the channeling-suspicion boundary is not, or a bag with a
 recurring puck-prep problem would train the model to stop catching it.
+This asymmetry also decides which shots feed each baseline:
+`storage.roast_level_baseline` (flow rate) includes `too_fast`/
+`too_restrictive` shots alongside `healthy` ones - they're clean pours
+that simply ran at a different pace than currently expected, exactly the
+signal a pace-characterization baseline needs, and excluding them risked a
+bootstrapping deadlock (a roast level whose true pace sits outside the
+initial global-prior-influenced window would have every shot classified
+off-target forever, never entering the pool that exists to correct for
+that). `storage.recent_healthy_features` (channeling's `median_late_accel`)
+stays `healthy`-only, since a `too_fast`/`too_restrictive` shot hasn't been
+independently verified non-channeling any more rigorously than a
+`puck_prep_issue` one has. Both exclude `puck_prep_issue`/
+`invalid_measurement` either way.
 
 Section 13's "was time to first flow plausible?" is implemented
 (flow detected well before the configured pre-infusion should have ended,
@@ -1481,23 +1517,47 @@ Success criterion:
 > Fast/slow/suspicious thresholds are derived from this installation's own
 > shot history rather than fixed guesses.
 
+A handful of `flow_analysis.py` constants (`_DISTURBANCE_SUSTAIN_MS`,
+`_MAX_PLAUSIBLE_WEIGHT_DROP_G`, `_DISTURBANCE_DETECTION_FLOOR_G`,
+`_FIRST_FLOW_SUSTAIN_MS`, `FIRST_FLOW_THRESHOLD_G_S`) can't be fitted from
+data at all, even once real history exists - each was hand-tuned against
+one specific anomalous shot a human diagnosed by eye, and nothing in a
+weight/flow trace alone tells the app "yes, the cup was actually bumped at
+that timestamp" the way a completed shot's own final weight confirms or
+refutes a stop-latency prediction every single shot. Rather than leave
+these static and unexamined, `tests/test_constant_drift.py`'s
+`ConstantDriftReport` re-runs `analyze_shot` against every real fixture in
+`tests/fixtures/real_shots/` with each constant nudged ±20%, and flags any
+fixture whose classification flips - a near-miss worth a human's attention,
+not a failure (the report never fails the suite; it prints a finding for a
+human to review). The same file's `StopLatencyBucketDriftReport` does the
+analogous check for `_STOP_LATENCY_BUCKET_CUTOFF_G_S` (3.0 g/s): does it
+still sit in a genuine low-density gap between the two `stop_latency_normal_s`/
+`elevated_s` bucket populations, as new real shots accumulate. Both reports
+grow more useful as the fixture set grows, on the working assumption that it
+becomes representative of real usage over time.
+
 Also revisit then: `_baseline_deviation_suspicion` in `flow_analysis.py`
 doesn't grow more bag-dependent as a bag's healthy-shot count increases -
-unlike an earlier version of the flow-rate expectation, which used to,
-before that per-bag shrinkage was itself removed (see
-`docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1). This is deliberate, not an oversight — see
-`docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.8 for the full reasoning — but it's
-worth reconsidering once there's a way to check a bag's own baseline against
-real, independently verified outcomes (not just shots this same classifier
-already called "healthy"), since only then can more bag-dependence be added
-there without risking a recurring problem normalizing itself out of
-detection.
+unlike the flow-rate expectation above, which does. This is deliberate,
+not an oversight: `median_late_accel` (the channeling-suspicion baseline)
+is built only from shots this same classifier already called `healthy` -
+self-labeled, not independently verified - so if the fixed prior is even
+slightly lenient, mildly-bad shots leak into that pool and pull a bag's
+own tolerance toward the exact badness a channeling check exists to catch,
+with nothing to correct the drift once it starts. Flow rate has no
+equivalent risk (a bag's pace is a fact, not an evaluative judgment),
+which is why only it gets full shrinkage. See
+`docs/todo/ADAPTIVE_LEARNING_PLAN.md` §4 for the remaining open design
+question (a safer partial version, gated on independently-verified
+outcomes like a `balanced` flavor report on both axes, not yet built).
 
-See `docs/todo/ADAPTIVE_LEARNING_PLAN.md` for the fuller critical pass over this
-phase - which of these constants should actually become adaptive, which
-should stay fixed/human-recalibrated, and why (the per-bag flow-rate
-shrinkage described above was itself one outcome of that pass, replaced with
-the roast-level-keyed version this section now describes).
+See `docs/todo/ADAPTIVE_LEARNING_PLAN.md` for the remaining constants still
+awaiting real accumulated shot/taste-tag history before they can be
+calibrated or reconsidered - the constants that had enough already decided
+(the roast-level-keyed shrinkage above, the human-inspection-only
+drift-detection reports, the `duration_ratio`-band baseline-inclusion rule)
+have already shipped and moved into this document.
 
 ---
 
@@ -1524,7 +1584,7 @@ numeric grind-step size for any grinder; every adjustment he describes is
 qualitative ("a little finer", "way too fast"). §6.2's own `16 to 14` example
 predates this research and is equally a hand-written placeholder, not
 corroborating evidence — see `definitions.yaml`'s `expert_rules.grind_correction`
-table and `docs/DIAL_IN_RULES.md` for what is and isn't
+table and `docs/data/DIAL_IN_RULES.md` for what is and isn't
 actually sourced from the videos.)
 
 Success criterion:
@@ -1532,32 +1592,91 @@ Success criterion:
 > Gross flow errors are corrected without changing multiple variables at once.
 
 Rule source: `expert_rules.grind_correction` in `definitions.yaml`, derived
-from `docs/DIAL_IN_RULES.md`. The `duration_ratio` band
+from `docs/data/DIAL_IN_RULES.md`. The `duration_ratio` band
 boundaries beyond the existing 0.8/1.6 healthy split (i.e. the
 slightly/moderately/grossly tiers) are placeholder anchors, not derived
 data — same caveat as Phase 3b's thresholds — and should be revisited once
 enough classified shots exist to calibrate them for real.
+
+**Overshoot damping is implemented.** `grind_correction.recommend_grind_delta`
+is otherwise a pure, memoryless function of the current shot's own
+`duration_ratio` - but Episode 1 of "How I Dial-In Espresso" shows a
+different shape after an overshoot specifically: correcting too coarse and
+landing "too fast" is followed by an explicitly *smaller* step back
+("just moving that grind just fractionally finer"), not a same-sized
+reversal. `recommend_grind_delta` now detects this from the last two shots
+on the same bag+recipe (`storage.previous_grind_correction_shot`, `bag_id`-
+scoped so a bag swap never crosses into a different bag's history): if the
+previous shot's own recommended correction was actually applied (the
+recipe's `hold_constant` fields - dose/yield/temperature/preinfusion -
+match, so the swing is attributable to grind alone) and this shot lands on
+the *opposite* side of healthy from where the previous one was, the
+correction is damped one band-tier back toward `healthy` instead of
+returning the full-magnitude band value - with a floor so it never
+collapses all the way to `healthy`'s own `0.0` delta (the shot is still
+off, it still needs some correction). "One band-tier down" - not a halved
+delta - and the floor are both project-level implementation choices, not
+sourced from any transcript; the underlying step magnitudes themselves
+still need real accumulated overshoot-then-correction pairs to validate,
+per this project's own standing rule against inventing tuned constants
+without checking them against real fixtures.
 
 ---
 
 ### Phase 5 — Flavour correction
 
 Implemented via two independent taste-feedback push notifications sent
-`flavor_feedback_delay_s` (definitions.yaml) after a shot finishes -
-extraction axis (sour/sharp, bitter/harsh, balanced) and mouthfeel axis
-(thin/weak, dry/astringent, balanced), each answerable with a single tap and
-no app-opening required (a plain actionable notification, 3 buttons). The
-two axes are independent because the underlying symptoms are not mutually
+`flavor_feedback_delay_s` (definitions.yaml) after a shot finishes, only for
+a shot classified `healthy` - taste feedback is only meaningful once Stage 1
+(mechanical/hydraulic health, §13) has nothing left to correct - extraction
+axis (sour/sharp, bitter/harsh, balanced) and mouthfeel axis (thin/weak,
+dry/astringent, balanced), each answerable with a single tap and no
+app-opening required (a plain actionable notification, 3 buttons). The two
+axes are independent because the underlying symptoms are not mutually
 exclusive - a shot can be sour and astringent at once - so collapsing them
 into one notification with one winning tag would lose real signal.
-`flavor_correction.py`'s `recommend_flavor_correction` gates every
-recommendation on `require_persistent_pattern_shots` answered shots in a row
-reporting the same tag (a single report is noise, not evidence - see Stage
-3's own reasoning above), and only recommends the tag's *base* lever/delta:
-`escalation` (stepping up to a second lever, e.g. yield → temperature, once
-the first correction is tried and the tag still persists) is not yet
-implemented - see `docs/todo/LEVER_SEQUENCING_PLAN.md` §3.2 for the full
-proposed mechanism.
+
+Sequencing is a full state machine, not an independent per-tag lookup:
+`flavor_correction.py`'s `resolve_flavor_state` replays each axis's own
+answered-response history (derived fresh each time, nothing persisted in a
+new table) to reconstruct which lever is active for that axis right now. A
+tag's first report recommends its primary lever/delta immediately - no
+persistence gate on the first report, even though a self-reported taste
+tag genuinely is noisier than a directly-measured `duration_ratio` (which
+Stage 2's grind correction reacts to on every qualifying shot, with no
+gating at all). Per the Brew
+Temperature video ("if I just tasted one shot and it was a little bit sour,
+I'd look to something like ratio first... but if it's there time and time
+and time again...") the caution is about *attribution* risk (multiple
+things vary between any two shots at once), not about distrusting a single
+report outright - so the fix is escalation gated on repetition, not
+withholding the first, cheapest intervention. The *next* notification for
+that axis then asks "did this improve `<tag>`? Better/Same/Worse" instead
+of the normal 3-tag question - "better" repeats the same lever again
+(replacing an earlier, since-abandoned design of a fixed intensify-count
+before escalating - the live feedback loop makes that count unnecessary),
+"same"/"worse" fall back to the normal question as a "still `<tag>`?"
+confirmation (escalating to the tag's `escalation` lever, if one is
+defined, when it persists - `thin_weak`/`dry_astringent` define none, so
+confirming those just re-nudges the same lever), and "worse" additionally
+reverses the next application once (an overshoot revert - not sourced from
+any transcript for cross-lever escalation specifically, an explicit design
+choice). `balanced` resets an axis back to no active lever.
+
+Grind correction and flavor correction are coupled, not independent:
+while a bag's last shot still needs grind correcting (not yet `healthy`),
+flavor-lever recommendations are suppressed entirely for that bag, so only
+one lever is ever the "live" suggestion at a time - matching the sourced
+dial-in walkthroughs, where he is never seen acting on two levers'
+recommendations at once. The bag's last-shot diagnostic summary still
+shows every lever with a nonzero recommendation regardless (useful context
+for a human even when only one is currently "active"); only the
+per-recipe-field badges that drive the next shot's actual recommendation
+apply the suppression and narrow to one. Separately, a bag+recipe landing
+on `puck_prep_issue` `puck_prep_issue_streak_threshold` shots in a row
+(§12's coarsen-override, described above) also interacts with this: it
+fires from Stage 1 and overrides "repeat the recipe" with an actual grind
+change, independent of anything flavor-feedback related.
 
 Success criterion:
 

@@ -29,10 +29,11 @@ scoped baselines, and deliberately treats them differently:
   bags' shots sharing the same `roast_level`, sliding smoothly toward that
   pool's data as its shot count grows, with no hard cutover point. This is
   deliberately keyed on roast level, not on the current bag's own history -
-  see `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.1: bean-aging drift within one
+  see `docs/DESIGN.md`'s Phase 3b: bean-aging drift within one
   bag's life is handled by grind correction chasing a fixed reference
   instead, so a bag's own shots never feed back into its own reference
-  point. §2.3 covers the same mechanism for `roast_level_ratio_prior`.
+  point. `roast_level_ratio_prior` (docs/DESIGN.md §19) uses the same
+  mechanism.
 
 - Mechanical-health suspicion (docs/DESIGN.md section 13's "did resistance
   appear to collapse unexpectedly?") is judged primarily against a fixed
@@ -47,8 +48,10 @@ scoped baselines, and deliberately treats them differently:
   that pattern and stop flagging it, which is exactly the contamination
   docs/DESIGN.md section 12 warns against. This one stays scoped to the
   current bag's own shot history (unlike flow-rate above) precisely because
-  self-normalization is the failure mode being guarded against here - see
-  `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.8.
+  self-normalization is the failure mode being guarded against here. A
+  safer, independently-verified form of bag-dependence here (e.g. gated on
+  a later-confirmed `balanced` taste report, not just a self-labeled
+  `healthy` classification) remains an open question, not yet built.
 
 Not implemented: section 13 also asks "did the flow change smoothly?" /
 "is the scale trace noisy or otherwise unreliable?" `flow_variance` and
@@ -155,8 +158,7 @@ class BaselineFeatures:
 class RoastLevelFlowBaseline:
     """Summary of other bags' shots sharing the current bag's roast_level,
     used only by blended_expected_flow_g_s (see module docstring). Deliberately
-    not scoped to the current bag - see docs/todo/ADAPTIVE_LEARNING_PLAN.md
-    §2.1 for why.
+    not scoped to the current bag - see docs/DESIGN.md's Phase 3b for why.
     """
 
     shot_count: int
@@ -401,8 +403,8 @@ def blend_toward_observed(prior: float, observed: float, shot_count: int, weight
     """Bayesian shrinkage of a fixed prior toward an observed value, weighted
     by how much data backs the observed value - shared shrinkage-weight
     formula for blended_expected_flow_g_s below and, per
-    docs/todo/ADAPTIVE_LEARNING_PLAN.md §2.3/§2.4, runtime.py's
-    roast-level-seeded ratio/dose priors. `weight` is
+    docs/DESIGN.md §19, runtime.py's
+    roast-level-seeded ratio/dose/temperature priors. `weight` is
     flow_analysis_constants.prior_weight_shots in every current caller - one
     shrinkage-weight constant shared across all of them, not a separate one
     per prior.
@@ -453,11 +455,12 @@ def _baseline_deviation_suspicion(late_accel: float, baseline: BaselineFeatures)
     the same "rising flow only" rule _absolute_mechanical_suspicion uses.
     An unusually low/declining late_accel is not a channeling signal.
 
-    TODO: deliberately doesn't grow more bag-dependent as shot_count
+    Deliberately doesn't grow more bag-dependent as shot_count
     increases past config.min_baseline_shots, unlike blended_expected_flow_g_s
-    - see `docs/todo/ADAPTIVE_LEARNING_PLAN.md` §2.8 for the full reasoning
-    (a contamination/closed-loop risk on this specific baseline) and the
-    proposed safer path (widen sensitivity, not the floor).
+    - see `docs/DESIGN.md`'s Phase 3b for why (a contamination/closed-loop
+    risk on this specific baseline). A safer path remains an open question,
+    not yet built: widen sensitivity as shot_count grows (smaller deviations
+    start counting) rather than moving the floor itself.
     """
     reference = max(abs(baseline.median_late_accel), 0.1)
     rise_above_baseline = max(late_accel - baseline.median_late_accel, 0.0)
@@ -625,9 +628,11 @@ def analyze_shot(
     # a larger yield should take longer and still read as healthy. If
     # expected_s didn't scale with target_yield_g, that same shot would be
     # wrongly flagged too_restrictive purely for running longer, with
-    # nothing actually wrong. Full justification and an open caveat (flow
-    # rate isn't necessarily constant across a whole pour) in
-    # docs/todo/ADAPTIVE_LEARNING_PLAN.md's expected_s addendum (§2.1).
+    # nothing actually wrong. Open caveat, not yet addressed: flow isn't
+    # necessarily constant across a whole pour (a real ramp-up period
+    # between first-flow and a roughly-steady rate), and this formula
+    # doesn't budget preinfusion_s or that ramp-up as separate dead time -
+    # needs real data to fit the ramp-up shape before changing it.
     expected_s = target_yield_g / expected_flow_g_s if expected_flow_g_s > 0 else 0.0
     duration_ratio = duration_s / expected_s if expected_s > 0 else None
 
@@ -644,10 +649,11 @@ def analyze_shot(
     # after - a shot that both finishes fast and shows a channeling signature
     # is a puck-prep problem to fix before grind is even worth adjusting.
     #
-    # TODO: every PUCK_PREP_ISSUE shot is treated identically regardless of
-    # how many consecutive shots at this same recipe landed here - see
-    # docs/todo/LEVER_SEQUENCING_PLAN.md §3.1 for the full reasoning and why
-    # this doesn't need real shot data to build.
+    # This module's own classification treats every PUCK_PREP_ISSUE shot
+    # identically, regardless of how many consecutive shots at this same
+    # recipe landed here - runtime.py is where a repeated streak overrides
+    # the resulting grind recommendation (docs/DESIGN.md §12/Phase 4), not
+    # here; the classification itself never changes based on streak length.
     if t90_ms is None:
         classification = ShotClassification.TOO_RESTRICTIVE
     elif channeling_suspicion >= config.suspicion_threshold:
