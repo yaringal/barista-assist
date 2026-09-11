@@ -1625,6 +1625,27 @@ without checking them against real fixtures.
 
 ### Phase 5 — Flavour correction
 
+**Why the shipped model replaced an earlier better/same/worse version**:
+that design asked "did this improve `<axis>`? Better/Same/Worse," then -
+only on `same`/`worse` - a separate "still `<tag>`?" confirmation. A
+hypothetical stress-test (not sourced from any transcript - constructed
+during design review): `bitter_harsh` applied 42→38→34 across three
+shots, then overshoots. This exposed three problems: the real category
+was only ever checked after a `same`/`worse` report, so a shot could
+silently go `balanced` and never be caught; deciding "revert, then
+escalate" needs the *previous* shot's own category, but `worse` only
+captured an abstract relative judgment, not a direct one; and "worse"
+doesn't make physical sense as a same-axis intensification - overshooting
+`bitter_harsh` flips to the *opposite* problem (`sour_sharp`), not "more"
+of the same one. Two real Hoffmann quotes validate the replacement:
+*"I'm going to work on just moving that grind just fractionally finer"*
+(**"How I Dial-In Espresso - Episode 1.txt"**, ~2:42-2:47) - an overshoot
+gets a *smaller* same-lever nudge, not a revert or an intensification -
+and *"if it's there time and time and time again, then that tells me
+that this coffee might need a little bit more heat"* (**"Understanding
+Espresso - Brew Temperature (Episode #5).txt"**, ~5:18-5:29) - persistence
+escalates to a new lever, not a repeat of the same one.
+
 Implemented via two independent taste-feedback push notifications sent
 `flavor_feedback_delay_s` (definitions.yaml) after a shot finishes, only for
 a shot classified `healthy` - taste feedback is only meaningful once Stage 1
@@ -1645,15 +1666,49 @@ current stage's primary lever/delta at full strength immediately - no
 persistence gate, even though a self-reported taste tag genuinely is
 noisier than a directly-measured `duration_ratio` (which Stage 2's grind
 correction reacts to on every qualifying shot, with no gating at all). Per
-the Brew Temperature video ("if I just tasted one shot and it was a little
-bit sour, I'd look to something like ratio first... but if it's there time
-and time and time again...") the caution is about *attribution* risk
+the Brew Temperature quote above, the caution is about *attribution* risk
 (multiple things vary between any two shots at once), not about
 distrusting a single report outright - so the fix doesn't need a
 persistence-count rule at all: a shot can't keep tasting more sour forever
 as yield keeps climbing, so sustained pushing in one direction is
 physically bound to produce either `balanced` or the axis's *other* tag
 within a bounded number of shots.
+
+**Citation, pinned here since it's easy to lose track of**: the actual
+yield magnitude each of those repeated pushes uses (`sour_sharp`'s
+`delta_g: 4`) is *not* a project-level guess - it's sourced from a
+specific cross-creator check. Stage 3's own original spec above (§13's
+worked examples, "healthy flow + slightly sharp -> try longer yield first")
+originally used Hoffmann's own tighter `+2` to `+3g` ceiling; three
+independent cross-creator examples (Lance Hedrick's "Fix Sour" Tip 3: "maybe
+five... maybe eight... maybe 10 grams more"; Lance's "Quick & Easy Guide":
+demonstrated +5g; Matt Perger: +10g, a 25% jump) all used bigger jumps, so
+the range was widened - see `docs/data/CROSS_CREATOR_RULE_CHECK.md`'s own
+"`sharp_sour` — direction confirmed, magnitude conflicts" section for the
+full worked comparison, and `definitions.yaml`'s own comment on
+`sour_sharp.delta_g` for why `4` specifically (just below that widened
+range's own low end) was picked as the one concrete number, rather than
+re-deriving it from the stored range on every read.
+
+**Side note - real evidence for the *decrease* direction too**
+(`bitter_harsh`'s own lever, and its own `delta_g: 4`): Hoffmann's "How I
+Dial-In Espresso - Episode 2" (barrel-aged Ethiopian, Sage/Breville dual
+boiler) reports exactly this tag's own taste signature - *"it's a little
+harsh and it almost has this kind of roastiness that it shouldn't have...
+a certain sort of bitterness"* (~4:00-4:13), literally "harsh" plus
+"bitterness" - then walks through the correction, spoken as loose ranges
+rather than one clean number each time (worth deducing carefully rather
+than skimming): *"I was like 19 to 40, 41 in that shot"* (~5:09-5:11) is
+the starting point; *"I actually wanna bring that ratio down a little
+bit... maybe more like 36 to 38"* (~5:21-5:26) is the correction, alongside
+a 2°C temperature drop and a slightly finer grind; *"what we aim before we
+got which is 19 in 38 out"* (~6:01) confirms where it actually landed; and
+*"you could pull that just fractionally shorter maybe like 35, 36"*
+(~7:08-7:10) is a further optional refinement he mentions but doesn't
+necessarily execute. So the real sequence is **~41 → 36-38 (landing at
+38) → 35-36**, all decreasing, a real ~3-5g step each move - consistent
+with `bitter_harsh`'s own `delta_g: 4`, matching `sour_sharp`'s explicit
+value above rather than being left to coincide with the floor.
 
 Every notification is the exact same question - the axis's own two tags
 plus `balanced` - there's no second question type to ask. Whether the
@@ -1694,10 +1749,10 @@ immediately depends on *which* tag's report established the current step,
 not just on the tags' individually configured magnitudes - a step only
 survives one halving above the field's own floor once it's configured to
 more than double that floor. With today's `definitions.yaml` values,
-neither extraction tag clears that bar: `bitter_harsh` has no `delta_g` of
-its own, so its step always starts out exactly at the `target_yield_g`
-floor (`4`); `sour_sharp`'s own `delta_g` (`4`) is also exactly equal to
-that floor, not double it. So today, a coupled overshoot on the
+neither extraction tag clears that bar: both `bitter_harsh` and
+`sour_sharp` have their own explicit `delta_g: 4`, which happens to be
+exactly equal to the `target_yield_g` floor (`4`), not double it. So
+today, a coupled overshoot on the
 extraction axis escalates on the very first flip regardless of which tag
 reports first (halving a value already at the floor always falls below
 it) - not a fixed property of the algorithm, just where these two

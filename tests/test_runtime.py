@@ -1668,8 +1668,10 @@ class FlavorFeedbackTests(RuntimeTestCase):
         """min_step_target_yield (a dashboard-editable number entity, the
         same pattern as early_stop_margin_min_g/machine_max_shot_s) overrides
         expert_rules.flavor_correction.minimum_meaningful_step.target_yield_g
-        for a tag that falls back to it (bitter_harsh has no delta_g of its
-        own)."""
+        for a tag that falls back to it. dry_astringent, not bitter_harsh -
+        bitter_harsh has its own explicit delta_g now (sourced from Episode
+        2, see definitions.yaml), so it's no longer affected by this
+        override at all; dry_astringent still has no delta_g of its own."""
         await self.create_bag()
         target_yield = self.runtime.selected_bag.target_yield_g
         min_step_target_yield = next(
@@ -1678,7 +1680,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self.runtime.async_set_entity_value(min_step_target_yield, 7.0)
         self.assertEqual(self.runtime.min_step_target_yield_g, 7.0)
 
-        await self._brew_and_tag("extraction", "bitter_harsh", times=1)
+        await self._brew_and_tag("mouthfeel", "dry_astringent", times=1)
 
         note = self._recommended_flavor()
         self.assertIn(f"{target_yield - 7.0:g}", note)

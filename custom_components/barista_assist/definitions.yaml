@@ -359,9 +359,23 @@ expert_rules:
         # temperature only as a secondary aside for machines that support
         # it - matches Hoffmann's own general "ratio before temperature"
         # rule, so this was fixing an internal inconsistency, not adopting
-        # a new claim. No delta_g: no source gives a magnitude for this
-        # direction, only "lower it" - falls back to this block's own
-        # minimum_meaningful_step.target_yield_g instead of a guessed figure.
+        # a new claim.
+        #
+        # delta_g: previously unset (no source gave an exact magnitude for
+        # this direction, only "lower it"), falling back to this block's
+        # own minimum_meaningful_step.target_yield_g. Now sourced directly:
+        # Hoffmann's "How I Dial-In Espresso - Episode 2" (barrel-aged
+        # Ethiopian) reports this exact taste signature - "it's a little
+        # harsh and it almost has this kind of roastiness that it
+        # shouldn't have... a certain sort of bitterness" (~4:00-4:13) -
+        # and corrects it with a yield decrease from "19 to 40, 41"
+        # (~5:09-5:11) down to "maybe more like 36 to 38" (~5:21-5:26),
+        # confirmed landing at "19 in 38 out" (~6:01) - a real ~3-5g step,
+        # consistent with 4. Set explicitly rather than left to coincide
+        # with the floor, matching sour_sharp's own explicit delta_g below
+        # - see docs/DESIGN.md's Phase 5 section for the full quotes.
+        delta_g: 4
+        
         escalation:
           condition: persists_after_yield_change
           lever: temperature
@@ -501,6 +515,18 @@ expert_rules:
   # direction into a specific number. A placeholder anchor, not a validated
   # rule - keep it loose, same caution as roast_level_ratio_prior's own
   # comment above.
+  #
+  # medium's own flat 18.0 now has one real data point worth flagging, not
+  # yet acted on: Hoffmann's "How I Dial-In Espresso - Episode 2" picks a
+  # dose specifically *for* a medium roast, reasoning "very light roasted
+  # coffees you'd probably want to start with a lower dose, very dark
+  # roasted coffees [I'd] lean towards a much higher dose... so this, so in
+  # the middle I'm gonna start with a nineteen gram dose" (~1:38-2:06) - a
+  # deliberate middle-of-the-range pick, not a flat default carried over
+  # from elsewhere. One video's single worked example isn't enough on its
+  # own to move medium off 18.0 (same one-source caution as everywhere else
+  # in this file) - left here as a concrete data point for whenever this
+  # prior gets revisited with more than one source to check it against.
   roast_level_dose_prior:
     dark: 18.0
     medium: 18.0
