@@ -150,6 +150,15 @@
       },
       "new_bag_starting_mass": {
         "name": "New bag starting mass"
+      },
+      "min_step_target_yield": {
+        "name": "Minimum yield adjustment"
+      },
+      "min_step_dose": {
+        "name": "Minimum dose adjustment"
+      },
+      "min_step_temperature_offset": {
+        "name": "Minimum temperature adjustment"
       }
     },
     "select": {

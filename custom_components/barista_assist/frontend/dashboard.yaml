@@ -287,6 +287,16 @@ views:
                 name: Learned latency (normal flow ~2g/s)
               - entity: __STOP_LATENCY_ELEVATED__
                 name: Learned latency (fast flow ~4g/s)
+              - type: section
+                label: Flavor correction
+              - type: section
+                label: Smallest adjustment worth making before escalating to the next lever
+              - entity: __MIN_STEP_TARGET_YIELD__
+                name: Minimum yield adjustment
+              - entity: __MIN_STEP_DOSE__
+                name: Minimum dose adjustment
+              - entity: __MIN_STEP_TEMPERATURE_OFFSET__
+                name: Minimum temperature adjustment
 
           - type: button
             name: Integration settings (configure)

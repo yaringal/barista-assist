@@ -1640,28 +1640,86 @@ Sequencing is a full state machine, not an independent per-tag lookup:
 `flavor_correction.py`'s `resolve_flavor_state` replays each axis's own
 answered-response history (derived fresh each time, nothing persisted in a
 new table) to reconstruct which lever is active for that axis right now. A
-tag's first report recommends its primary lever/delta immediately - no
-persistence gate on the first report, even though a self-reported taste
-tag genuinely is noisier than a directly-measured `duration_ratio` (which
-Stage 2's grind correction reacts to on every qualifying shot, with no
-gating at all). Per the Brew
-Temperature video ("if I just tasted one shot and it was a little bit sour,
-I'd look to something like ratio first... but if it's there time and time
-and time again...") the caution is about *attribution* risk (multiple
-things vary between any two shots at once), not about distrusting a single
-report outright - so the fix is escalation gated on repetition, not
-withholding the first, cheapest intervention. The *next* notification for
-that axis then asks "did this improve `<tag>`? Better/Same/Worse" instead
-of the normal 3-tag question - "better" repeats the same lever again
-(replacing an earlier, since-abandoned design of a fixed intensify-count
-before escalating - the live feedback loop makes that count unnecessary),
-"same"/"worse" fall back to the normal question as a "still `<tag>`?"
-confirmation (escalating to the tag's `escalation` lever, if one is
-defined, when it persists - `thin_weak`/`dry_astringent` define none, so
-confirming those just re-nudges the same lever), and "worse" additionally
-reverses the next application once (an overshoot revert - not sourced from
-any transcript for cross-lever escalation specifically, an explicit design
-choice). `balanced` resets an axis back to no active lever.
+tag's first report (or a persisting report of the same tag) recommends its
+current stage's primary lever/delta at full strength immediately - no
+persistence gate, even though a self-reported taste tag genuinely is
+noisier than a directly-measured `duration_ratio` (which Stage 2's grind
+correction reacts to on every qualifying shot, with no gating at all). Per
+the Brew Temperature video ("if I just tasted one shot and it was a little
+bit sour, I'd look to something like ratio first... but if it's there time
+and time and time again...") the caution is about *attribution* risk
+(multiple things vary between any two shots at once), not about
+distrusting a single report outright - so the fix doesn't need a
+persistence-count rule at all: a shot can't keep tasting more sour forever
+as yield keeps climbing, so sustained pushing in one direction is
+physically bound to produce either `balanced` or the axis's *other* tag
+within a bounded number of shots.
+
+Every notification is the exact same question - the axis's own two tags
+plus `balanced` - there's no second question type to ask. Whether the
+*other* tag showing up is a correction or an unrelated problem depends on
+whether the two tags share a lever at the current stage ("coupled" - same
+lever, opposite direction, e.g. `sour_sharp`/`bitter_harsh`, both `yield`
+at the primary stage) or not ("uncoupled" - different levers, e.g.
+`thin_weak`/`dry_astringent`, `dose` vs. `yield`). An uncoupled report is
+just this axis's other, independent problem - treated exactly like a
+fresh report, discarding whatever step was being tracked and starting
+fresh at its own base. A coupled report is an overshoot signal, corrected
+the way `grind_correction`'s own overshoot damping (Phase 4, above)
+corrects an overshoot: the *current* step - shared across the coupled
+pair, since they're two labels for the same physical lever - damped
+(halved) in the reported tag's own direction, never a same-sized
+reversal and never re-derived from that tag's own nominal step (a step
+already known to be too coarse for this lever doesn't stop being too
+coarse just because the other tag reported next). A further report of the
+*same* tag keeps that current step exactly as it is - persisting doesn't
+grow or shrink it - so once an overshoot has damped a lever down to a
+finer scale, continuing to confirm that tag keeps fine-tuning at that
+finer scale rather than jumping back to a coarser nominal one. Once the
+damped step would be smaller than the lever's own
+`minimum_meaningful_step`, the lever has converged as far as it can go -
+escalate to the tag's `escalation` lever instead, if one is defined
+(`thin_weak`/`dry_astringent` don't, so converging there just stops
+offering an automatic recommendation - a same-lever tug-of-war with
+nowhere further to go belongs in front of the user, surfaced in
+`recommended_flavor_note`, not something to keep silently re-nudging).
+`active_tag` always tracks whichever tag was *most recently* reported,
+never the tag that started the sequence - escalating has to use the lever
+mapping of whichever problem is actually current, or it moves the
+escalated lever the wrong direction. `balanced` resets an axis back to no
+active lever.
+
+Whether a coupled overshoot produces a real damped nudge or escalates
+immediately depends on *which* tag's report established the current step,
+not just on the tags' individually configured magnitudes - a step only
+survives one halving above the field's own floor once it's configured to
+more than double that floor. With today's `definitions.yaml` values,
+neither extraction tag clears that bar: `bitter_harsh` has no `delta_g` of
+its own, so its step always starts out exactly at the `target_yield_g`
+floor (`4`); `sour_sharp`'s own `delta_g` (`4`) is also exactly equal to
+that floor, not double it. So today, a coupled overshoot on the
+extraction axis escalates on the very first flip regardless of which tag
+reports first (halving a value already at the floor always falls below
+it) - not a fixed property of the algorithm, just where these two
+particular numbers currently sit relative to each other (see
+`flavor_correction`'s own tests: a synthetic fixture exercises the
+genuine-nudge branch directly, and a separate live-config test derives
+which branch to expect from whatever `definitions.yaml` currently says,
+rather than assuming either outcome, so a future retune can't leave it
+silently asserting a stale result). The damping ratio itself (a straight
+halving) is a project-level
+implementation choice, not sourced from any transcript - the same
+treatment `grind_correction`'s own "one band-tier back" damping choice
+gets above, for a different reason (grinders vary, so its corrections are
+relative positions on a per-grinder ladder; yield/dose/temperature are
+universal physical units, so a continuous halving is the simpler analog
+here). `minimum_meaningful_step` is also user-adjustable, as three
+dashboard-editable number entities (`min_step_target_yield`/
+`min_step_dose`/`min_step_temperature_offset`, in the "Connection and
+control" card) - the same pattern `early_stop_margin_min_g`/
+`machine_max_shot_s` already use, seeded from the `definitions.yaml`
+default and persisted like any other dashboard setting
+(`BaristaRuntime._flavor_correction_config`).
 
 Grind correction and flavor correction are coupled, not independent:
 while a bag's last shot still needs grind correcting (not yet `healthy`),

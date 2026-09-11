@@ -657,10 +657,11 @@ class BaristaDatabase:
         return cursor.rowcount > 0
 
     def recent_flavor_tags(self, bag_id: str, axis: str, limit: int = 5) -> list[str]:
-        """Most-recent-first answered tags for one axis of a bag's shot
-        history. Shots never answered on this axis are skipped entirely
-        (not counted as a pattern-break) rather than treated as "balanced" -
-        an unanswered notification says nothing about how the shot tasted.
+        """Most-recent-first answered responses for one axis of a bag's
+        shot history - tags and "balanced" (docs/DESIGN.md's Phase 5).
+        Shots never answered on this axis are skipped entirely (not
+        counted as a pattern-break) rather than treated as "balanced" - an
+        unanswered notification says nothing about how the shot tasted.
 
         Concretely: a shot nobody responded to at all is invisible to both
         axes here, same as if it never happened. A shot answered on only
@@ -668,12 +669,13 @@ class BaristaDatabase:
         is included for that axis exactly like a fully-answered shot, and
         skipped for the other - answering one axis never blocks, delays, or
         counts against the other axis's own persistent-pattern check."""
-        column = self._FLAVOR_AXIS_COLUMNS[axis]
+        tag_column = self._FLAVOR_AXIS_COLUMNS[axis]
         with self._connect() as db:
             rows = db.execute(
                 f"""
-                SELECT {column} AS tag FROM shots
-                WHERE bag_id=? AND {column} IS NOT NULL
+                SELECT {tag_column} AS tag
+                FROM shots
+                WHERE bag_id=? AND {tag_column} IS NOT NULL
                 ORDER BY started_at DESC LIMIT ?
                 """,
                 (bag_id, int(limit)),

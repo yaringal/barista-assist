@@ -1291,6 +1291,38 @@ class FlavorFeedbackTests(RuntimeTestCase):
             self.runtime.db.recent_flavor_tags(bag_id, "extraction"), ["sour_sharp"]
         )
 
+    async def _brew_shot(self) -> str:
+        """A minimal completed shot on the current bag - not necessarily
+        healthy, just enough for record_flavor_tag to have a real row to
+        write to. Returns the new shot's id."""
+        await self.runtime.async_brew()
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))
+        await self.runtime._async_finalize("complete")
+        return self.runtime.last_shot["id"]
+
+    async def test_a_tag_report_never_triggers_a_followup_notification(self):
+        """The old confirmation-follow-up mechanism is gone entirely -
+        recording a tag (whichever one) never sends a second, immediate
+        notification of its own; the next notification for that axis only
+        ever goes out on the next real shot, same as a fresh report."""
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+        await self.create_bag()
+        await self._brew_shot()
+        await self.hass.bus.async_fire(
+            "mobile_app_notification_action",
+            {"action": f"barista_flavor:{self.runtime.last_shot['id']}:extraction:sour_sharp"},
+        )
+        shot_b = await self._brew_shot()
+        self.hass.services.calls.clear()
+
+        await self.hass.bus.async_fire(
+            "mobile_app_notification_action",
+            {"action": f"barista_flavor:{shot_b}:extraction:sour_sharp"},
+        )
+
+        self.assertEqual(self.hass.services.calls, [])
+
     async def test_notification_action_event_ignores_unrelated_actions(self):
         """Some other integration's own actionable notification fires the
         same event type on the same device - must not be misread as ours."""
@@ -1564,11 +1596,11 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self.runtime._async_finalize("complete")
         self.assertEqual(self.runtime.last_shot["classification"], "too_fast")
 
-    async def test_notifications_ask_the_outcome_question_after_an_intervention(self):
-        """docs/todo/LEVER_SEQUENCING_PLAN.md §3.2/§3.3: once a tag has just
-        triggered a fresh recommendation, the next notification for that
-        axis asks "did this improve <tag>?" (better/same/worse) instead of
-        the normal 2-tags-plus-Balanced question."""
+    async def test_notifications_always_ask_the_same_plain_question(self):
+        """docs/DESIGN.md's Phase 5: there's only one question type - even
+        right after a tag has just triggered a fresh recommendation, the
+        next notification for that axis is still the normal
+        2-tags-plus-Balanced question, never a different one."""
         await self.create_bag()
         bag_id = self.runtime.selected_bag.id
         await self.runtime.async_brew()
@@ -1594,7 +1626,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
             (
                 data
                 for domain, _service, data in calls
-                if domain == "notify" and "improve" in data.get("message", "")
+                if domain == "notify" and "extraction" in data.get("message", "")
             ),
             None,
         )
@@ -1603,11 +1635,53 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.assertEqual(
             actions,
             {
-                "barista_flavor:some-shot-id:extraction:better",
-                "barista_flavor:some-shot-id:extraction:same",
-                "barista_flavor:some-shot-id:extraction:worse",
+                "barista_flavor:some-shot-id:extraction:sour_sharp",
+                "barista_flavor:some-shot-id:extraction:bitter_harsh",
+                "barista_flavor:some-shot-id:extraction:balanced",
             },
         )
+
+    async def test_recommended_flavor_note_flags_an_axis_that_has_stalled(self):
+        """Once an axis has converged as far as it can go with nowhere
+        further to escalate to (resolve_flavor_state's recommendation=None,
+        active_tag still set), the summary note says so instead of staying
+        silent about that axis. bitter_harsh has no delta_g of its own, so
+        its step always starts out exactly at the floor - any coupled
+        overshoot starting from it escalates on the very first flip
+        (halving a value already at the floor always falls below it), and
+        escalation blocks never carry their own delta_g either, so a
+        second flip at the escalated stage is guaranteed to stall too,
+        regardless of today's exact numbers."""
+        await self.create_bag()
+        # bitter_harsh (primary) -> sour_sharp (overshoot, escalates to
+        # temperature straight away) -> bitter_harsh again (a flip at the
+        # escalated stage, nowhere further to escalate to from there).
+        await self._brew_and_tag("extraction", "bitter_harsh", times=1)
+        await self._brew_and_tag("extraction", "sour_sharp", times=1)
+        await self._brew_and_tag("extraction", "bitter_harsh", times=1)
+
+        note = self._recommended_flavor()
+        self.assertIsNotNone(note)
+        self.assertIn("bitter_harsh isn't resolving with automatic adjustment alone", note)
+
+    async def test_min_step_entity_overrides_the_yaml_default(self):
+        """min_step_target_yield (a dashboard-editable number entity, the
+        same pattern as early_stop_margin_min_g/machine_max_shot_s) overrides
+        expert_rules.flavor_correction.minimum_meaningful_step.target_yield_g
+        for a tag that falls back to it (bitter_harsh has no delta_g of its
+        own)."""
+        await self.create_bag()
+        target_yield = self.runtime.selected_bag.target_yield_g
+        min_step_target_yield = next(
+            d for d in self.runtime.definitions.platform("number") if d.key == "min_step_target_yield"
+        )
+        await self.runtime.async_set_entity_value(min_step_target_yield, 7.0)
+        self.assertEqual(self.runtime.min_step_target_yield_g, 7.0)
+
+        await self._brew_and_tag("extraction", "bitter_harsh", times=1)
+
+        note = self._recommended_flavor()
+        self.assertIn(f"{target_yield - 7.0:g}", note)
 
 
 class RoastLevelRatioPriorTests(RuntimeTestCase):

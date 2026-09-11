@@ -1,7 +1,21 @@
 """Tests for flavor_correction.py's Phase 5 resolve_flavor_state() - the
-full escalation state machine from docs/todo/LEVER_SEQUENCING_PLAN.md
-§3.2/§3.3 (primary intervention on first report, repeat-on-better,
-confirm-then-escalate-or-revert on same/worse, reset on balanced)."""
+damped-step escalation state machine (docs/DESIGN.md's Phase 5): primary
+lever on first/persisting report, a damped (smaller) correction on the
+axis's other tag when the two share a lever ("coupled"), a fresh primary
+report of that other tag when they don't ("uncoupled"), escalation once a
+coupled correction converges below the lever's own minimum_meaningful_step,
+and a full reset on "balanced".
+
+The damped step is shared across a coupled pair (they're two labels for
+the same physical lever) and persists across a run of the same tag being
+reported - it only resets to a fresh base step when active_tag/stage
+genuinely restarts (a first-ever report, an uncoupled switch, or an
+escalation into a new stage). One consequence worth remembering while
+reading these tests: whether a coupled overshoot produces a genuine
+damped-and-applied nudge or escalates immediately can depend on *which*
+tag's report started the sequence (and so set the initial step), not just
+on the tags' own individually configured magnitudes - see the paired tests
+below that use the same two tags in opposite order."""
 
 from __future__ import annotations
 
@@ -14,18 +28,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ha_stubs  # noqa: E402
 
 flavor_correction = ha_stubs.import_barista_module("flavor_correction")
+definitions = ha_stubs.import_barista_module("definitions")
 
 resolve_flavor_state = flavor_correction.resolve_flavor_state
 
-# Mirrors the shape (not necessarily the exact values) of
-# expert_rules.flavor_correction in definitions.yaml - sour_sharp/
-# bitter_harsh have an escalation lever, thin_weak/dry_astringent
-# deliberately don't (matching the real config exactly).
+# Mirrors the shape of expert_rules.flavor_correction in definitions.yaml -
+# sour_sharp/bitter_harsh are coupled (same lever, opposite directions,
+# both with an escalation lever); thin_weak/dry_astringent are uncoupled
+# (different levers), and thin_weak deliberately has no escalation.
+#
+# sour_sharp's own delta_g (4) is deliberately more than double the
+# target_yield_g floor (1.5), so a sequence that establishes it as the
+# current step can still produce a real damped-and-applied nudge (2.0)
+# afterward; bitter_harsh (no delta_g, so its own base already equals the
+# floor) can't - any overshoot starting from bitter_harsh's own step
+# escalates immediately. Both cases need covering.
 CONFIG = {
     "minimum_meaningful_step": {
         "temperature_offset_c": 1,
         "dose_g": 0.5,
-        "target_yield_g": 2.5,
+        "target_yield_g": 1.5,
     },
     "tags": {
         "sour_sharp": {
@@ -49,126 +71,187 @@ class ResolveFlavorStateTests(unittest.TestCase):
     def test_empty_history_recommends_nothing(self):
         state = resolve_flavor_state([], CONFIG)
         self.assertIsNone(state["recommendation"])
-        self.assertEqual(state["next_question"], "tag")
         self.assertIsNone(state["active_tag"])
 
     def test_first_report_recommends_the_primary_lever_immediately(self):
-        """No persistence gate on the first report - this is the behavior
-        change from the old require_persistent_pattern_shots-gated
-        function (docs/todo/LEVER_SEQUENCING_PLAN.md §3.2 point 1)."""
+        """No persistence gate on the first report."""
         state = resolve_flavor_state(["sour_sharp"], CONFIG)
         self.assertEqual(
             state["recommendation"],
             {"lever": "yield", "field": "target_yield_g", "direction": "increase", "delta": 4.0},
         )
-        self.assertEqual(state["next_question"], "outcome")
         self.assertEqual(state["active_tag"], "sour_sharp")
 
     def test_a_tag_with_no_delta_g_falls_back_to_minimum_meaningful_step(self):
         state = resolve_flavor_state(["bitter_harsh"], CONFIG)
-        self.assertEqual(state["recommendation"]["field"], "target_yield_g")
-        self.assertEqual(state["recommendation"]["delta"], 2.5)
-        self.assertEqual(state["recommendation"]["direction"], "decrease")
+        self.assertEqual(
+            state["recommendation"],
+            {"lever": "yield", "field": "target_yield_g", "direction": "decrease", "delta": 1.5},
+        )
 
-    def test_better_repeats_the_same_stage_s_delta(self):
-        state = resolve_flavor_state(["sour_sharp", "better"], CONFIG)
+    def test_the_same_tag_persisting_keeps_going_at_the_same_step(self):
+        """Confirmed correct direction, just not sufficient yet - repeats
+        the current step, not a smaller or larger one."""
+        state = resolve_flavor_state(["sour_sharp", "sour_sharp"], CONFIG)
         self.assertEqual(
             state["recommendation"],
             {"lever": "yield", "field": "target_yield_g", "direction": "increase", "delta": 4.0},
         )
-        self.assertEqual(state["next_question"], "outcome")
-
-    def test_better_can_repeat_more_than_once(self):
-        state = resolve_flavor_state(["sour_sharp", "better", "better"], CONFIG)
-        self.assertIsNotNone(state["recommendation"])
-        self.assertEqual(state["next_question"], "outcome")
-
-    def test_same_stops_and_recommends_nothing_while_confirming(self):
-        state = resolve_flavor_state(["sour_sharp", "same"], CONFIG)
-        self.assertIsNone(state["recommendation"])
-        self.assertEqual(state["next_question"], "tag")
         self.assertEqual(state["active_tag"], "sour_sharp")
 
-    def test_worse_reverts_the_last_stage_s_direction_once(self):
-        """Overshoot: the "worse" answer reverses direction (yield increase
-        -> decrease), same magnitude, before the confirmation step."""
-        state = resolve_flavor_state(["sour_sharp", "worse"], CONFIG)
+    def test_a_coupled_overshoot_applies_a_damped_correction_when_above_the_floor(self):
+        """sour_sharp (yield, increase, step 4) then bitter_harsh (yield,
+        decrease) - same lever, opposite direction, so this is an
+        overshoot, not a fresh problem. The current step (4, from
+        sour_sharp's own fresh report) halved is 2, still at or above this
+        fixture's 1.5 floor, so it's applied directly rather than
+        escalating."""
+        state = resolve_flavor_state(["sour_sharp", "bitter_harsh"], CONFIG)
         self.assertEqual(
             state["recommendation"],
-            {"lever": "yield", "field": "target_yield_g", "direction": "decrease", "delta": 4.0},
+            {"lever": "yield", "field": "target_yield_g", "direction": "decrease", "delta": 2.0},
         )
-        self.assertEqual(state["next_question"], "tag")
+        self.assertEqual(state["active_tag"], "bitter_harsh")
 
-    def test_confirmation_with_same_tag_escalates_when_escalation_defined(self):
-        """sour_sharp defines an escalation lever (temperature) - the
-        confirmation tag matching the active tag steps up to it, using
-        minimum_meaningful_step since escalation never carries its own
-        delta_g."""
-        state = resolve_flavor_state(["sour_sharp", "same", "sour_sharp"], CONFIG)
+    def test_persisting_after_a_damped_correction_keeps_the_damped_step(self):
+        """The fix this test guards: once an overshoot has shown that the
+        original step (4) was too coarse and been damped to 2, a further
+        report of the *same* (now-active) tag must keep fine-tuning at
+        that already-damped scale - not jump back to bitter_harsh's own
+        nominal step (1.5, smaller) or sour_sharp's original one (4,
+        larger). Continuing the sequence from the test above with one more
+        bitter_harsh report:"""
+        state = resolve_flavor_state(["sour_sharp", "bitter_harsh", "bitter_harsh"], CONFIG)
         self.assertEqual(
             state["recommendation"],
-            {
-                "lever": "temperature",
-                "field": "temperature_offset_c",
-                "direction": "increase",
-                "delta": 1.0,
-            },
+            {"lever": "yield", "field": "target_yield_g", "direction": "decrease", "delta": 2.0},
         )
-        self.assertEqual(state["next_question"], "outcome")
+        self.assertEqual(state["active_tag"], "bitter_harsh")
 
-    def test_confirmation_after_worse_also_escalates_at_normal_direction(self):
-        """The revert only applies to the one recommendation shown right
-        after "worse" - the escalation step itself is a fresh, non-reversed
-        application of the next lever."""
-        state = resolve_flavor_state(["sour_sharp", "worse", "sour_sharp"], CONFIG)
-        self.assertEqual(state["recommendation"]["lever"], "temperature")
-        self.assertEqual(state["recommendation"]["direction"], "increase")
+    def test_a_coupled_overshoot_escalates_once_the_damped_value_is_below_the_floor(self):
+        """bitter_harsh (yield, decrease, step 1.5 - its own base, since it
+        has no delta_g and this fixture's floor is 1.5) then sour_sharp
+        (yield, increase) - the current step (1.5) halved is 0.75, below
+        the floor, so this escalates immediately rather than applying a
+        sub-floor nudge.
 
-    def test_confirmation_with_no_escalation_defined_renudges_the_same_lever(self):
-        """thin_weak has no escalation block - confirmation just re-applies
-        the primary lever again rather than erroring or silently doing
-        nothing (a project implementation choice, not sourced - see module
-        docstring)."""
-        state = resolve_flavor_state(["thin_weak", "same", "thin_weak"], CONFIG)
+        This also doubles as the regression test for active_tag
+        reassigning to whichever tag is *currently* reported: escalation
+        uses sour_sharp's own escalation direction ("increase"), not
+        bitter_harsh's ("decrease") - staying anchored to the tag that
+        started the sequence would have lowered temperature here, exactly
+        backwards for a shot that just reported sour."""
+        state = resolve_flavor_state(["bitter_harsh", "sour_sharp"], CONFIG)
         self.assertEqual(
             state["recommendation"],
-            {"lever": "dose", "field": "dose_g", "direction": "increase", "delta": 0.5},
+            {"lever": "temperature", "field": "temperature_offset_c", "direction": "increase", "delta": 1.0},
         )
-        self.assertEqual(state["next_question"], "outcome")
+        self.assertEqual(state["active_tag"], "sour_sharp")
+
+    def test_a_coupled_overshoot_at_the_escalated_stage_with_nowhere_further_stalls(self):
+        """Continuing past the previous escalation: once at the escalated
+        (temperature) stage, another coupled flip has nowhere further to
+        escalate to - no automatic recommendation, but active_tag stays set
+        (correctly reassigned to whichever tag is reporting now) so callers
+        can tell this apart from a plain reset."""
+        state = resolve_flavor_state(["bitter_harsh", "sour_sharp", "bitter_harsh"], CONFIG)
+        self.assertIsNone(state["recommendation"])
+        self.assertEqual(state["active_tag"], "bitter_harsh")
+
+    def test_an_uncoupled_other_tag_is_treated_as_a_fresh_report(self):
+        """thin_weak (dose) and dry_astringent (yield) don't share a lever -
+        reporting one while tracking the other isn't a correction of
+        anything, just this axis's other, independent problem, so it starts
+        fresh at its own base step regardless of whatever step thin_weak
+        was using."""
+        state = resolve_flavor_state(["thin_weak", "dry_astringent"], CONFIG)
+        self.assertEqual(
+            state["recommendation"],
+            {"lever": "yield", "field": "target_yield_g", "direction": "decrease", "delta": 1.5},
+        )
+        self.assertEqual(state["active_tag"], "dry_astringent")
+
+    def test_an_uncoupled_tag_can_then_persist_normally(self):
+        state = resolve_flavor_state(["thin_weak", "dry_astringent", "dry_astringent"], CONFIG)
+        self.assertEqual(state["recommendation"]["delta"], 1.5)
+        self.assertEqual(state["active_tag"], "dry_astringent")
 
     def test_balanced_fully_resets_state(self):
-        state = resolve_flavor_state(["sour_sharp", "same", "balanced"], CONFIG)
+        state = resolve_flavor_state(["sour_sharp", "balanced"], CONFIG)
         self.assertIsNone(state["recommendation"])
-        self.assertEqual(state["next_question"], "tag")
         self.assertIsNone(state["active_tag"])
 
     def test_balanced_then_a_fresh_report_starts_over_at_primary(self):
-        state = resolve_flavor_state(["sour_sharp", "same", "balanced", "bitter_harsh"], CONFIG)
+        state = resolve_flavor_state(["sour_sharp", "balanced", "bitter_harsh"], CONFIG)
         self.assertEqual(state["active_tag"], "bitter_harsh")
         self.assertEqual(state["recommendation"]["direction"], "decrease")
-        self.assertEqual(state["next_question"], "outcome")
-
-    def test_a_different_tag_during_confirmation_is_treated_as_a_fresh_report(self):
-        """Reported bitter_harsh while confirming sour_sharp - not the same
-        tag persisting, so this starts a fresh primary intervention for
-        the new tag rather than escalating the old one."""
-        state = resolve_flavor_state(["sour_sharp", "same", "bitter_harsh"], CONFIG)
-        self.assertEqual(state["active_tag"], "bitter_harsh")
-        self.assertEqual(state["recommendation"]["lever"], "yield")
-        self.assertEqual(state["recommendation"]["direction"], "decrease")
-        self.assertEqual(state["next_question"], "outcome")
-
-    def test_an_outcome_response_with_nothing_pending_is_ignored(self):
-        """Stale/out-of-order data (e.g. balanced then a leftover "better")
-        shouldn't raise or fabricate a recommendation out of nothing."""
-        state = resolve_flavor_state(["sour_sharp", "same", "balanced", "better"], CONFIG)
-        self.assertIsNone(state["recommendation"])
-        self.assertIsNone(state["active_tag"])
+        self.assertEqual(state["recommendation"]["delta"], 1.5)
 
     def test_an_unknown_tag_outside_config_is_ignored(self):
         state = resolve_flavor_state(["nonsense"], CONFIG)
         self.assertIsNone(state["recommendation"])
         self.assertIsNone(state["active_tag"])
+
+    def test_an_unknown_tag_does_not_disturb_existing_state(self):
+        state = resolve_flavor_state(["sour_sharp", "nonsense"], CONFIG)
+        self.assertEqual(state["active_tag"], "sour_sharp")
+        self.assertEqual(state["recommendation"]["delta"], 4.0)
+
+
+class RealDefinitionsConfigTests(unittest.TestCase):
+    """Ties the escalation state machine back to today's actual
+    definitions.yaml - derives the expected outcome from the live config
+    at test time rather than hardcoding either branch, so a future retune
+    of delta_g/minimum_meaningful_step can't silently leave this suite
+    asserting a stale result (see docs/DESIGN.md's Phase 5 for why this
+    branches on live numbers instead of always going one way: whichever
+    tag's own step exceeds the field's floor by more than double is the
+    one that, reported first, lets a subsequent overshoot land a genuine
+    damped nudge instead of escalating immediately)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.config = definitions.load_definitions().expert_rules["flavor_correction"]
+
+    def _own_primary_step(self, tag: str) -> float:
+        """The same fallback rule flavor_correction._base_step applies at
+        the primary stage: delta_g if the tag defines one, else the
+        field's own minimum_meaningful_step."""
+        tag_config = self.config["tags"][tag]
+        delta_g = tag_config.get("delta_g")
+        if delta_g is not None:
+            return float(delta_g)
+        return float(self.config["minimum_meaningful_step"]["target_yield_g"])
+
+    def _assert_overshoot_matches_expectation(self, first: str, second: str) -> None:
+        """`first` reports fresh, establishing its own step; `second` then
+        overshoots (coupled, since both are on the extraction axis's
+        shared yield lever at the primary stage). Whether that damped step
+        clears the floor - and so whether this applies a real yield nudge
+        or escalates straight to temperature - is derived from the live
+        config, not assumed."""
+        floor = self.config["minimum_meaningful_step"]["target_yield_g"]
+        damped_step = self._own_primary_step(first) * flavor_correction._DAMPING_RATIO
+        state = resolve_flavor_state([first, second], self.config)
+        recommendation = state["recommendation"]
+        self.assertIsNotNone(recommendation)
+        if damped_step >= floor:
+            self.assertEqual(recommendation["lever"], "yield")
+            self.assertEqual(recommendation["direction"], self.config["tags"][second]["direction"])
+            self.assertEqual(recommendation["delta"], damped_step)
+            self.assertEqual(state["active_tag"], second)
+        else:
+            self.assertEqual(recommendation["lever"], "temperature")
+            self.assertEqual(
+                recommendation["direction"], self.config["tags"][second]["escalation"]["direction"]
+            )
+            self.assertEqual(state["active_tag"], second)
+
+    def test_an_overshoot_following_sour_sharp_s_own_step_matches_the_live_config(self):
+        self._assert_overshoot_matches_expectation("sour_sharp", "bitter_harsh")
+
+    def test_an_overshoot_following_bitter_harsh_s_own_step_matches_the_live_config(self):
+        self._assert_overshoot_matches_expectation("bitter_harsh", "sour_sharp")
 
 
 if __name__ == "__main__":

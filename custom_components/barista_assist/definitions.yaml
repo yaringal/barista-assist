@@ -307,12 +307,18 @@ expert_rules:
   #
   # Each tag's own `escalation` block (lever/direction, no delta_g of its
   # own - always falls back to minimum_meaningful_step) is consumed by
-  # flavor_correction.resolve_flavor_state's full escalation state machine
-  # (docs/DESIGN.md's Phase 5) - primary lever on first report, repeat on
-  # "better", confirm-then-escalate-or-revert on "same"/"worse", reset on
-  # "balanced". A tag with no `escalation` block (thin_weak/dry_astringent)
-  # has nowhere further to escalate to - confirmation just re-nudges the
-  # primary lever again.
+  # flavor_correction.resolve_flavor_state's escalation state machine
+  # (docs/DESIGN.md's Phase 5): a tag's first report (or a persisting
+  # report of the same tag) applies its primary lever at full strength;
+  # the axis's *other* tag showing up is either an unrelated problem (a
+  # different lever - e.g. thin_weak/dry_astringent) or an overshoot on
+  # the very lever just pushed (the same lever, opposite direction - e.g.
+  # sour_sharp/bitter_harsh), corrected with a damped (smaller) step; once
+  # that damped step would be smaller than minimum_meaningful_step, the
+  # lever has converged as far as it can go and escalates to `escalation`
+  # (if defined - thin_weak/dry_astringent don't, so converging there just
+  # stops offering an automatic recommendation, since there's nowhere
+  # further to go). "balanced" resets an axis back to no active lever.
   flavor_correction:
     minimum_meaningful_step:
       temperature_offset_c: 1
@@ -334,6 +340,7 @@ expert_rules:
         # here, in data, rather than recomputed from a stored range every
         # time flavor_correction.py reads this tag.
         delta_g: 4
+
         # Escalates to temperature only once the issue is
         # confirmed to persist across shots (Brew Temperature ep) and ratio
         # alone hasn't fixed it - if a milk drink comes out too weak as a
@@ -774,6 +781,39 @@ entities:
       max: 2000.0
       step: 10.0
       unit: g
+      mode: box
+
+    min_step_target_yield:
+      source: controller
+      field: min_step_target_yield_g
+      translation_key: min_step_target_yield
+      token: __MIN_STEP_TARGET_YIELD__
+      min: 0.5
+      max: 10.0
+      step: 0.5
+      unit: g
+      mode: box
+
+    min_step_dose:
+      source: controller
+      field: min_step_dose_g
+      translation_key: min_step_dose
+      token: __MIN_STEP_DOSE__
+      min: 0.1
+      max: 5.0
+      step: 0.1
+      unit: g
+      mode: box
+
+    min_step_temperature_offset:
+      source: controller
+      field: min_step_temperature_offset_c
+      translation_key: min_step_temperature_offset
+      token: __MIN_STEP_TEMPERATURE_OFFSET__
+      min: 1
+      max: 4
+      step: 1
+      unit: "°C"
       mode: box
 
   select:

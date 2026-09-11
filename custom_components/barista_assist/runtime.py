@@ -77,13 +77,24 @@ _FLAVOR_AXES = {
     "extraction": [("sour_sharp", "Sour / Sharp"), ("bitter_harsh", "Bitter / Harsh")],
     "mouthfeel": [("thin_weak", "Thin / Weak"), ("dry_astringent", "Dry / Astringent")],
 }
+# expert_rules.flavor_correction.minimum_meaningful_step's own YAML field
+# name -> the dashboard-editable BaristaRuntime attribute that overrides it
+# (see _flavor_correction_config and async_set_entity_value's "min_step_*"
+# handling) - these are ordinary recipe-adjacent settings a user tunes from
+# the dashboard, the same as early_stop_margin_min_g/machine_max_shot_s,
+# not a config-flow option.
+_MIN_STEP_FIELDS = {
+    "target_yield_g": "min_step_target_yield_g",
+    "dose_g": "min_step_dose_g",
+    "temperature_offset_c": "min_step_temperature_offset_c",
+}
 # How much answered-response history flavor_correction.resolve_flavor_state
 # gets to replay per axis - generously large rather than tightly sized,
-# since a full primary/repeat/confirm/escalate/repeat cycle can span more
-# shots than the old fixed-count persistence check ever needed to look
-# back (recent_flavor_tags's own default of 5). A cycle exceeding this
-# without ever reporting "balanced" (which fully resets the replay) isn't
-# a realistic case to design around ahead of real usage data.
+# since a full primary/repeat/overshoot/escalate cycle can span more shots
+# than the old fixed-count persistence check ever needed to look back
+# (recent_flavor_tags's own default of 5). A cycle exceeding this without
+# ever reporting "balanced" (which fully resets the replay) isn't a
+# realistic case to design around ahead of real usage data.
 _FLAVOR_STATE_REPLAY_LIMIT = 20
 # BaristaRuntime.stop_latency_normal_s/stop_latency_elevated_s (a rough
 # estimate of the physical latency between the stop decision and the pour
@@ -261,6 +272,20 @@ def _recipe_snapshot(bag: Bag) -> dict[str, Any]:
     }
 
 
+def _flavor_tag_actions(shot_id: str, axis: str, *, prefix: str) -> list[dict[str, str]]:
+    """The 2-tags-plus-Balanced actionable-notification button list for one
+    axis, namespaced under `prefix` (always _FLAVOR_ACTION_PREFIX - kept as
+    a parameter rather than hardcoded since the id-parsing convention it
+    matches, "{prefix}:{shot_id}:{axis}:{tag}", is shared with
+    _handle_flavor_notification_action)."""
+    actions = [
+        {"action": f"{prefix}:{shot_id}:{axis}:{tag}", "title": title}
+        for tag, title in _FLAVOR_AXES[axis]
+    ]
+    actions.append({"action": f"{prefix}:{shot_id}:{axis}:balanced", "title": "Balanced"})
+    return actions
+
+
 class BaristaRuntime:
     """Single Barista Assist installation."""
 
@@ -295,6 +320,10 @@ class BaristaRuntime:
         self.safety_margin_s = float(defaults["controller"]["safety_margin_s"])
         self.stop_latency_normal_s = float(defaults["controller"]["stop_latency_normal_s"])
         self.stop_latency_elevated_s = float(defaults["controller"]["stop_latency_elevated_s"])
+        flavor_min_step = self.definitions.expert_rules["flavor_correction"]["minimum_meaningful_step"]
+        self.min_step_target_yield_g = float(flavor_min_step["target_yield_g"])
+        self.min_step_dose_g = float(flavor_min_step["dose_g"])
+        self.min_step_temperature_offset_c = float(flavor_min_step["temperature_offset_c"])
         self.draft = BagDraft(
             roast_date=date.today(),
             starting_mass_g=float(defaults["new_bag"]["starting_mass_g"]),
@@ -440,6 +469,14 @@ class BaristaRuntime:
                 self.definitions.defaults["controller"]["stop_latency_elevated_s"],
             )
         )
+        flavor_min_step = self.definitions.expert_rules["flavor_correction"]["minimum_meaningful_step"]
+        self.min_step_target_yield_g = float(
+            state.get("min_step_target_yield_g", flavor_min_step["target_yield_g"])
+        )
+        self.min_step_dose_g = float(state.get("min_step_dose_g", flavor_min_step["dose_g"]))
+        self.min_step_temperature_offset_c = float(
+            state.get("min_step_temperature_offset_c", flavor_min_step["temperature_offset_c"])
+        )
         await self._async_save_state()
         await self.async_refresh_cache()
         await self.scale.async_start()
@@ -489,6 +526,9 @@ class BaristaRuntime:
                 "stop_latency_normal_s": self.stop_latency_normal_s,
                 "stop_latency_elevated_s": self.stop_latency_elevated_s,
                 "safe_shot_deadline_s": self.safe_shot_deadline_s,
+                "min_step_target_yield_g": self.min_step_target_yield_g,
+                "min_step_dose_g": self.min_step_dose_g,
+                "min_step_temperature_offset_c": self.min_step_temperature_offset_c,
             }
         )
 
@@ -607,6 +647,35 @@ class BaristaRuntime:
         current = self.last_shot["grind"]
         return f"{current:g} → {current + delta:g}"
 
+    def _flavor_correction_config(self) -> dict[str, Any]:
+        """expert_rules.flavor_correction, with minimum_meaningful_step
+        overridden by this bag's dashboard-editable min_step_* attributes
+        (see _MIN_STEP_FIELDS) - the live, possibly user-tuned values,
+        not just the YAML defaults. Returns a copy; never mutates
+        self.definitions.expert_rules in place."""
+        config = self.definitions.expert_rules["flavor_correction"]
+        overrides = {field: getattr(self, attr) for field, attr in _MIN_STEP_FIELDS.items()}
+        return {
+            **config,
+            "minimum_meaningful_step": {**config["minimum_meaningful_step"], **overrides},
+        }
+
+    def _stalled_flavor_tags(self, bag: Bag) -> list[str]:
+        """Which axes have converged as far as they can go with nowhere
+        further to escalate to (resolve_flavor_state's own "recommendation
+        is None but active_tag is still set" signal) - a real,
+        informative state _all_flavor_field_recommendations can't
+        represent on its own (it only ever returns fields that *do* have a
+        recommendation), so _recommended_flavor_note surfaces it
+        separately instead of staying silent."""
+        config = self._flavor_correction_config()
+        stalled = []
+        for tags_by_axis in self._bag_flavor_tags.get(bag.id, {}).values():
+            state = resolve_flavor_state(list(reversed(tags_by_axis)), config)
+            if state["recommendation"] is None and state["active_tag"] is not None:
+                stalled.append(state["active_tag"])
+        return stalled
+
     def _all_flavor_field_recommendations(self, bag: Bag) -> dict[str, tuple[float, float, str]]:
         """recipe field -> (current, recommended, tag) for every axis's
         current-stage recommendation on this bag (docs/DESIGN.md's Phase 5
@@ -626,7 +695,7 @@ class BaristaRuntime:
         collision worth being able to spot). Not yet resolved more precisely
         than that - a rare enough edge case to leave for once it's actually
         seen in practice."""
-        config = self.definitions.expert_rules["flavor_correction"]
+        config = self._flavor_correction_config()
         result: dict[str, tuple[float, float, str]] = {}
         for tags_by_axis in self._bag_flavor_tags.get(bag.id, {}).values():
             # storage.recent_flavor_tags (cached here in async_refresh_cache)
@@ -716,7 +785,9 @@ class BaristaRuntime:
         """"Current -> recommended" text per flavor-correction axis (docs/
         DESIGN.md section 13), e.g. "target_yield_g: 36.0 -> 41.0 (persistent
         sour_sharp)", joined with "; " when more than one field currently has
-        a recommendation, plus the puck_prep_issue streak note (see
+        a recommendation, plus a note for any axis that's converged as far
+        as it can go with nowhere further to escalate to
+        (_stalled_flavor_tags) and the puck_prep_issue streak note (see
         _puck_prep_streak_note) when applicable. None when nothing has
         anything to report at all - that's a real "no recommendation"
         state, not a fault."""
@@ -726,6 +797,10 @@ class BaristaRuntime:
                 bag
             ).items()
         ]
+        notes.extend(
+            f"{tag} isn't resolving with automatic adjustment alone"
+            for tag in self._stalled_flavor_tags(bag)
+        )
         streak_note = self._puck_prep_streak_note(bag)
         if streak_note is not None:
             notes.append(streak_note)
@@ -888,6 +963,21 @@ class BaristaRuntime:
                 return
             if field == "safety_margin_s":
                 self.safety_margin_s = float(value)
+                await self._async_save_state()
+                self._notify(force=True)
+                return
+            if field == "min_step_target_yield_g":
+                self.min_step_target_yield_g = float(value)
+                await self._async_save_state()
+                self._notify(force=True)
+                return
+            if field == "min_step_dose_g":
+                self.min_step_dose_g = float(value)
+                await self._async_save_state()
+                self._notify(force=True)
+                return
+            if field == "min_step_temperature_offset_c":
+                self.min_step_temperature_offset_c = float(value)
                 await self._async_save_state()
                 self._notify(force=True)
                 return
@@ -1888,56 +1978,27 @@ class BaristaRuntime:
 
     async def _async_send_flavor_feedback_notifications(self, shot_id: str, bag_id: str) -> None:
         """Send the two independent per-axis taste-feedback notifications
-        (see _FLAVOR_AXES), each a plain 3-button actionable notification
-        answerable with a single tap - no app-opening required. Each
+        (see _FLAVOR_AXES), each the same plain 3-button actionable
+        notification (the axis's own two tags, plus Balanced) answerable
+        with a single tap - no app-opening required, and no other question
+        type exists to send instead (docs/DESIGN.md's Phase 5). Each
         button's action id ("barista_flavor:{shot_id}:{axis}:{tag}") carries
         everything _handle_flavor_notification_action needs to record the
-        answer.
-
-        Per axis, which 3-button question to send depends on
-        flavor_correction.resolve_flavor_state's "next_question" (docs/
-        todo/LEVER_SEQUENCING_PLAN.md §3.2/§3.3): "outcome" - an
-        intervention was just (re-)applied on this axis and its result
-        hasn't been reported yet - sends "did this improve <tag>?
-        Better/Same/Worse" instead of the normal 2-tags-plus-Balanced
-        question; "tag" sends the normal question (this also covers the
-        "still <tag>?" confirmation step - same 3 buttons, no separate
-        wording needed, see resolve_flavor_state's own docstring)."""
+        answer."""
         service = self.entry.options.get(CONF_NOTIFY_SERVICE)
         if not service:
             return
         _LOGGER.debug(
             "Sending flavor-feedback notifications for shot %s via notify.%s", shot_id, service
         )
-        config = self.definitions.expert_rules["flavor_correction"]
-        for axis, tags in _FLAVOR_AXES.items():
-            history = list(reversed(self._bag_flavor_tags.get(bag_id, {}).get(axis, [])))
-            state = resolve_flavor_state(history, config)
-            if state["next_question"] == "outcome":
-                tag_title = dict(tags).get(state["active_tag"], axis)
-                actions = [
-                    {"action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:{response}", "title": title}
-                    for response, title in (("better", "Better"), ("same", "Same"), ("worse", "Worse"))
-                ]
-                message = f"Did that shot improve on {tag_title}?"
-            else:
-                actions = [
-                    {"action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:{tag}", "title": title}
-                    for tag, title in tags
-                ]
-                actions.append(
-                    {
-                        "action": f"{_FLAVOR_ACTION_PREFIX}:{shot_id}:{axis}:balanced",
-                        "title": "Balanced",
-                    }
-                )
-                message = f"How was the {axis} on that last shot?"
+        for axis in _FLAVOR_AXES:
+            actions = _flavor_tag_actions(shot_id, axis, prefix=_FLAVOR_ACTION_PREFIX)
             try:
                 await self.hass.services.async_call(
                     "notify",
                     service,
                     {
-                        "message": message,
+                        "message": f"How was the {axis} on that last shot?",
                         "data": {"actions": actions},
                     },
                 )
@@ -1981,9 +2042,7 @@ class BaristaRuntime:
                 self.db.record_flavor_tag, shot_id, axis, tag
             )
         except Exception:
-            _LOGGER.exception(
-                "Failed to record flavor tag %s (axis=%s) for shot %s", tag, axis, shot_id
-            )
+            _LOGGER.exception("Failed to record flavor tag %s (axis=%s) for shot %s", tag, axis, shot_id)
             return
         if not recorded:
             # The shot this notification was about no longer exists (e.g.
