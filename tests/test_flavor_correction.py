@@ -49,6 +49,7 @@ CONFIG = {
         "dose_g": 0.5,
         "target_yield_g": 1.5,
     },
+    "overshoot_damping_ratio": 0.5,
     "tags": {
         "sour_sharp": {
             "lever": "yield",
@@ -231,7 +232,7 @@ class RealDefinitionsConfigTests(unittest.TestCase):
         or escalates straight to temperature - is derived from the live
         config, not assumed."""
         floor = self.config["minimum_meaningful_step"]["target_yield_g"]
-        damped_step = self._own_primary_step(first) * flavor_correction._DAMPING_RATIO
+        damped_step = self._own_primary_step(first) * self.config["overshoot_damping_ratio"]
         state = resolve_flavor_state([first, second], self.config)
         recommendation = state["recommendation"]
         self.assertIsNotNone(recommendation)

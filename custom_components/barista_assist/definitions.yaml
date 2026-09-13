@@ -1,5 +1,10 @@
-# Declarative source of truth for Barista Assist user-facing controls.
-# Runtime/Bluetooth/database algorithms intentionally remain in Python.
+# Declarative source of truth for Barista Assist's tunable workflow
+# constants - recipe/controller defaults, flow-classification thresholds,
+# and expert-system policy (grind/flavor correction, roast-level priors) -
+# so they can be tuned without touching Python. Which Home Assistant
+# entities exist and how they render (translation keys, dashboard tokens,
+# units, widget bounds) lives in entities.yaml instead; runtime/Bluetooth/
+# database algorithms themselves intentionally remain in Python.
 version: 1
 
 slots:
@@ -22,250 +27,231 @@ defaults:
     adapt_pi: true
     stop_latency_normal_s: 3.4
     stop_latency_elevated_s: 4.3
-    # How long after a shot finishes to send the taste-feedback push
-    # notifications (expert_rules.flavor_correction) - long enough for the
-    # drink to actually be tasted, short enough that the shot is still fresh
-    # in memory. Not dashboard-editable (unlike the settings above it): this
-    # is a one-off UX tuning knob, not something that needs live recalibration.
+    # Delay before sending taste-feedback push notifications - long enough
+    # to taste the drink, short enough to stay fresh in memory. Not
+    # dashboard-editable; a one-off UX knob, not a live-recalibrated one.
     flavor_feedback_delay_s: 120
   new_bag:
     starting_mass_g: 250.0
 
 # =============================================================================
 # flow_analysis_constants - every tunable threshold flow_analysis.py's Stage-1
-# classifier uses, in one place. runtime.py builds a flow_analysis.
-# FlowAnalysisConfig from this dict on every shot (see _async_finalize).
-# FlowAnalysisConfig itself has no default values and no explanatory comments
-# (consts live in yaml, code is for logic) - this is the only place both the
-# numbers and the reasoning behind them live at all.
-#
-# Grouped below to match flow_analysis.py's own section order (leading-garbage
-# -> disturbance -> smoothing/first-flow -> channeling suspicion -> flow-rate
-# classification), so the two files read the same way.
+# classifier uses. FlowAnalysisConfig has no defaults of its own (consts
+# live in yaml, code is for logic) - this is the only place the numbers and
+# their reasoning live. Grouped to match flow_analysis.py's own section
+# order (leading-garbage -> disturbance -> smoothing/first-flow ->
+# channeling suspicion -> flow-rate classification).
 # =============================================================================
 flow_analysis_constants:
 
   # --- Leading-garbage detection ---------------------------------------------
 
-  # A leading weight reading this far below zero is scale noise before it's
-  # settled/tared, not real data - weight is never meaningfully negative, at
-  # any point in a shot (ordinary scale jitter near a true zero baseline
-  # stays within a couple tenths of a gram either way). A live shot hit a
-  # single -48g first sample (elapsed_ms=22, one reading before the scale
-  # had connected/tared) that dragged the whole smoothing/derivative
-  # computation with it, misclassifying an otherwise perfectly normal (if
-  # too-fast) shot as invalid_measurement. This must only ever reject on the
-  # negative side - a legitimately high leading *positive* reading (e.g.
-  # synthetic test data, or real samples that only start once a pour is
-  # already well underway) is not implausible the same way and must never
-  # be discarded.
+  # A leading reading this far below zero is scale noise before it's
+  # settled/tared, not real data (weight is never meaningfully negative) -
+  # a live shot's stray -48g first sample once dragged the whole
+  # smoothing/derivative computation with it, misclassifying an otherwise
+  # normal shot. Only ever rejects the negative side.
   leading_garbage_threshold_g: 2.0
 
-  # A leading sample whose scale_ms (the BOOKOO scale's own onboard clock)
-  # runs this many ms ahead of our own elapsed_ms is a stale BLE
-  # notification queued from before our tare-and-start-timer command reset
-  # the scale's clock, not real data for this shot - a live shot's first two
-  # samples read scale_ms=19200 while elapsed_ms was still under 200,
-  # carrying a stale, unrelated 12g reading left over from whatever the
-  # scale was doing before this shot. Once the scale's own clock is reset,
-  # its readings drop back to roughly tracking elapsed_ms, so this only
-  # ever rejects genuinely stale leading samples, not real ones.
+  # A leading sample whose scale_ms runs this far ahead of elapsed_ms is a
+  # stale BLE notification queued from before our tare/start-timer command
+  # reset the scale's clock, not real data - seen live (scale_ms=19200
+  # while elapsed_ms<200, carrying a stale unrelated 12g reading).
   stale_scale_clock_threshold_ms: 2000
 
   # --- Mid-shot disturbance detection (cup/scale bumped, lifted, moved) ------
 
-  # A raw weight reading this many grams below its own running peak so far
-  # is treated as the cup or scale having been disturbed, not real flow:
-  # weight can only rise while coffee is actually being collected, so any
-  # meaningful drop - however it happens, whenever it happens - means
-  # everything from that point on isn't trustworthy. Everything before it
-  # still is.
+  # A raw weight this many grams below its own running peak is a cup/scale
+  # disturbance, not real flow - weight can only rise during a real pour,
+  # so any meaningful drop makes everything after it untrustworthy.
   max_plausible_weight_drop_g: 0.5
 
-  # Disturbance detection only arms once the running peak has cleared this
-  # floor. Below it - typically pre-infusion, before any real coffee mass
-  # has accumulated - scale settling noise alone can span several tenths of
-  # a gram, comfortably exceeding max_plausible_weight_drop_g on its own
-  # with no real disturbance involved; a real shot found this live,
-  # misclassifying a genuine ~50g pour as invalid because of a sub-gram dip
-  # minutes before the real pour even began. Once a shot has genuinely
-  # accumulated this much weight, the same max_plausible_weight_drop_g drop
-  # is unambiguous interference, exactly as before.
+  # Disturbance detection only arms once the running peak clears this
+  # floor - below it (pre-infusion), scale settling noise alone can exceed
+  # max_plausible_weight_drop_g with no real disturbance; a real shot once
+  # misclassified a genuine ~50g pour this way.
   disturbance_detection_floor_g: 2.0
 
-  # A drop past max_plausible_weight_drop_g must hold for at least this long
-  # to count as a genuine disturbance rather than a splash/settle bounce - a
-  # real shot with a violent, turbulent gush saw repeated multi-gram dips
-  # (droplets, crema settling, the cup rocking on the scale) that each
-  # recovered and kept climbing within a few hundred ms, but the first one
-  # hit the old instantaneous check and truncated the shot down to its
-  # first ~9s, hiding the huge overshoot that followed and turning an
-  # obviously too-fast shot into a false too_restrictive (t90 never reached
-  # in the truncated data). A genuine cup-lift stays low far longer than
-  # this.
+  # A drop past max_plausible_weight_drop_g must hold this long to count as
+  # a real disturbance, not a splash/settle bounce - a violent, turbulent
+  # real shot saw repeated sub-second dips that each recovered; the old
+  # instantaneous check truncated it at ~9s and hid the real overshoot.
   disturbance_sustain_ms: 1000
 
   # --- Smoothing & first-flow detection --------------------------------------
 
-  # Fewer than this many samples can't be classified at all - not enough
-  # points to smooth/derive a trend from. Arbitrary, not tuned against any
-  # specific incident.
+  # Fewer than this many samples can't be classified - not enough points to
+  # derive a trend from. Arbitrary, not incident-tuned.
   min_samples: 5
 
-  # Centered moving-average window applied to raw weight before computing
-  # flow (the derivative) - trades detail for noise rejection. Arbitrary,
-  # not tuned against any specific incident.
+  # A final weight below this is a broken/disconnected shot
+  # (NEAR_ZERO_FINAL_WEIGHT), not a real near-empty pour - same
+  # plausibility-floor idea as leading_garbage_threshold_g, at the shot's end.
+  near_zero_final_weight_threshold_g: 1.0
+
+  # Centered moving-average window for smoothing weight before computing
+  # flow. Arbitrary, not incident-tuned.
   smoothing_window_ms: 500
 
-  # The derivative must clear this many g/s to count as real flow at all,
-  # as opposed to scale noise around zero. Arbitrary, not tuned against any
-  # specific incident.
+  # The derivative must clear this many g/s to count as real flow, not
+  # scale noise. Arbitrary, not incident-tuned.
   first_flow_threshold_g_s: 0.3
 
-  # A single sample's derivative can spike past first_flow_threshold_g_s
-  # purely from scale quantization (e.g. a 0.1g-resolution reading landing
-  # right at a sample boundary) even during a genuine low/no-flow trickle -
-  # real flow stays above the threshold for a run of samples, not just one,
-  # so "first flow" requires the crossing to hold for at least this long.
+  # A single sample can spike past first_flow_threshold_g_s from scale
+  # quantization alone - real flow must hold above it for this long.
   first_flow_sustain_ms: 300
 
-  # A shot's first detected flow earlier than this fraction of its
-  # configured pre-infusion duration is implausible - pre-infusion is meant
-  # to be a low/no-flow soak. Unvalidated placeholder, same status as the
-  # rest of this group.
+  # First detected flow earlier than this fraction of preinfusion_s is
+  # implausible (pre-infusion should be a low/no-flow soak). Placeholder.
   early_flow_fraction_of_preinfusion: 0.5
 
   # --- Channeling suspicion ---------------------------------------------------
-  # Getting these three better calibrated needs more real recorded edge
-  # cases for a human to review, not just more shot volume - there's no
-  # automatic ground truth for "was this really channeling" the way there
-  # is for e.g. stop_latency's tail-weight error, and none of the 16
-  # James Hoffmann/Lance Hedrick/Matt Perger dial-in videos this project
-  # has cross-checked describe channeling numerically (only qualitatively -
-  # "a sudden rise in flow", "tiger striping"). All three remain unvalidated
-  # guesses.
+  # All three below are unvalidated guesses - no automatic ground truth for
+  # "was this really channeling" exists, and none of the 16 dial-in videos
+  # this project checked describe channeling numerically (only
+  # qualitatively - "a sudden rise in flow", "tiger striping").
 
-  # A bag needs at least this many recorded healthy shots before its own
-  # baseline (median late-shot acceleration) is trusted for the
-  # baseline-deviation channeling check - too few, and one atypical healthy
-  # shot could dominate the "normal for this bag" reference point.
+  # A bag needs at least this many healthy shots before its own baseline
+  # (median late-shot accel) is trusted - too few, and one atypical shot
+  # could dominate the "normal for this bag" reference.
   min_baseline_shots: 3
 
-  # channeling_suspicion at or above this value classifies puck_prep_issue
-  # rather than by the shot's hydraulic fast/slow reading (docs/DESIGN.md
-  # section 13 Stage 1).
+  # channeling_suspicion at or above this classifies puck_prep_issue rather
+  # than by the shot's fast/slow flow reading (DESIGN.md §13 Stage 1).
   suspicion_threshold: 0.6
 
-  # Fixed prior: mid- or late-shot flow accelerating upward by this many g/s
-  # per second is treated as maximally suspicious, independent of any
-  # baseline.
+  # Fixed prior: mid/late-shot flow accelerating upward by this many g/s²
+  # is maximally suspicious, independent of any baseline.
   absolute_accel_limit_g_s2: 1.0
+
+  # Baseline-deviation suspicion (bag-relative counterpart to
+  # absolute_accel_limit_g_s2): rise_above_baseline / (reference *
+  # baseline_deviation_scale), reference = this bag's own median late-shot
+  # accel, floored at baseline_deviation_floor_g_s2 to avoid blowing up a
+  # near-zero baseline.
+  baseline_deviation_floor_g_s2: 0.1
+  baseline_deviation_scale: 3.0
 
   # --- Flow-rate classification (the Hoffmann-calibrated trio) ---------------
 
-  # How many "pseudo-shots" the expected_flow_g_s prior below (and, per
-  # docs/DESIGN.md §19, roast_level_ratio_prior/
-  # roast_level_dose_prior in expert_rules) is worth when blending with this
-  # installation's own accumulated data for the same roast_level - shrinks
-  # toward that roast-level pool as its shot count grows. Deliberately not
-  # blended toward any one bag's own history (see flow_analysis.py's module
-  # docstring and docs/DESIGN.md's Phase 3b for why). One
-  # shared shrinkage-weight constant, not a separate one per prior.
-  # Unvalidated placeholder.
+  # How many "pseudo-shots" the expected_flow_g_s prior (and
+  # roast_level_ratio_prior/roast_level_dose_prior in expert_rules) is
+  # worth when blending toward this installation's own accumulated data for
+  # the same roast_level - never toward one bag's own history (DESIGN.md
+  # §19/Phase 3b). One shared shrinkage weight, not one per prior. Placeholder.
   prior_weight_shots: 1.0
 
-  # expected_flow_g_s: the flow rate (target_yield_g / total shot seconds,
-  # t90-ish) a "normal" shot is expected to run at, before this installation
-  # has accumulated any shots for that bag's roast_level (flow_analysis
-  # blends this with the median flow rate across *other* bags sharing that
-  # roast_level as such shots accumulate - see
-  # flow_analysis.blended_expected_flow_g_s; deliberately not blended toward
-  # this bag's own history). too_fast_factor/too_restrictive_factor
-  # bound how far duration_s may deviate from expected_s (=
-  # target_yield_g / expected_flow_g_s) before a shot leaves "healthy":
-  # too_fast if duration_s < expected_s * too_fast_factor, too_restrictive
-  # if duration_s > expected_s * too_restrictive_factor.
+  # expected_flow_g_s: the flow rate a "normal" shot runs at before this
+  # installation has its own roast-level history (blended with other bags'
+  # median flow as it accumulates - blended_expected_flow_g_s; never toward
+  # this bag's own history). too_fast_factor/too_restrictive_factor bound
+  # how far duration_s may deviate from expected_s = target_yield_g /
+  # expected_flow_g_s before a shot leaves "healthy".
   #
-  # Unlike every other constant in this file, these three have a real
-  # derivation: checked directly against every dose/yield/time data point
-  # across James Hoffmann's dial-in videos that he gave an explicit
-  # good/bad verdict on - converted to flow_g_s = yield_g / time_s, then to
-  # duration_ratio = expected_flow_g_s / actual_flow_g_s:
+  # Unlike everything else in this file, these three have a real
+  # derivation: checked against every Hoffmann dial-in data point with an
+  # explicit good/bad verdict, converted to duration_ratio =
+  # expected_flow_g_s / actual_flow_g_s:
   #
   #   source                          yield/time      flow_g_s  duration_ratio  verdict
   #   Dial-In Ep1 shot 1              40g / 34s        1.176      1.105         "too slow" (harsh/muddy/sour)
   #   Dial-In Ep1 shot 2              38g / 25s        1.520      0.855         "too fast" (under-extracted)
-  #   Dial-In Ep1 shot 3              38g / 27s        1.407      0.924         improving, not flagged as fast/slow
+  #   Dial-In Ep1 shot 3              38g / 27s        1.407      0.924         improving, not flagged
   #   Dial-In Ep1 shot 4 ("pretty good") 38.5g / 29s    1.328      0.979         accepted
-  #   Grind Size ep's own "good" example 36g / 30s      1.200      1.083         stated as the target to hit
-  #   Dial-In Ep2 baseline             40g / ~29s       1.379      0.943         not flagged as fast/slow (issue was flavour/temp)
+  #   Grind Size ep's own "good" example 36g / 30s      1.200      1.083         stated as the target
+  #   Dial-In Ep2 baseline             40g / ~29s       1.379      0.943         not flagged (issue was flavour/temp)
   #   Dial-In Ep2 after adjustment     ~37g / ~30s      1.233      1.054         "hit the numbers", fine
   #
-  # (expected_flow_g_s = 1.3 used to compute duration_ratio above.) The
-  # bad-verdict points (1.105, 0.855) and every accepted/unflagged point
-  # (0.924-1.083) separate cleanly at roughly 0.88 and 1.10. This is still a
-  # small (7-point), spoken-approximate-timing dataset from one creator's
-  # equipment, not this installation's own instrumented shot history - a
-  # better-grounded starting point than an invented example, but still to
-  # be replaced once Phase 3b/4b's real recorded shots exist. Full
-  # derivation/history: docs/DIAL_IN_RULES.md Part 4.
+  # Bad-verdict points (1.105, 0.855) and accepted points (0.924-1.083)
+  # separate cleanly at ~0.88/1.10. A small (7-point), one-creator dataset -
+  # better than an invented example, but due for replacement once real
+  # instrumented shot history exists. Full derivation: docs/DIAL_IN_RULES.md
+  # Part 4.
   expected_flow_g_s: 1.3  # 1.2 to 1.3 g/s for 36g to 40g in 30s
-  too_fast_factor: 0.88  # 
+  too_fast_factor: 0.88
   too_restrictive_factor: 1.10
 
 # =============================================================================
-# expert_rules - correction rules consolidated from James Hoffmann's,
-# Lance Hedrick's, and Matt Perger's dial-in videos (DESIGN.md §13-15). This
-# encodes *policy* (which lever to pull, in what order, by how much) as data;
-# the diagnostic math that produces a shot's classification/duration_ratio
-# stays in flow_analysis.py (see flow_analysis_constants above for that).
+# stop_latency_calibration - runtime_shot.py's online-learning calibration
+# for stop_latency_normal_s/stop_latency_elevated_s (defaults.controller):
+# hardware-timing constants behind the predictive stop, not a video-sourced
+# policy (that's expert_rules below) - grouped with flow_analysis_constants
+# in spirit.
 #
-# Full per-source quotes and reasoning for everything in this section:
-# docs/DIAL_IN_RULES.md (James Hoffmann) and docs/CROSS_CREATOR_RULE_CHECK.md
-# (cross-checked against Lance Hedrick/Matt Perger, including what was
-# deliberately left out as one creator's personal preference rather than a
-# genuine consensus/mechanism - see that doc's "queued decisions").
+# stop_latency_*_s (BLE press + pump stop + drip settle, times live flow =
+# the adaptive stop margin) are learned, not fixed - see
+# _update_learned_stop_latency. Split into two buckets by flow rate at the
+# stop decision rather than one shared average: a shot's own flow at that
+# moment predicts its needed latency almost perfectly (0.97 correlation
+# across 5 real shots), so a fast shot isn't an outlier to exclude, just a
+# point needing a bigger estimate - one shared average risked dragging the
+# estimate past where early_stop_margin_min_g's floor still protects a
+# normal shot. Seed values (defaults.controller, 3.4s/4.3s) are the average
+# observed latency on each side of bucket_cutoff_g_s.
+# =============================================================================
+stop_latency_calibration:
+  learning_rate: 0.15
+
+  # Bounds on either learned latency, so one anomalous shot can only nudge
+  # its bucket's estimate, never send it somewhere absurd in one step.
+  min_s: 0.5
+  max_s: 8.0
+
+  # Flow-rate split between the "normal"/"elevated" latency buckets - falls
+  # in the real gap between our normal (~2.0-2.4 g/s) and elevated
+  # (~3.6-5.1 g/s) shots; revisit as more real shots accumulate.
+  bucket_cutoff_g_s: 3.0
+
+  # Flow at the stop decision must clear this floor for the observed
+  # latency ((final_weight - weight_at_decision) / flow) to be numerically
+  # meaningful rather than noise from a near-zero denominator.
+  min_flow_for_learning_g_s: 0.5
+
+  # How much longer than the larger learned latency to keep recording after
+  # a stop/abort press before finalizing - needs headroom above both, or
+  # the very shots used to learn them get their own tail cut short.
+  settle_buffer_s: 2.0
+  min_settle_s: 4.0
+
+# =============================================================================
+# expert_rules - correction policy consolidated from James Hoffmann's, Lance
+# Hedrick's, and Matt Perger's dial-in videos (DESIGN.md §13-15): which
+# lever to pull, in what order, by how much - as data, not code. The
+# diagnostic math producing a shot's classification/duration_ratio stays in
+# flow_analysis.py.
+#
+# Full per-source quotes: docs/DIAL_IN_RULES.md (Hoffmann) and
+# docs/CROSS_CREATOR_RULE_CHECK.md (cross-checked against Lance
+# Hedrick/Matt Perger).
 # =============================================================================
 expert_rules:
 
   # --- Phase 4, live: grind_correction ----------------------------------------
-  # Corrects a shot's flow-rate deviation by moving grind only, holding every
-  # other recipe variable constant (DESIGN.md §13 Stage 2 - "isolate
-  # variables"). Never applied to a puck_prep_issue or invalid_measurement
-  # shot: channeling has two distinct causes (bad puck prep vs. grind ground
-  # too fine for the pressure/prep quality being used) and flow_analysis.py
-  # can't yet tell them apart from the weight curve alone, so defaulting to
-  # "repeat the recipe, don't touch grind" is the safe choice until it can.
-  #
-  # That "repeat, don't touch grind" default is overridden once consecutive
-  # puck_prep_issue shots at the same recipe cross a threshold - see
-  # puck_prep_issue_streak_threshold below and docs/DESIGN.md §12/Phase 4.
+  # Corrects a shot's flow-rate deviation by moving grind only, holding
+  # every other recipe variable constant (DESIGN.md §13 Stage 2). Never
+  # applied to puck_prep_issue/invalid_measurement: flow_analysis.py can't
+  # yet tell bad puck prep from grind-too-fine from the weight curve alone,
+  # so "repeat, don't touch grind" is the safe default - overridden once a
+  # puck_prep_issue streak crosses puck_prep_issue_streak_threshold below.
   grind_correction:
     applies_to_classification: [too_fast, too_restrictive]
     excludes_classification: [puck_prep_issue, invalid_measurement]
     hold_constant: [dose_g, target_yield_g, temperature_offset_c, preinfusion_s]
 
-    # duration_ratio = actual shot duration / expected duration for this bag,
-    # using flow_analysis_constants.expected_flow_g_s above. Below 1.0 = ran
-    # fast; above 1.0 = ran slow/restrictive. Bands are ordered ascending by
-    # duration_ratio_max; a shot's duration_ratio picks the first band whose
-    # max it is <= to (grossly_restrictive, with no max, catches anything
-    # above moderately_restrictive's). The healthy band's own edges
-    # (0.88/1.10) are the video-sourced values derived above; the finer
-    # slightly/moderately/grossly tiers beyond that boundary are still
-    # placeholder anchors, not derived data - none of the videos give
-    # numeric ratios for "moderately" vs "grossly" off, only qualitative
-    # language ("way too fast" vs "a little bit finer"). Revisit alongside
-    # Phase 3b/4b once real shot history exists to calibrate them.
+    # duration_ratio = actual/expected shot duration. Below 1.0 = fast;
+    # above = slow/restrictive. Bands ascend by duration_ratio_max; a shot
+    # picks the first band whose max it's <= (grossly_restrictive, no max,
+    # catches the rest). healthy's edges (0.88/1.10) are video-derived
+    # above; the finer tiers beyond that are placeholder anchors - no video
+    # gives numeric ratios for "moderately" vs "grossly" off, only
+    # qualitative language. Revisit once real shot history exists.
     #
-    # Every duration_ratio_max below (other than grossly_restrictive's,
-    # which stays the fixed catch-all) and every grind_delta (other than
-    # healthy's, fixed at 0.0 - see recommend_grind_delta's own
-    # healthy_index lookup in grind_correction.py) is a dashboard-editable
-    # number entity (entities.number.grind_band_* below, "Connection and
-    # control" card) - these are just the seeded defaults;
-    # BaristaRuntime._grind_correction_config overrides them with whatever
-    # is currently persisted.
+    # Every duration_ratio_max (except grossly_restrictive's fixed max) and
+    # every grind_delta (except healthy's fixed 0.0 - recommend_grind_
+    # delta's own healthy_index lookup) is a dashboard-editable number
+    # entity (entities.yaml's grind_band_*) - these are just the seeded
+    # defaults; BaristaRuntime._grind_correction_config overrides with
+    # whatever's persisted.
     bands:
       - name: grossly_fast
         duration_ratio_max: 0.6
@@ -290,49 +276,50 @@ expert_rules:
         grind_delta: 2.0
 
     # ~5-10g, grinder-dependent (Grind Size ep, rule 4): a shot pulled right
-    # after a grind change is a mix of old- and new-setting grounds until
-    # purged, so it isn't a clean comparison to the pre-change baseline.
+    # after a grind change mixes old/new grounds until purged, so it isn't
+    # a clean comparison to the pre-change baseline.
     requires_purge_before_next_comparison: true
 
-    # A bag+recipe that lands on puck_prep_issue this many shots in a row
-    # (same recipe including grind - see
-    # storage.consecutive_puck_prep_issue_count) is no longer random
-    # bad technique, it's systematic - override "repeat, don't touch grind"
-    # and recommend coarsening by puck_prep_issue_streak_coarsen_delta
-    # instead. Both placeholders, not sourced from any transcript - no
-    # video gives a numeric threshold or step for this case - needing real
-    # accumulated shot data to calibrate, same discipline as every other
-    # not-yet-validated constant in this file.
+    # A bag+recipe landing on puck_prep_issue this many shots in a row
+    # (storage.consecutive_puck_prep_issue_count) is systematic, not random
+    # bad technique - override "repeat, don't touch grind" with a
+    # coarsening recommendation instead. Both placeholders - no video gives
+    # a numeric threshold/step for this case.
     puck_prep_issue_streak_threshold: 2
     puck_prep_issue_streak_coarsen_delta: 1.0
 
   # --- Phase 5: flavor_correction ----------------------------------------------
-  # Consumed by flavor_correction.py, driven by taste-feedback push
-  # notifications sent flavor_feedback_delay_s after a shot finishes (see
-  # runtime.py's _async_send_flavor_feedback_notifications). Tags match
-  # DESIGN.md §13's own sensory-tag list. Weighted for genuine
-  # consensus/mechanism over any one creator's personal preference - see
-  # docs/CROSS_CREATOR_RULE_CHECK.md.
+  # Driven by taste-feedback push notifications sent flavor_feedback_delay_s
+  # after a shot finishes. Tags match DESIGN.md §13's sensory-tag list,
+  # weighted for cross-creator consensus over one creator's preference (see
+  # docs/CROSS_CREATOR_RULE_CHECK.md).
   #
-  # Each tag's own `escalation` block (lever/direction, no delta_g of its
-  # own - always falls back to minimum_meaningful_step) is consumed by
-  # flavor_correction.resolve_flavor_state's escalation state machine
-  # (docs/DESIGN.md's Phase 5): a tag's first report (or a persisting
-  # report of the same tag) applies its primary lever at full strength;
-  # the axis's *other* tag showing up is either an unrelated problem (a
-  # different lever - e.g. thin_weak/dry_astringent) or an overshoot on
-  # the very lever just pushed (the same lever, opposite direction - e.g.
-  # sour_sharp/bitter_harsh), corrected with a damped (smaller) step; once
-  # that damped step would be smaller than minimum_meaningful_step, the
-  # lever has converged as far as it can go and escalates to `escalation`
-  # (if defined - thin_weak/dry_astringent don't, so converging there just
-  # stops offering an automatic recommendation, since there's nowhere
-  # further to go). "balanced" resets an axis back to no active lever.
+  # Each tag's `escalation` (lever/direction, no delta_g - falls back to
+  # minimum_meaningful_step) feeds resolve_flavor_state's escalation state
+  # machine (DESIGN.md's Phase 5): a tag's first/persisting report applies
+  # its primary lever at full strength; the axis's other tag is either an
+  # unrelated problem (different lever) or an overshoot (same lever,
+  # opposite direction), corrected with a damped step; once that damped
+  # step drops below minimum_meaningful_step, it escalates (if defined).
+  # "balanced" resets the axis.
   flavor_correction:
     minimum_meaningful_step:
       temperature_offset_c: 1
       dose_g: 0.5
       target_yield_g: 4
+
+    # How much smaller each overshoot correction is than the step that
+    # caused it - not sourced from any transcript (evidence says "smaller,"
+    # not "half"). grind_correction's own damping uses a discrete
+    # "one band-tier back" instead, since grinders aren't uniform; yield/
+    # dose/temperature are universal units, so a continuous halving fits
+    # here. Unvalidated placeholder, same status as the rest of this file.
+    overshoot_damping_ratio: 0.5
+
+    # How much answered-response history resolve_flavor_state replays per
+    # axis - generous, since a full primary/repeat/overshoot/escalate
+    # cycle can span more shots than recent_flavor_tags's own default (5).
+    state_replay_limit: 20
 
     tags:
       sour_sharp:
@@ -340,21 +327,16 @@ expert_rules:
         direction: increase
         # Hoffmann's Ratio ep capped this at 2-3g; widened after three
         # independent cross-creator examples (Lance x2, Perger) all used
-        # bigger jumps - 5g, 8-10g, +10g - a 3-source majority, not "trust
-        # Lance over Hoffmann". None of the sources agree on one exact
-        # number though, so 4 (just below this spread's own low end) is a
-        # project-level implementation choice, not itself sourced from any
-        # one video - same category as Phase 4's grind_correction
-        # magnitudes (see docs/DESIGN.md's Phase 4 section). Picked once
-        # here, in data, rather than recomputed from a stored range every
-        # time flavor_correction.py reads this tag.
+        # bigger jumps (5g, 8-10g, +10g) - a 3-source majority. No source
+        # agrees on one exact number, so 4 is a project-level choice, not
+        # itself sourced (same category as grind_correction's own
+        # magnitudes).
         delta_g: 4
 
-        # Escalates to temperature only once the issue is
-        # confirmed to persist across shots (Brew Temperature ep) and ratio
-        # alone hasn't fixed it - if a milk drink comes out too weak as a
-        # result, DESIGN.md's Example C says to return yield toward its
-        # prior value before trying +1°C, rather than stacking both changes.
+        # Escalates to temperature only once confirmed to persist across
+        # shots (Brew Temperature ep) and ratio alone hasn't fixed it -
+        # DESIGN.md's Example C returns yield toward its prior value first
+        # if a milk drink comes out too weak, rather than stacking changes.
         escalation:
           condition: persists_after_yield_change
           lever: temperature
@@ -364,37 +346,26 @@ expert_rules:
         lever: yield
         direction: decrease
         # Cross-creator reorder: previously mapped straight to temperature.
-        # Lance's "Quick & Easy Guide" puts yield/ratio decrease first,
-        # temperature only as a secondary aside for machines that support
-        # it - matches Hoffmann's own general "ratio before temperature"
-        # rule, so this was fixing an internal inconsistency, not adopting
-        # a new claim.
+        # Lance's "Quick & Easy Guide" puts yield/ratio first, temperature
+        # only as a secondary aside - matches Hoffmann's general "ratio
+        # before temperature" rule.
         #
-        # delta_g: previously unset (no source gave an exact magnitude for
-        # this direction, only "lower it"), falling back to this block's
-        # own minimum_meaningful_step.target_yield_g. Now sourced directly:
-        # Hoffmann's "How I Dial-In Espresso - Episode 2" (barrel-aged
-        # Ethiopian) reports this exact taste signature - "it's a little
-        # harsh and it almost has this kind of roastiness that it
-        # shouldn't have... a certain sort of bitterness" (~4:00-4:13) -
-        # and corrects it with a yield decrease from "19 to 40, 41"
-        # (~5:09-5:11) down to "maybe more like 36 to 38" (~5:21-5:26),
-        # confirmed landing at "19 in 38 out" (~6:01) - a real ~3-5g step,
-        # consistent with 4. Set explicitly rather than left to coincide
-        # with the floor, matching sour_sharp's own explicit delta_g below
-        # - see docs/DESIGN.md's Phase 5 section for the full quotes.
+        # Hoffmann's "How I Dial-In Espresso - Episode 2" reports this
+        # exact signature ("a little harsh... a certain sort of
+        # bitterness", ~4:00-4:13) and corrects with a yield decrease from
+        # "19 to 40, 41" to "maybe more like 36 to 38" (~5:09-6:01) - a real
+        # ~3-5g step, consistent with 4. Full quotes: DESIGN.md's Phase 5.
         delta_g: 4
-        
+
         escalation:
           condition: persists_after_yield_change
           lever: temperature
           direction: decrease
         note: "distinguish from dirty-machine bitterness (a lingering, burned flavour) - that is not a recipe fix"
-        # Corroborated independently in two Lance Hedrick videos: darker
-        # roasts produce more fines, and fines are inherently bitter, so a
-        # shot can taste bitter while actually being UNDER-extracted (via
-        # channeling) - true over-extraction bitterness comes together with
-        # wateriness/dryness, fines-driven bitterness doesn't necessarily.
+        # Corroborated in two Lance Hedrick videos: darker roasts produce
+        # more fines, and fines are inherently bitter - a shot can taste
+        # bitter while actually under-extracted (channeling), which doesn't
+        # come with true over-extraction's wateriness/dryness.
         fines_caveat: "bitter without accompanying watery/drying mouthfeel may be under-extraction/channeling, not over-extraction - do not apply this tag's fix in that case"
 
       thin_weak:
@@ -409,695 +380,84 @@ expert_rules:
       dry_astringent:
         lever: yield
         direction: decrease
-        # Previously unmapped for lack of evidence. Now grounded: Lance's
-        # "Quick & Easy Guide" pairs watery/drying/bitter together as the
-        # over-extraction signature (fix: lower ratio); Matt Perger's
-        # independent diminishing-returns finding arrives at the same place
-        # from grind (pushing it past its peak makes mouthfeel "dry" while
-        # extraction and strength both drop) - two different levers, same
-        # diagnosis, from two independent sources. No delta_g, same reason
-        # as bitter_harsh: falls back to minimum_meaningful_step.target_yield_g.
+        # Lance's "Quick & Easy Guide" pairs watery/drying/bitter as the
+        # over-extraction signature (fix: lower ratio); Perger's
+        # diminishing-returns finding reaches the same place from grind -
+        # two independent sources, two levers. No delta_g: falls back to
+        # minimum_meaningful_step.target_yield_g.
         note: "when this tag appears alongside thin/watery mouthfeel (true over-extraction): decrease yield first. If the over-extraction is actually caused by a grind pushed too fine rather than a ratio problem, back off the grind instead - this tag alone doesn't distinguish which lever caused it, only that yield or grind should move toward less extraction"
 
       balanced:
         note: "all good - no action"
 
   # --- Phase 5/6: roast_level_ratio_prior ---------------------------------------
-  # Consumed by runtime.py's async_new_bag as a target_yield_g fallback -
-  # only when a brand-new bag is opened in a slot with no existing bag to
-  # inherit a recipe from (there is still no "similar coffee" warm-start
-  # match to prefer over this; DESIGN.md §19's own warm-start logic remains
-  # unimplemented, so this prior is used whenever roast_level is known and
-  # there's nothing else at all to seed from). Blended toward this
-  # installation's own accumulated ratio for the same roast_level once other
-  # bags of that roast level have shots (docs/DESIGN.md §19) - see
-  # storage.roast_level_baseline, shared with
-  # flow_analysis_constants.expected_flow_g_s's own roast-level shrinkage
-  # (Phase 3b) and roast_level_dose_prior below: one aggregate, not three
-  # independent lookups.
+  # target_yield_g fallback for a brand-new bag with nothing to inherit
+  # from (runtime_bag.py's async_new_bag) - blended toward this
+  # installation's own accumulated ratio for the same roast_level as it
+  # grows (DESIGN.md §19; shares one aggregate with expected_flow_g_s/
+  # roast_level_dose_prior, not three independent lookups).
   #
-  # dark/light are Lance Hedrick's stated guideline (two videos agree
-  # closely). medium was cross-checked against Hoffmann's own actual
-  # medium-roast dial-in result (19g->36-38g, "the classic two to one
-  # ratio", ~1:1.9-2.0) and lowered from Lance's 2.5 toward that - not all
-  # the way to 2.0, which would collapse the dark/medium distinction this
-  # prior exists to encode. light hasn't been re-checked the same way (only
-  # one weaker Hoffmann data point exists for it). Full derivation:
+  # dark/light are Lance Hedrick's stated guideline (two videos agree).
+  # medium was cross-checked against Hoffmann's own dial-in result
+  # (19g->36-38g, ~1:1.9-2.0) and lowered from Lance's 2.5 toward that - not
+  # all the way to 2.0, which would collapse the dark/medium distinction.
+  # light hasn't been re-checked the same way. Full derivation:
   # docs/CROSS_CREATOR_RULE_CHECK.md.
   #
-  # Worth weighing this whole prior lightly regardless of the exact numbers:
-  # Hoffmann's own "Episode 0" argues at length against exactly this kind of
-  # simplification - ratio depends on dose, basket, grinder, and water at
-  # least as much as roast level. This is a low-confidence fallback for when
-  # nothing else is available, not a validated rule.
+  # A low-confidence fallback, not a validated rule - Hoffmann's own
+  # "Episode 0" argues ratio depends on dose/basket/grinder/water at least
+  # as much as roast level.
   roast_level_ratio_prior:
     dark: 2.0
     medium: 2.2
     light: 3.0
-    # Both Lance sources are explicit these are loose starting points, not
-    # fixed targets - use only to seed target_yield_g for a brand-new bag;
-    # this installation's own accumulated ratio for the same roast_level
-    # should override this as that pool grows, the same way
-    # flow_analysis_constants' expected_flow_g_s prior yields to the
-    # roast-level pool, not to any one bag's own history (see this key's own
-    # intro comment above).
+    # Loose starting points, not fixed targets - this installation's own
+    # accumulated ratio for the roast_level should override as that pool
+    # grows, same as expected_flow_g_s's own prior.
 
   # --- Phase 5/6: roast_level_temperature_prior ---------------------------------
-  # Same scope/consumer as roast_level_ratio_prior directly above (runtime.py's
-  # async_new_bag, only for a brand-new bag in an empty slot) - seeds
-  # temperature_offset_c instead of target_yield_g.
+  # Same scope as roast_level_ratio_prior (new bag, empty slot only) -
+  # seeds temperature_offset_c instead of target_yield_g.
   #
-  # Sourced from Hoffmann's Temperature episode, which gives roast-level
-  # starting-temperature *ballparks* - by his own description "his own
-  # benchmarks, taken loosely from roasters' recommendations", not a precise
-  # rule: darker/developed roasts 85-90C, medium 88-92C, lighter 90-95C
-  # (docs/DIAL_IN_RULES.md). This project's target machine is the Breville/
-  # Sage Barista Express (BES870), whose factory-default brew temperature is
-  # 93C/200F, documented independently by multiple sources
-  # (mikaeljasin.com/machine-mastery/breville-temperature-settings,
-  # corroborated by other community write-ups found the same way) as a
-  # deliberate "middle-ground that works for most medium roasts" - i.e. the
-  # machine's own factory default is already medium-roast-oriented, which
-  # corroborates (not just by this project's own convention) anchoring
-  # `medium` at `temperature_offset_c`'s existing 0 (the same zero-point
-  # roast_level_ratio_prior's own medium value already treats as the
-  # reference tier), rather than a number pulled from Hoffmann's own
-  # absolute-degree ballparks (which are on a different machine and don't
-  # transfer directly). What the ballparks *do* give cleanly, independent of
-  # any specific machine, is direction and rough relative spacing between
-  # roast levels: dark sits about 2-2.5C below medium's own center, light
-  # about 2-2.5C above it. Mapping that ~2.5C spread onto
-  # temperature_offset_c's discrete -2..+2 step scale, this uses only 1 step
-  # each way rather than the full 2 - a deliberately conservative choice
-  # given the remaining uncertainty in translating Hoffmann's *relative*
-  # spacing onto this specific machine's steps, not a claim that 1 step is
-  # exactly what the spread "should" be.
+  # Hoffmann's Temperature episode gives rough roast-level ballparks (his
+  # own words: "loosely from roasters' recommendations"): dark/developed
+  # 85-90C, medium 88-92C, light 90-95C (docs/DIAL_IN_RULES.md). This
+  # project's target machine (Breville/Sage Barista Express BES870)
+  # factory-defaults to 93C/200F, independently documented as a deliberate
+  # "middle-ground for most medium roasts" - corroborating medium at
+  # temperature_offset_c's existing 0 rather than an absolute-degree number
+  # from a different machine.
   #
-  # The Barista Express's real physical
-  # temperature adjustment is documented (same sources as above) as ±2F
-  # (~1.1C) per step, max ±4F from default - i.e. only 2 real steps in each
-  # direction, each closer to 1.1C than the flat 1C this entity's own
-  # -2/-1/0/+1/+2 °C option labels imply. The total range these labels claim
-  # (±2C) is coincidentally close to the machine's real total range (±4F ≈
-  # ±2.2C), but the per-step labels are off by a small, consistent amount.
+  # What the ballparks give cleanly regardless of machine is *relative*
+  # spacing: dark ~2-2.5C below medium, light ~2-2.5C above. Mapped onto
+  # temperature_offset_c's discrete ±2-step scale, this uses only 1 step
+  # each way (not the full 2) - a conservative choice given the uncertainty
+  # in that mapping. (The Barista Express's real per-step adjustment is
+  # ±2F/~1.1C, not the flat 1C the -2..+2°C labels imply - close enough in
+  # total range, off by a small consistent amount per step.)
   roast_level_temperature_prior:
     dark: -1
     medium: 0
     light: 1
 
   # --- Phase 5/6: roast_level_dose_prior ---------------------------------------
-  # Same scope/consumer as roast_level_ratio_prior above (runtime.py's
-  # async_new_bag, only for a brand-new bag in an empty slot) - seeds dose_g.
-  # Blended toward this installation's own accumulated dose for the same
-  # roast_level the same way (docs/DESIGN.md §19),
-  # sharing one aggregate with roast_level_ratio_prior/expected_flow_g_s
-  # above rather than an independent lookup.
+  # Same scope as roast_level_ratio_prior above - seeds dose_g, sharing one
+  # aggregate with it/expected_flow_g_s (DESIGN.md §19).
   #
-  # Sourced from Hoffmann's Dose episode: "generally speaking the darker the
-  # roast of a coffee the less work you need to do to extract it... I would
-  # recommend with lighter roasts go for a lower dose." This gives explicit
-  # direction only for light roasts - dark/medium are left at today's flat
-  # default (18.0, defaults.recipe.dose_g) since the quote doesn't say dark
-  # should move either way. light's -2.0g step mirrors the same conservative
-  # single-step magnitude roast_level_temperature_prior already uses above,
-  # for the same reason: real uncertainty in translating a qualitative
-  # direction into a specific number. A placeholder anchor, not a validated
-  # rule - keep it loose, same caution as roast_level_ratio_prior's own
-  # comment above.
+  # Hoffmann's Dose episode: "the darker the roast... the less work you
+  # need to do to extract it... with lighter roasts go for a lower dose" -
+  # explicit direction for light only, so dark/medium stay at today's flat
+  # default (18.0). light's -2.0g mirrors roast_level_temperature_prior's
+  # own conservative single-step magnitude. A placeholder, not a validated
+  # rule.
   #
-  # medium's own flat 18.0 now has one real data point worth flagging, not
-  # yet acted on: Hoffmann's "How I Dial-In Espresso - Episode 2" picks a
-  # dose specifically *for* a medium roast, reasoning "very light roasted
-  # coffees you'd probably want to start with a lower dose, very dark
-  # roasted coffees [I'd] lean towards a much higher dose... so this, so in
-  # the middle I'm gonna start with a nineteen gram dose" (~1:38-2:06) - a
-  # deliberate middle-of-the-range pick, not a flat default carried over
-  # from elsewhere. One video's single worked example isn't enough on its
-  # own to move medium off 18.0 (same one-source caution as everywhere else
-  # in this file) - left here as a concrete data point for whenever this
-  # prior gets revisited with more than one source to check it against.
+  # medium's flat 18.0 has one real data point not yet acted on: Hoffmann's
+  # "How I Dial-In Espresso - Episode 2" picks 19g deliberately for a
+  # medium roast ("in the middle I'm gonna start with a nineteen gram
+  # dose", ~1:38-2:06) - one video's example isn't enough alone to move
+  # medium off 18.0, left here for whenever this prior gets more sources to
+  # check against.
   roast_level_dose_prior:
     dark: 18.0
     medium: 18.0
     light: 17.0
-
-entities:
-  sensor:
-    status:
-      source: runtime
-      field: status
-      translation_key: status
-      token: __STATUS__
-      attributes: [scale_connected, selected_slot, early_stop_margin_min_g, early_stop_margin_max_g, shot_plot, shot_markers]
-
-    stop_latency_normal:
-      source: controller
-      field: stop_latency_normal_s
-      translation_key: stop_latency_normal
-      token: __STOP_LATENCY_NORMAL__
-      unit: s
-      precision: 2
-
-    stop_latency_elevated:
-      source: controller
-      field: stop_latency_elevated_s
-      translation_key: stop_latency_elevated
-      token: __STOP_LATENCY_ELEVATED__
-      unit: s
-      precision: 2
-
-    scale_weight:
-      source: scale
-      field: weight_g
-      translation_key: scale_weight
-      unit: g
-      device_class: weight
-      state_class: measurement
-      precision: 1
-      requires_scale: true
-
-    scale_battery:
-      source: scale
-      field: battery_percent
-      translation_key: scale_battery
-      token: __SCALE_BATTERY__
-      unit: "%"
-      device_class: battery
-      state_class: measurement
-      requires_scale: true
-
-    active_bag:
-      source: bag
-      field: coffee_name
-      translation_key: active_bag
-      token: __ACTIVE_BAG__
-      attributes:
-        - slot
-        - bag_id
-        - roaster
-        - roast_date
-        - roast_level
-        - opened_at
-        - dose_g
-        - grind
-        - target_yield_g
-        - temperature_offset_c
-        - preinfusion_s
-        - remaining_g
-
-    last_yield:
-      source: last_shot
-      field: actual_yield_g
-      translation_key: last_yield
-      token: __LAST_YIELD__
-      unit: g
-      device_class: weight
-      precision: 1
-
-    shot_classification:
-      source: last_shot
-      field: classification
-      translation_key: shot_classification
-      token: __SHOT_CLASSIFICATION__
-
-    shot_channeling_suspicion:
-      source: last_shot
-      field: channeling_suspicion
-      translation_key: shot_channeling_suspicion
-      token: __SHOT_CHANNELING_SUSPICION__
-      state_class: measurement
-      precision: 2
-
-    recommended_grind:
-      # Phase 4 (docs/DESIGN.md section 28) - a human-readable "current
-      # setting -> recommended setting" note (e.g. "15.0 -> 14.0"), computed
-      # in BaristaRuntime.entity_value from the last shot's own recorded
-      # grind setting (shots.grind - the value that shot actually ran at,
-      # not whatever the bag's live grind happens to be now if it's since
-      # been changed for an unrelated reason) plus grind_correction.py's
-      # recommend_grind_delta() output (persisted as shots.
-      # recommended_grind_delta - see storage.finalize_shot). None/
-      # unavailable when the last shot wasn't a grind-correction candidate
-      # (healthy, or excluded as puck_prep_issue/invalid_measurement) -
-      # that's a real "no recommendation" state, not a fault. field is a
-      # virtual name (not a real shots column) that entity_value
-      # special-cases, the same way source: bag's remaining_g does.
-      source: last_shot
-      field: recommended_grind_note
-      translation_key: recommended_grind
-      token: __RECOMMENDED_GRIND__
-
-    recommended_flavor:
-      # Phase 5 (docs/DESIGN.md section 13) - a human-readable "current
-      # setting -> recommended setting" note per axis (e.g. "Target yield:
-      # 36.0 -> 40.0 (persistent sour_sharp)"), computed in
-      # BaristaRuntime.entity_value from the selected bag's own recent,
-      # answered taste-feedback tags (storage.recent_flavor_tags) plus
-      # flavor_correction.py's resolve_flavor_state() output. Both
-      # axes (extraction, mouthfeel) are checked independently and joined
-      # with "; " when both currently have a recommendation. None/
-      # unavailable when neither axis currently has one - that's
-      # a real "no recommendation" state, not a fault. field is a virtual
-      # name (not a real bag column) that entity_value special-cases, the
-      # same way source: bag's remaining_g/recommended_grind_note do.
-      source: bag
-      field: recommended_flavor_note
-      translation_key: recommended_flavor
-      token: __RECOMMENDED_FLAVOR__
-      requires_bag: true
-
-    flow_rate:
-      source: scale
-      field: flow_g_s
-      translation_key: flow_rate
-      unit: g/s
-      state_class: measurement
-      precision: 2
-      requires_scale: true
-
-    beans_remaining:
-      source: bag
-      field: remaining_g
-      translation_key: beans_remaining
-      token: __BEANS_REMAINING__
-      unit: g
-      device_class: weight
-      precision: 0
-      requires_bag: true
-
-    # Display-only counterpart to the other grind bands' dashboard-editable
-    # grind_band_*_delta number entities below - healthy's own grind_delta
-    # is a fixed, non-editable 0.0 (see that band's own comment under
-    # expert_rules.grind_correction), so this is a read-only sensor rather
-    # than a number, always showing "0".
-    grind_band_healthy_delta:
-      source: runtime
-      field: grind_band_healthy_delta_label
-      translation_key: grind_band_healthy_delta
-      token: __GRIND_BAND_HEALTHY_DELTA__
-
-  number:
-    dose:
-      source: bag
-      field: dose_g
-      translation_key: dose
-      token: __DOSE__
-      min: 15.0
-      max: 22.0
-      step: 0.5
-      unit: g
-      mode: box
-      requires_bag: true
-      # "recommended" (e.g. "18.0 -> 18.5") is a virtual attribute
-      # (BaristaRuntime.entity_attributes special-cases it, the same way
-      # source: bag's remaining_g/bag_id do) - flavor_correction's
-      # persistent-pattern recommendation for this field, if any. Shown as
-      # a decoration on this same tile via dashboard.yaml's
-      # state_content: [state, recommended], not a separate card.
-      attributes: [recommended]
-
-    grind:
-      source: bag
-      field: grind
-      translation_key: grind
-      token: __GRIND__
-      min: 0.0
-      max: 100.0
-      step: 0.5
-      mode: box
-      requires_bag: true
-      # Phase 4's grind_correction recommendation for the last shot (docs/
-      # DESIGN.md section 28) - see dose's own "recommended" comment above
-      # for the general mechanism; this one comes from the last completed
-      # shot rather than flavor_correction's bag-level tags.
-      attributes: [recommended]
-
-    target_yield:
-      source: bag
-      field: target_yield_g
-      translation_key: target_yield
-      token: __TARGET_YIELD__
-      attributes: [recommended]
-      min: 15.0
-      max: 80.0
-      # A UI increment only (runtime._validate_recipe_field only checks
-      # min/max, not step alignment - any value in range is accepted, not
-      # just multiples of this) - 2.5g matches Hoffmann's original 2-3g
-      # ceiling for a yield fine-tune (docs/DESIGN.md section 6.3). The
-      # wider 5g figure is expert_rules.flavor_correction.tags.sour_sharp's
-      # own delta_g, a separate value from this UI increment.
-      step: 2.5
-      unit: g
-      mode: box
-      requires_bag: true
-
-    preinfusion:
-      source: bag
-      field: preinfusion_s
-      translation_key: preinfusion
-      token: __PREINFUSION__
-      min: 1
-      max: 20
-      step: 1
-      unit: s
-      mode: box
-      requires_bag: true
-
-    early_stop_margin_min:
-      source: controller
-      field: early_stop_margin_min_g
-      translation_key: early_stop_margin_min
-      token: __EARLY_STOP_MARGIN_MIN__
-      min: 0.0
-      max: 15.0
-      step: 0.1
-      unit: g
-      mode: box
-
-    early_stop_margin_max:
-      source: controller
-      field: early_stop_margin_max_g
-      translation_key: early_stop_margin_max
-      token: __EARLY_STOP_MARGIN_MAX__
-      min: 2.0
-      max: 60.0
-      step: 0.5
-      unit: g
-      mode: box
-
-    machine_max_shot_seconds:
-      source: controller
-      field: machine_max_shot_s
-      translation_key: machine_max_shot_seconds
-      token: __MACHINE_MAX_SHOT_SECONDS__
-      min: 20
-      max: 120
-      step: 1
-      unit: s
-      mode: box
-
-    safety_margin_seconds:
-      source: controller
-      field: safety_margin_s
-      translation_key: safety_margin_seconds
-      token: __SAFETY_MARGIN_SECONDS__
-      min: 1
-      max: 10
-      step: 0.5
-      unit: s
-      mode: box
-
-    machine_pi_seconds:
-      source: controller
-      field: machine_pi_s
-      translation_key: machine_pi_seconds
-      token: __MACHINE_PI_SECONDS__
-      min: 1
-      max: 20
-      step: 0.5
-      unit: s
-      mode: box
-
-    new_bag_starting_mass:
-      source: draft
-      field: starting_mass_g
-      translation_key: new_bag_starting_mass
-      token: __NEW_BAG_STARTING_MASS__
-      min: 50.0
-      max: 2000.0
-      step: 10.0
-      unit: g
-      mode: box
-
-    min_step_target_yield:
-      source: controller
-      field: min_step_target_yield_g
-      translation_key: min_step_target_yield
-      token: __MIN_STEP_TARGET_YIELD__
-      min: 0.5
-      max: 10.0
-      step: 0.5
-      unit: g
-      mode: box
-
-    min_step_dose:
-      source: controller
-      field: min_step_dose_g
-      translation_key: min_step_dose
-      token: __MIN_STEP_DOSE__
-      min: 0.1
-      max: 5.0
-      step: 0.1
-      unit: g
-      mode: box
-
-    min_step_temperature_offset:
-      source: controller
-      field: min_step_temperature_offset_c
-      translation_key: min_step_temperature_offset
-      token: __MIN_STEP_TEMPERATURE_OFFSET__
-      min: 1
-      max: 4
-      step: 1
-      unit: "°C"
-      mode: box
-
-    # --- Grind correction bands (expert_rules.grind_correction.bands) -------
-    # duration_ratio_max fields are each band's upper edge (see that key's
-    # own comment above); grind_delta fields are the DF54 correction each
-    # band recommends. grossly_restrictive has no max (always the
-    # catch-all last band) and healthy's grind_delta stays fixed at 0.0
-    # (recommend_grind_delta's overshoot-damping step locates "no
-    # correction needed" by that value) - neither is dashboard-editable.
-    grind_band_grossly_fast_max:
-      source: controller
-      field: grind_band_grossly_fast_max
-      translation_key: grind_band_grossly_fast_max
-      token: __GRIND_BAND_GROSSLY_FAST_MAX__
-      min: 0.3
-      max: 2.0
-      step: 0.01
-      mode: box
-
-    grind_band_grossly_fast_delta:
-      source: controller
-      field: grind_band_grossly_fast_delta
-      translation_key: grind_band_grossly_fast_delta
-      token: __GRIND_BAND_GROSSLY_FAST_DELTA__
-      min: -5.0
-      max: 5.0
-      step: 0.1
-      mode: box
-
-    grind_band_moderately_fast_max:
-      source: controller
-      field: grind_band_moderately_fast_max
-      translation_key: grind_band_moderately_fast_max
-      token: __GRIND_BAND_MODERATELY_FAST_MAX__
-      min: 0.3
-      max: 2.0
-      step: 0.01
-      mode: box
-
-    grind_band_moderately_fast_delta:
-      source: controller
-      field: grind_band_moderately_fast_delta
-      translation_key: grind_band_moderately_fast_delta
-      token: __GRIND_BAND_MODERATELY_FAST_DELTA__
-      min: -5.0
-      max: 5.0
-      step: 0.1
-      mode: box
-
-    grind_band_slightly_fast_max:
-      source: controller
-      field: grind_band_slightly_fast_max
-      translation_key: grind_band_slightly_fast_max
-      token: __GRIND_BAND_SLIGHTLY_FAST_MAX__
-      min: 0.3
-      max: 2.0
-      step: 0.01
-      mode: box
-
-    grind_band_slightly_fast_delta:
-      source: controller
-      field: grind_band_slightly_fast_delta
-      translation_key: grind_band_slightly_fast_delta
-      token: __GRIND_BAND_SLIGHTLY_FAST_DELTA__
-      min: -5.0
-      max: 5.0
-      step: 0.1
-      mode: box
-
-    grind_band_healthy_max:
-      source: controller
-      field: grind_band_healthy_max
-      translation_key: grind_band_healthy_max
-      token: __GRIND_BAND_HEALTHY_MAX__
-      min: 0.3
-      max: 2.0
-      step: 0.01
-      mode: box
-
-    grind_band_slightly_restrictive_max:
-      source: controller
-      field: grind_band_slightly_restrictive_max
-      translation_key: grind_band_slightly_restrictive_max
-      token: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__
-      min: 0.3
-      max: 2.0
-      step: 0.01
-      mode: box
-
-    grind_band_slightly_restrictive_delta:
-      source: controller
-      field: grind_band_slightly_restrictive_delta
-      translation_key: grind_band_slightly_restrictive_delta
-      token: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_DELTA__
-      min: -5.0
-      max: 5.0
-      step: 0.1
-      mode: box
-
-    grind_band_moderately_restrictive_max:
-      source: controller
-      field: grind_band_moderately_restrictive_max
-      translation_key: grind_band_moderately_restrictive_max
-      token: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
-      min: 0.3
-      max: 2.0
-      step: 0.01
-      mode: box
-
-    grind_band_moderately_restrictive_delta:
-      source: controller
-      field: grind_band_moderately_restrictive_delta
-      translation_key: grind_band_moderately_restrictive_delta
-      token: __GRIND_BAND_MODERATELY_RESTRICTIVE_DELTA__
-      min: -5.0
-      max: 5.0
-      step: 0.1
-      mode: box
-
-    grind_band_grossly_restrictive_delta:
-      source: controller
-      field: grind_band_grossly_restrictive_delta
-      translation_key: grind_band_grossly_restrictive_delta
-      token: __GRIND_BAND_GROSSLY_RESTRICTIVE_DELTA__
-      min: -5.0
-      max: 5.0
-      step: 0.1
-      mode: box
-
-  select:
-    bean_slot:
-      source: controller
-      field: selected_slot
-      translation_key: bean_slot
-      token: __BEAN_SLOT__
-      options:
-        - label: Normal
-          value: normal
-        - label: Decaf
-          value: decaf
-
-    temperature_offset:
-      source: bag
-      field: temperature_offset_c
-      translation_key: temperature_offset
-      token: __TEMPERATURE__
-      requires_bag: true
-      attributes: [recommended]
-      options:
-        - label: "-2 °C"
-          value: -2
-        - label: "-1 °C"
-          value: -1
-        - label: "0 °C"
-          value: 0
-        - label: "+1 °C"
-          value: 1
-        - label: "+2 °C"
-          value: 2
-
-    new_bag_roast_level:
-      # Feeds expert_rules.roast_level_ratio_prior/roast_level_temperature_prior
-      # (see runtime.py's async_new_bag) - fallbacks used only when a
-      # brand-new bag is opened in a slot with no existing bag to inherit
-      # target_yield_g/temperature_offset_c from. "Not specified" means
-      # both fallbacks are skipped, same as leaving new_bag_roaster/
-      # new_bag_roast_date blank - it's just no longer this field's own
-      # default (see BagDraft.roast_level's own comment for why "medium" is).
-      source: draft
-      field: roast_level
-      translation_key: new_bag_roast_level
-      token: __NEW_BAG_ROAST_LEVEL__
-      options:
-        - label: Not specified
-          value: ""
-        - label: Dark
-          value: dark
-        - label: Medium
-          value: medium
-        - label: Light
-          value: light
-
-  switch:
-    adapt_pi:
-      source: controller
-      field: adapt_pi
-      translation_key: adapt_pi
-      token: __ADAPT_PI__
-
-  text:
-    new_bag_coffee:
-      source: draft
-      field: coffee
-      translation_key: new_bag_coffee
-      token: __NEW_BAG_COFFEE__
-      min: 0
-      max: 120
-      mode: text
-
-    new_bag_roaster:
-      source: draft
-      field: roaster
-      translation_key: new_bag_roaster
-      token: __NEW_BAG_ROASTER__
-      min: 0
-      max: 120
-      mode: text
-
-  date:
-    new_bag_roast_date:
-      source: draft
-      field: roast_date
-      translation_key: new_bag_roast_date
-      token: __NEW_BAG_ROAST_DATE__
-
-  button:
-    brew:
-      action: brew
-      translation_key: brew
-      token: __BREW__
-      requires_bag: true
-      requires_scale: true
-      requires_no_active_shot: true
-
-    abort:
-      action: abort
-      translation_key: abort
-      token: __ABORT__
-      requires_active_shot: true
-      requires_scale: true
-
-    tare:
-      action: tare
-      translation_key: tare
-      token: __TARE__
-      requires_scale: true
-
-    create_bag:
-      action: create_bag
-      translation_key: create_bag
-      token: __CREATE_BAG__

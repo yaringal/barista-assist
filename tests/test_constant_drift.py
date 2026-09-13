@@ -118,6 +118,7 @@ class StopLatencyBucketDriftReport(unittest.TestCase):
     """See module docstring - this never fails the suite, it only reports."""
 
     def test_report_bucket_cutoff_against_real_fixtures(self) -> None:
+        calibration = definitions.load_definitions().stop_latency_calibration
         fixture_paths = sorted(FIXTURES_DIR.glob("*.txt"))
         pairs = []
         for path in fixture_paths:
@@ -125,12 +126,16 @@ class StopLatencyBucketDriftReport(unittest.TestCase):
             if shot.stop_command_elapsed_ms is None or shot.actual_yield_g is None:
                 continue
             result = runtime_module.BaristaRuntime._observed_stop_latency(
-                shot.samples, shot.stop_command_elapsed_ms, shot.actual_yield_g
+                shot.samples,
+                shot.stop_command_elapsed_ms,
+                shot.actual_yield_g,
+                window_ms=CONFIG.smoothing_window_ms,
+                min_flow_g_s=calibration["min_flow_for_learning_g_s"],
             )
             if result is not None:
                 pairs.append(result)
 
-        cutoff = runtime_module._STOP_LATENCY_BUCKET_CUTOFF_G_S
+        cutoff = calibration["bucket_cutoff_g_s"]
         normal = sorted(flow for flow, _latency in pairs if flow < cutoff)
         elevated = sorted(flow for flow, _latency in pairs if flow >= cutoff)
 

@@ -110,6 +110,9 @@ class FlowAnalysisConfig:
     disturbance_sustain_ms: int
     leading_garbage_threshold_g: float
     stale_scale_clock_threshold_ms: int
+    baseline_deviation_floor_g_s2: float
+    baseline_deviation_scale: float
+    near_zero_final_weight_threshold_g: float
 
 
 class ShotClassification(str, Enum):
@@ -450,7 +453,9 @@ def _absolute_mechanical_suspicion(mid_accel: float, late_accel: float, config: 
     return min(1.0, worst / config.absolute_accel_limit_g_s2)  # 0 = flat/declining, 1.0 = at-or-past the limit
 
 
-def _baseline_deviation_suspicion(late_accel: float, baseline: BaselineFeatures) -> float:
+def _baseline_deviation_suspicion(
+    late_accel: float, baseline: BaselineFeatures, config: FlowAnalysisConfig
+) -> float:
     """Only a rise above this bag's own normal late-shot flow is concerning -
     the same "rising flow only" rule _absolute_mechanical_suspicion uses.
     An unusually low/declining late_accel is not a channeling signal.
@@ -462,9 +467,9 @@ def _baseline_deviation_suspicion(late_accel: float, baseline: BaselineFeatures)
     not yet built: widen sensitivity as shot_count grows (smaller deviations
     start counting) rather than moving the floor itself.
     """
-    reference = max(abs(baseline.median_late_accel), 0.1)
+    reference = max(abs(baseline.median_late_accel), config.baseline_deviation_floor_g_s2)
     rise_above_baseline = max(late_accel - baseline.median_late_accel, 0.0)
-    return min(1.0, rise_above_baseline / (reference * 3.0))
+    return min(1.0, rise_above_baseline / (reference * config.baseline_deviation_scale))
 
 
 # --- Early-exit construction, used throughout analyze_shot below -----------
@@ -571,7 +576,7 @@ def analyze_shot(
         )
         return _invalid(reason)
 
-    if times_ms[-1] <= 0 or raw_weights[-1] < 1.0:
+    if times_ms[-1] <= 0 or raw_weights[-1] < config.near_zero_final_weight_threshold_g:
         return _invalid(InvalidReason.NON_POSITIVE_DURATION if times_ms[-1] <= 0 else InvalidReason.NEAR_ZERO_FINAL_WEIGHT)
 
     smoothed = _moving_average(times_ms, raw_weights, config.smoothing_window_ms)
@@ -638,7 +643,7 @@ def analyze_shot(
 
     absolute_score = _absolute_mechanical_suspicion(mid_accel, late_accel, config)
     baseline_score = (
-        _baseline_deviation_suspicion(late_accel, baseline)
+        _baseline_deviation_suspicion(late_accel, baseline, config)
         if baseline is not None and baseline.shot_count >= config.min_baseline_shots
         else 0.0
     )

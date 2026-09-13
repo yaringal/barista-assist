@@ -70,20 +70,6 @@ _LEVER_TO_FIELD = {
     "preinfusion": "preinfusion_s",
 }
 
-# How much smaller each overshoot correction is than the step that caused
-# it - a project-level implementation choice, not sourced from any
-# transcript (the sourced evidence only says "smaller," not "half").
-# grind_correction's own overshoot damping (docs/DESIGN.md's Phase 4)
-# encodes the same evidence as a discrete "one band-tier back" instead,
-# for a different reason (grinders themselves aren't uniform, so its
-# corrections have to be relative positions on a per-grinder ladder) -
-# yield/dose/temperature are universal physical units, so a continuous
-# halving is the simpler analog here. Both ratios should be checked
-# against real accumulated shot fixtures once there's enough data, per
-# this project's standing rule against inventing tuned constants without
-# validating them.
-_DAMPING_RATIO = 0.5
-
 
 def _lever_for(tag_config: dict[str, Any], stage: str) -> str | None:
     """Which lever `tag_config` uses at `stage`, or None if it has no
@@ -219,7 +205,7 @@ def resolve_flavor_state(history: list[str], config: dict[str, Any]) -> dict[str
         # since they're two labels for the same physical lever), not
         # re-derived from the newly-reported tag's own nominal step.
         active_tag = response
-        damped_step = step * _DAMPING_RATIO
+        damped_step = step * config["overshoot_damping_ratio"]
         floor = config["minimum_meaningful_step"][_LEVER_TO_FIELD[_lever_for(tags[active_tag], stage)]]
         if damped_step >= floor:
             step = damped_step

@@ -1,0 +1,538 @@
+# Barista Assist's Home Assistant entities - which dashboard control each
+# one is and which runtime attribute it reads/writes. Tuning constants live
+# in definitions.yaml (see its header); a number/select entity's
+# min/max/step/options here still double as real validation bounds and,
+# for controller-sourced fields, live algorithm parameters (runtime_bag.py's
+# _validate_recipe_field, runtime_entities.py's _grind_correction_config/
+# _flavor_correction_config) - they stay with the entity since they only
+# ever exist as part of it.
+sensor:
+  status:
+    source: runtime
+    field: status
+    translation_key: status
+    token: __STATUS__
+    attributes: [scale_connected, selected_slot, early_stop_margin_min_g, early_stop_margin_max_g, shot_plot, shot_markers]
+
+  stop_latency_normal:
+    source: controller
+    field: stop_latency_normal_s
+    translation_key: stop_latency_normal
+    token: __STOP_LATENCY_NORMAL__
+    unit: s
+    precision: 2
+
+  stop_latency_elevated:
+    source: controller
+    field: stop_latency_elevated_s
+    translation_key: stop_latency_elevated
+    token: __STOP_LATENCY_ELEVATED__
+    unit: s
+    precision: 2
+
+  scale_weight:
+    source: scale
+    field: weight_g
+    translation_key: scale_weight
+    unit: g
+    device_class: weight
+    state_class: measurement
+    precision: 1
+    requires_scale: true
+
+  scale_battery:
+    source: scale
+    field: battery_percent
+    translation_key: scale_battery
+    token: __SCALE_BATTERY__
+    unit: "%"
+    device_class: battery
+    state_class: measurement
+    requires_scale: true
+
+  active_bag:
+    source: bag
+    field: coffee_name
+    translation_key: active_bag
+    token: __ACTIVE_BAG__
+    attributes:
+      - slot
+      - bag_id
+      - roaster
+      - roast_date
+      - roast_level
+      - opened_at
+      - dose_g
+      - grind
+      - target_yield_g
+      - temperature_offset_c
+      - preinfusion_s
+      - remaining_g
+
+  last_yield:
+    source: last_shot
+    field: actual_yield_g
+    translation_key: last_yield
+    token: __LAST_YIELD__
+    unit: g
+    device_class: weight
+    precision: 1
+
+  shot_classification:
+    source: last_shot
+    field: classification
+    translation_key: shot_classification
+    token: __SHOT_CLASSIFICATION__
+
+  shot_channeling_suspicion:
+    source: last_shot
+    field: channeling_suspicion
+    translation_key: shot_channeling_suspicion
+    token: __SHOT_CHANNELING_SUSPICION__
+    state_class: measurement
+    precision: 2
+
+  recommended_grind:
+    # Phase 4 (DESIGN.md §28) - "current -> recommended" grind note (e.g.
+    # "15.0 -> 14.0"), from the last shot's own recorded grind +
+    # grind_correction.py's recommend_grind_delta() output. None when that
+    # shot had no grind recommendation (healthy, or excluded). field is a
+    # virtual name entity_value special-cases, same as source: bag's
+    # remaining_g.
+    source: last_shot
+    field: recommended_grind_note
+    translation_key: recommended_grind
+    token: __RECOMMENDED_GRIND__
+
+  recommended_flavor:
+    # Phase 5 (DESIGN.md §13) - "current -> recommended" note per axis
+    # (e.g. "Target yield: 36.0 -> 40.0 (Sour / Sharp)"), from the bag's
+    # recent taste-feedback tags + flavor_correction.py's
+    # resolve_flavor_state(). Extraction/mouthfeel are joined with "; "
+    # when both have a recommendation; None when neither does. field is a
+    # virtual name entity_value special-cases, same as source: bag's
+    # remaining_g/recommended_grind_note.
+    source: bag
+    field: recommended_flavor_note
+    translation_key: recommended_flavor
+    token: __RECOMMENDED_FLAVOR__
+    requires_bag: true
+
+  flow_rate:
+    source: scale
+    field: flow_g_s
+    translation_key: flow_rate
+    unit: g/s
+    state_class: measurement
+    precision: 2
+    requires_scale: true
+
+  beans_remaining:
+    source: bag
+    field: remaining_g
+    translation_key: beans_remaining
+    token: __BEANS_REMAINING__
+    unit: g
+    device_class: weight
+    precision: 0
+    requires_bag: true
+
+  # healthy's grind_delta is a fixed, non-editable 0.0 (expert_rules.
+  # grind_correction) - a read-only sensor rather than a number, always "0".
+  grind_band_healthy_delta:
+    source: runtime
+    field: grind_band_healthy_delta_label
+    translation_key: grind_band_healthy_delta
+    token: __GRIND_BAND_HEALTHY_DELTA__
+
+number:
+  dose:
+    source: bag
+    field: dose_g
+    translation_key: dose
+    token: __DOSE__
+    min: 15.0
+    max: 22.0
+    step: 0.5
+    unit: g
+    mode: box
+    requires_bag: true
+    # "recommended" (e.g. "18.0 -> 18.5") is a virtual attribute
+    # (entity_attributes special-cases it) - flavor_correction's
+    # recommendation for this field, if any. Shown via dashboard.yaml's
+    # state_content: [state, recommended].
+    attributes: [recommended]
+
+  grind:
+    source: bag
+    field: grind
+    translation_key: grind
+    token: __GRIND__
+    min: 0.0
+    max: 100.0
+    step: 0.5
+    mode: box
+    requires_bag: true
+    # Same mechanism as dose's "recommended" above, but from Phase 4's
+    # grind_correction (last shot), not flavor_correction's bag tags.
+    attributes: [recommended]
+
+  target_yield:
+    source: bag
+    field: target_yield_g
+    translation_key: target_yield
+    token: __TARGET_YIELD__
+    attributes: [recommended]
+    min: 15.0
+    max: 80.0
+    # UI increment only (_validate_recipe_field checks min/max, not step
+    # alignment) - matches Hoffmann's 2-3g yield-finetune ceiling (DESIGN.md
+    # §6.3), distinct from sour_sharp's own 5g delta_g.
+    step: 2.5
+    unit: g
+    mode: box
+    requires_bag: true
+
+  preinfusion:
+    source: bag
+    field: preinfusion_s
+    translation_key: preinfusion
+    token: __PREINFUSION__
+    min: 1
+    max: 20
+    step: 1
+    unit: s
+    mode: box
+    requires_bag: true
+
+  early_stop_margin_min:
+    source: controller
+    field: early_stop_margin_min_g
+    translation_key: early_stop_margin_min
+    token: __EARLY_STOP_MARGIN_MIN__
+    min: 0.0
+    max: 15.0
+    step: 0.1
+    unit: g
+    mode: box
+
+  early_stop_margin_max:
+    source: controller
+    field: early_stop_margin_max_g
+    translation_key: early_stop_margin_max
+    token: __EARLY_STOP_MARGIN_MAX__
+    min: 2.0
+    max: 60.0
+    step: 0.5
+    unit: g
+    mode: box
+
+  machine_max_shot_seconds:
+    source: controller
+    field: machine_max_shot_s
+    translation_key: machine_max_shot_seconds
+    token: __MACHINE_MAX_SHOT_SECONDS__
+    min: 20
+    max: 120
+    step: 1
+    unit: s
+    mode: box
+
+  safety_margin_seconds:
+    source: controller
+    field: safety_margin_s
+    translation_key: safety_margin_seconds
+    token: __SAFETY_MARGIN_SECONDS__
+    min: 1
+    max: 10
+    step: 0.5
+    unit: s
+    mode: box
+
+  machine_pi_seconds:
+    source: controller
+    field: machine_pi_s
+    translation_key: machine_pi_seconds
+    token: __MACHINE_PI_SECONDS__
+    min: 1
+    max: 20
+    step: 0.5
+    unit: s
+    mode: box
+
+  new_bag_starting_mass:
+    source: draft
+    field: starting_mass_g
+    translation_key: new_bag_starting_mass
+    token: __NEW_BAG_STARTING_MASS__
+    min: 50.0
+    max: 2000.0
+    step: 10.0
+    unit: g
+    mode: box
+
+  min_step_target_yield:
+    source: controller
+    field: min_step_target_yield_g
+    translation_key: min_step_target_yield
+    token: __MIN_STEP_TARGET_YIELD__
+    min: 0.5
+    max: 10.0
+    step: 0.5
+    unit: g
+    mode: box
+
+  min_step_dose:
+    source: controller
+    field: min_step_dose_g
+    translation_key: min_step_dose
+    token: __MIN_STEP_DOSE__
+    min: 0.1
+    max: 5.0
+    step: 0.1
+    unit: g
+    mode: box
+
+  min_step_temperature_offset:
+    source: controller
+    field: min_step_temperature_offset_c
+    translation_key: min_step_temperature_offset
+    token: __MIN_STEP_TEMPERATURE_OFFSET__
+    min: 1
+    max: 4
+    step: 1
+    unit: "°C"
+    mode: box
+
+  # --- Grind correction bands (expert_rules.grind_correction.bands) -------
+  # *_max fields are each band's upper edge; *_delta is its DF54
+  # correction. grossly_restrictive has no max (catch-all last band) and
+  # healthy's delta stays fixed at 0.0 - neither is dashboard-editable.
+  grind_band_grossly_fast_max:
+    source: controller
+    field: grind_band_grossly_fast_max
+    translation_key: grind_band_grossly_fast_max
+    token: __GRIND_BAND_GROSSLY_FAST_MAX__
+    min: 0.3
+    max: 2.0
+    step: 0.01
+    mode: box
+
+  grind_band_grossly_fast_delta:
+    source: controller
+    field: grind_band_grossly_fast_delta
+    translation_key: grind_band_grossly_fast_delta
+    token: __GRIND_BAND_GROSSLY_FAST_DELTA__
+    min: -5.0
+    max: 5.0
+    step: 0.1
+    mode: box
+
+  grind_band_moderately_fast_max:
+    source: controller
+    field: grind_band_moderately_fast_max
+    translation_key: grind_band_moderately_fast_max
+    token: __GRIND_BAND_MODERATELY_FAST_MAX__
+    min: 0.3
+    max: 2.0
+    step: 0.01
+    mode: box
+
+  grind_band_moderately_fast_delta:
+    source: controller
+    field: grind_band_moderately_fast_delta
+    translation_key: grind_band_moderately_fast_delta
+    token: __GRIND_BAND_MODERATELY_FAST_DELTA__
+    min: -5.0
+    max: 5.0
+    step: 0.1
+    mode: box
+
+  grind_band_slightly_fast_max:
+    source: controller
+    field: grind_band_slightly_fast_max
+    translation_key: grind_band_slightly_fast_max
+    token: __GRIND_BAND_SLIGHTLY_FAST_MAX__
+    min: 0.3
+    max: 2.0
+    step: 0.01
+    mode: box
+
+  grind_band_slightly_fast_delta:
+    source: controller
+    field: grind_band_slightly_fast_delta
+    translation_key: grind_band_slightly_fast_delta
+    token: __GRIND_BAND_SLIGHTLY_FAST_DELTA__
+    min: -5.0
+    max: 5.0
+    step: 0.1
+    mode: box
+
+  grind_band_healthy_max:
+    source: controller
+    field: grind_band_healthy_max
+    translation_key: grind_band_healthy_max
+    token: __GRIND_BAND_HEALTHY_MAX__
+    min: 0.3
+    max: 2.0
+    step: 0.01
+    mode: box
+
+  grind_band_slightly_restrictive_max:
+    source: controller
+    field: grind_band_slightly_restrictive_max
+    translation_key: grind_band_slightly_restrictive_max
+    token: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__
+    min: 0.3
+    max: 2.0
+    step: 0.01
+    mode: box
+
+  grind_band_slightly_restrictive_delta:
+    source: controller
+    field: grind_band_slightly_restrictive_delta
+    translation_key: grind_band_slightly_restrictive_delta
+    token: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_DELTA__
+    min: -5.0
+    max: 5.0
+    step: 0.1
+    mode: box
+
+  grind_band_moderately_restrictive_max:
+    source: controller
+    field: grind_band_moderately_restrictive_max
+    translation_key: grind_band_moderately_restrictive_max
+    token: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
+    min: 0.3
+    max: 2.0
+    step: 0.01
+    mode: box
+
+  grind_band_moderately_restrictive_delta:
+    source: controller
+    field: grind_band_moderately_restrictive_delta
+    translation_key: grind_band_moderately_restrictive_delta
+    token: __GRIND_BAND_MODERATELY_RESTRICTIVE_DELTA__
+    min: -5.0
+    max: 5.0
+    step: 0.1
+    mode: box
+
+  grind_band_grossly_restrictive_delta:
+    source: controller
+    field: grind_band_grossly_restrictive_delta
+    translation_key: grind_band_grossly_restrictive_delta
+    token: __GRIND_BAND_GROSSLY_RESTRICTIVE_DELTA__
+    min: -5.0
+    max: 5.0
+    step: 0.1
+    mode: box
+
+select:
+  bean_slot:
+    source: controller
+    field: selected_slot
+    translation_key: bean_slot
+    token: __BEAN_SLOT__
+    options:
+      - label: Normal
+        value: normal
+      - label: Decaf
+        value: decaf
+
+  temperature_offset:
+    source: bag
+    field: temperature_offset_c
+    translation_key: temperature_offset
+    token: __TEMPERATURE__
+    requires_bag: true
+    attributes: [recommended]
+    options:
+      - label: "-2 °C"
+        value: -2
+      - label: "-1 °C"
+        value: -1
+      - label: "0 °C"
+        value: 0
+      - label: "+1 °C"
+        value: 1
+      - label: "+2 °C"
+        value: 2
+
+  new_bag_roast_level:
+    # Feeds expert_rules.roast_level_ratio_prior/temperature_prior
+    # (runtime_bag.py's async_new_bag) as a fallback for a brand-new bag
+    # with nothing to inherit from. "Not specified" skips both fallbacks.
+    source: draft
+    field: roast_level
+    translation_key: new_bag_roast_level
+    token: __NEW_BAG_ROAST_LEVEL__
+    options:
+      - label: Not specified
+        value: ""
+      - label: Dark
+        value: dark
+      - label: Medium
+        value: medium
+      - label: Light
+        value: light
+
+switch:
+  adapt_pi:
+    source: controller
+    field: adapt_pi
+    translation_key: adapt_pi
+    token: __ADAPT_PI__
+
+text:
+  new_bag_coffee:
+    source: draft
+    field: coffee
+    translation_key: new_bag_coffee
+    token: __NEW_BAG_COFFEE__
+    min: 0
+    max: 120
+    mode: text
+
+  new_bag_roaster:
+    source: draft
+    field: roaster
+    translation_key: new_bag_roaster
+    token: __NEW_BAG_ROASTER__
+    min: 0
+    max: 120
+    mode: text
+
+date:
+  new_bag_roast_date:
+    source: draft
+    field: roast_date
+    translation_key: new_bag_roast_date
+    token: __NEW_BAG_ROAST_DATE__
+
+button:
+  brew:
+    action: brew
+    translation_key: brew
+    token: __BREW__
+    requires_bag: true
+    requires_scale: true
+    requires_no_active_shot: true
+
+  abort:
+    action: abort
+    translation_key: abort
+    token: __ABORT__
+    requires_active_shot: true
+    requires_scale: true
+
+  tare:
+    action: tare
+    translation_key: tare
+    token: __TARE__
+    requires_scale: true
+
+  create_bag:
+    action: create_bag
+    translation_key: create_bag
+    token: __CREATE_BAG__

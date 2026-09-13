@@ -61,6 +61,7 @@ class Definitions:
     entities: dict[str, tuple[EntityDefinition, ...]] = field(default_factory=dict)
     expert_rules: dict[str, Any] = field(default_factory=dict)
     flow_analysis_constants: dict[str, Any] = field(default_factory=dict)
+    stop_latency_calibration: dict[str, Any] = field(default_factory=dict)
 
     def platform(self, platform: str) -> tuple[EntityDefinition, ...]:
         return self.entities.get(platform, ())
@@ -124,10 +125,14 @@ def _parse_entity(platform: str, key: str, raw: dict[str, Any]) -> EntityDefinit
     )
 
 
-def _parse_definitions(path: Path) -> Definitions:
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+def _parse_definitions(definitions_path: Path, entities_path: Path) -> Definitions:
+    raw = yaml.safe_load(definitions_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("definitions.yaml must contain a mapping")
+
+    entities_raw = yaml.safe_load(entities_path.read_text(encoding="utf-8"))
+    if not isinstance(entities_raw, dict):
+        raise ValueError("entities.yaml must contain a mapping")
 
     slots = tuple(raw.get("slots", ()))
     if not slots or len(slots) != len(set(slots)):
@@ -135,7 +140,7 @@ def _parse_definitions(path: Path) -> Definitions:
 
     entities: dict[str, tuple[EntityDefinition, ...]] = {}
     seen_tokens: set[str] = set()
-    for platform, raw_entities in raw.get("entities", {}).items():
+    for platform, raw_entities in entities_raw.items():
         parsed: list[EntityDefinition] = []
         for key, entity_raw in raw_entities.items():
             definition = _parse_entity(platform, key, entity_raw)
@@ -185,6 +190,7 @@ def _parse_definitions(path: Path) -> Definitions:
         entities=entities,
         expert_rules=raw.get("expert_rules", {}),
         flow_analysis_constants=raw.get("flow_analysis_constants", {}),
+        stop_latency_calibration=raw.get("stop_latency_calibration", {}),
     )
 
 
@@ -192,15 +198,16 @@ _definitions_cache: dict[str, Any] = {"mtime": None, "data": None}
 
 
 def load_definitions() -> Definitions:
-    """Load package definitions, re-parsing whenever definitions.yaml changes
-    on disk rather than only once per process - so a HACS update (or, during
-    development, an edit) takes effect on the next call instead of needing a
-    full Home Assistant restart."""
-    path = Path(__file__).with_name("definitions.yaml")
-    mtime = path.stat().st_mtime
-    if _definitions_cache["mtime"] != mtime:
-        _definitions_cache["data"] = _parse_definitions(path)
-        _definitions_cache["mtime"] = mtime
+    """Load package definitions, re-parsing whenever definitions.yaml or
+    entities.yaml changes on disk rather than only once per process - so a
+    HACS update (or, during development, an edit) takes effect on the next
+    call instead of needing a full Home Assistant restart."""
+    definitions_path = Path(__file__).with_name("definitions.yaml")
+    entities_path = Path(__file__).with_name("entities.yaml")
+    mtimes = (definitions_path.stat().st_mtime, entities_path.stat().st_mtime)
+    if _definitions_cache["mtime"] != mtimes:
+        _definitions_cache["data"] = _parse_definitions(definitions_path, entities_path)
+        _definitions_cache["mtime"] = mtimes
     return _definitions_cache["data"]
 
 

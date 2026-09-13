@@ -50,21 +50,11 @@ from .runtime_shared import (
     _GRIND_BAND_MAX_FIELDS,
     _recipe_snapshot,
 )
-from .runtime_shot import RuntimeShotMixin, _STOP_LATENCY_BUCKET_CUTOFF_G_S  # noqa: F401 - re-exported: read directly by tests/test_constant_drift.py
+from .runtime_shot import RuntimeShotMixin
 from .storage import Bag, BaristaDatabase, ShotSample
 
 _LOGGER = logging.getLogger(__name__)
 _STORE_VERSION = 1
-# How much answered-response history flavor_correction.resolve_flavor_state
-# gets to replay per axis - generously large rather than tightly sized,
-# since a full primary/repeat/overshoot/escalate cycle can span more shots
-# than the old fixed-count persistence check ever needed to look back
-# (recent_flavor_tags's own default of 5). A cycle exceeding this without
-# ever reporting "balanced" (which fully resets the replay) isn't a
-# realistic case to design around ahead of real usage data.
-_FLAVOR_STATE_REPLAY_LIMIT = 20
-
-
 def _grind_band_by_name(bands: list[dict[str, Any]], name: str) -> dict[str, Any]:
     """expert_rules.grind_correction.bands' entry for one band `name` - used
     to seed each grind_band_* controller attribute from its YAML default
@@ -326,14 +316,18 @@ class BaristaRuntime(
             # comprehension whose immediate enclosing scope is another
             # comprehension, not this async function itself - not valid
             # Python (unlike the single-level ones above) - hence the loop.
-            # limit=_FLAVOR_STATE_REPLAY_LIMIT (not recent_flavor_tags's own
-            # default of 5, tuned for the old fixed-count persistence check):
-            # flavor_correction.resolve_flavor_state replays a whole
-            # primary/repeat/confirm/escalate cycle from scratch each time,
-            # which can span more than 5 answered shots.
+            # limit=expert_rules.flavor_correction.state_replay_limit (not
+            # recent_flavor_tags's own default of 5, tuned for the old
+            # fixed-count persistence check): flavor_correction.
+            # resolve_flavor_state replays a whole primary/repeat/confirm/
+            # escalate cycle from scratch each time, which can span more
+            # than 5 answered shots.
             self._bag_flavor_tags[bag.id] = {
                 axis: await self.hass.async_add_executor_job(
-                    self.db.recent_flavor_tags, bag.id, axis, _FLAVOR_STATE_REPLAY_LIMIT
+                    self.db.recent_flavor_tags,
+                    bag.id,
+                    axis,
+                    self.definitions.expert_rules["flavor_correction"]["state_replay_limit"],
                 )
                 for axis in _FLAVOR_AXES
             }
