@@ -118,6 +118,9 @@
       },
       "stop_latency_elevated": {
         "name": "Learned stop latency (fast flow)"
+      },
+      "grind_band_healthy_delta": {
+        "name": "Healthy band: grind delta"
       }
     },
     "number": {
@@ -159,6 +162,42 @@
       },
       "min_step_temperature_offset": {
         "name": "Minimum temperature adjustment"
+      },
+      "grind_band_grossly_fast_max": {
+        "name": "Grossly fast band: max duration ratio"
+      },
+      "grind_band_grossly_fast_delta": {
+        "name": "Grossly fast band: grind delta"
+      },
+      "grind_band_moderately_fast_max": {
+        "name": "Moderately fast band: max duration ratio"
+      },
+      "grind_band_moderately_fast_delta": {
+        "name": "Moderately fast band: grind delta"
+      },
+      "grind_band_slightly_fast_max": {
+        "name": "Slightly fast band: max duration ratio"
+      },
+      "grind_band_slightly_fast_delta": {
+        "name": "Slightly fast band: grind delta"
+      },
+      "grind_band_healthy_max": {
+        "name": "Healthy band: max duration ratio"
+      },
+      "grind_band_slightly_restrictive_max": {
+        "name": "Slightly restrictive band: max duration ratio"
+      },
+      "grind_band_slightly_restrictive_delta": {
+        "name": "Slightly restrictive band: grind delta"
+      },
+      "grind_band_moderately_restrictive_max": {
+        "name": "Moderately restrictive band: max duration ratio"
+      },
+      "grind_band_moderately_restrictive_delta": {
+        "name": "Moderately restrictive band: grind delta"
+      },
+      "grind_band_grossly_restrictive_delta": {
+        "name": "Grossly restrictive band: grind delta"
       }
     },
     "select": {

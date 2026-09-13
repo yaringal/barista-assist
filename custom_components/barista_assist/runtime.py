@@ -88,6 +88,33 @@ _MIN_STEP_FIELDS = {
     "dose_g": "min_step_dose_g",
     "temperature_offset_c": "min_step_temperature_offset_c",
 }
+# expert_rules.grind_correction.bands' own "name" -> the dashboard-editable
+# BaristaRuntime attribute that overrides that band's duration_ratio_max/
+# grind_delta (see _grind_correction_config and async_set_entity_value's
+# "grind_band_*" handling). grossly_restrictive has no max entry - its
+# duration_ratio_max stays the fixed catch-all None - and healthy has no
+# delta entry - its grind_delta stays fixed at 0.0, the value
+# grind_correction.recommend_grind_delta's overshoot damping uses to find
+# "no correction needed" (healthy_index).
+_GRIND_BAND_MAX_FIELDS = {
+    "grossly_fast": "grind_band_grossly_fast_max",
+    "moderately_fast": "grind_band_moderately_fast_max",
+    "slightly_fast": "grind_band_slightly_fast_max",
+    "healthy": "grind_band_healthy_max",
+    "slightly_restrictive": "grind_band_slightly_restrictive_max",
+    "moderately_restrictive": "grind_band_moderately_restrictive_max",
+}
+_GRIND_BAND_DELTA_FIELDS = {
+    "grossly_fast": "grind_band_grossly_fast_delta",
+    "moderately_fast": "grind_band_moderately_fast_delta",
+    "slightly_fast": "grind_band_slightly_fast_delta",
+    "slightly_restrictive": "grind_band_slightly_restrictive_delta",
+    "moderately_restrictive": "grind_band_moderately_restrictive_delta",
+    "grossly_restrictive": "grind_band_grossly_restrictive_delta",
+}
+_GRIND_BAND_CONTROLLER_FIELDS = tuple(_GRIND_BAND_MAX_FIELDS.values()) + tuple(
+    _GRIND_BAND_DELTA_FIELDS.values()
+)
 # How much answered-response history flavor_correction.resolve_flavor_state
 # gets to replay per axis - generously large rather than tightly sized,
 # since a full primary/repeat/overshoot/escalate cycle can span more shots
@@ -272,6 +299,14 @@ def _recipe_snapshot(bag: Bag) -> dict[str, Any]:
     }
 
 
+def _grind_band_by_name(bands: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    """expert_rules.grind_correction.bands' entry for one band `name` - used
+    to seed each grind_band_* controller attribute from its YAML default
+    (see __init__/async_initialize/_GRIND_BAND_MAX_FIELDS/
+    _GRIND_BAND_DELTA_FIELDS)."""
+    return next(band for band in bands if band["name"] == name)
+
+
 def _flavor_tag_actions(shot_id: str, axis: str, *, prefix: str) -> list[dict[str, str]]:
     """The 2-tags-plus-Balanced actionable-notification button list for one
     axis, namespaced under `prefix` (always _FLAVOR_ACTION_PREFIX - kept as
@@ -324,6 +359,11 @@ class BaristaRuntime:
         self.min_step_target_yield_g = float(flavor_min_step["target_yield_g"])
         self.min_step_dose_g = float(flavor_min_step["dose_g"])
         self.min_step_temperature_offset_c = float(flavor_min_step["temperature_offset_c"])
+        grind_bands = self.definitions.expert_rules["grind_correction"]["bands"]
+        for band_name, attr in _GRIND_BAND_MAX_FIELDS.items():
+            setattr(self, attr, float(_grind_band_by_name(grind_bands, band_name)["duration_ratio_max"]))
+        for band_name, attr in _GRIND_BAND_DELTA_FIELDS.items():
+            setattr(self, attr, float(_grind_band_by_name(grind_bands, band_name)["grind_delta"]))
         self.draft = BagDraft(
             roast_date=date.today(),
             starting_mass_g=float(defaults["new_bag"]["starting_mass_g"]),
@@ -385,6 +425,15 @@ class BaristaRuntime:
     @property
     def selected_bag(self) -> Bag | None:
         return self._bags.get(self.selected_slot)
+
+    @property
+    def grind_band_healthy_delta_label(self) -> str:
+        """healthy's grind_delta is fixed at 0.0 (grind_correction.
+        recommend_grind_delta's overshoot damping uses that exact value to
+        find "no correction needed" - see _GRIND_BAND_DELTA_FIELDS) - this
+        read-only sensor fills that slot in the dashboard for visual parity
+        with the other bands' editable grind_delta entities."""
+        return "0"
 
     # ---------------------------------------------------------------------
     # Lifecycle
@@ -477,6 +526,9 @@ class BaristaRuntime:
         self.min_step_temperature_offset_c = float(
             state.get("min_step_temperature_offset_c", flavor_min_step["temperature_offset_c"])
         )
+        for attr in _GRIND_BAND_CONTROLLER_FIELDS:
+            state.setdefault(attr, getattr(self, attr))
+            setattr(self, attr, float(state[attr]))
         await self._async_save_state()
         await self.async_refresh_cache()
         await self.scale.async_start()
@@ -529,6 +581,7 @@ class BaristaRuntime:
                 "min_step_target_yield_g": self.min_step_target_yield_g,
                 "min_step_dose_g": self.min_step_dose_g,
                 "min_step_temperature_offset_c": self.min_step_temperature_offset_c,
+                **{attr: getattr(self, attr) for attr in _GRIND_BAND_CONTROLLER_FIELDS},
             }
         )
 
@@ -659,6 +712,31 @@ class BaristaRuntime:
             **config,
             "minimum_meaningful_step": {**config["minimum_meaningful_step"], **overrides},
         }
+
+    def _grind_correction_config(self) -> dict[str, Any]:
+        """expert_rules.grind_correction, with each band's duration_ratio_max/
+        grind_delta overridden by this installation's dashboard-editable
+        grind_band_* attributes (see _GRIND_BAND_MAX_FIELDS/
+        _GRIND_BAND_DELTA_FIELDS) - the live, possibly user-tuned values, not
+        just the YAML defaults. grossly_restrictive's duration_ratio_max
+        (there is no such override - it's always the catch-all last band)
+        and healthy's grind_delta (always 0.0 - grind_correction.
+        recommend_grind_delta's overshoot damping locates "no correction
+        needed" by that exact value) are left untouched. Returns a copy;
+        never mutates self.definitions.expert_rules in place."""
+        config = self.definitions.expert_rules["grind_correction"]
+        bands = []
+        for band in config["bands"]:
+            name = band["name"]
+            overridden = dict(band)
+            max_attr = _GRIND_BAND_MAX_FIELDS.get(name)
+            if max_attr is not None:
+                overridden["duration_ratio_max"] = getattr(self, max_attr)
+            delta_attr = _GRIND_BAND_DELTA_FIELDS.get(name)
+            if delta_attr is not None:
+                overridden["grind_delta"] = getattr(self, delta_attr)
+            bands.append(overridden)
+        return {**config, "bands": bands}
 
     def _stalled_flavor_tags(self, bag: Bag) -> list[str]:
         """Which axes have converged as far as they can go with nowhere
@@ -978,6 +1056,11 @@ class BaristaRuntime:
                 return
             if field == "min_step_temperature_offset_c":
                 self.min_step_temperature_offset_c = float(value)
+                await self._async_save_state()
+                self._notify(force=True)
+                return
+            if field in _GRIND_BAND_CONTROLLER_FIELDS:
+                setattr(self, field, float(value))
                 await self._async_save_state()
                 self._notify(force=True)
                 return
@@ -1907,7 +1990,7 @@ class BaristaRuntime:
         recommended_grind_delta = recommend_grind_delta(
             analysis.classification,
             analysis.duration_ratio,
-            self.definitions.expert_rules["grind_correction"],
+            self._grind_correction_config(),
             current_recipe=current_recipe,
             previous_shot=previous_grind_correction_shot,
         )

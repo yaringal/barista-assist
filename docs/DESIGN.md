@@ -1598,6 +1598,15 @@ slightly/moderately/grossly tiers) are placeholder anchors, not derived
 data — same caveat as Phase 3b's thresholds — and should be revisited once
 enough classified shots exist to calibrate them for real.
 
+Every band's `duration_ratio_max`/`grind_delta` (other than
+`grossly_restrictive`'s fixed catch-all max and `healthy`'s fixed `0.0`
+delta) is also a dashboard-editable number entity (`grind_band_*`, in the
+"Connection and control" card's "Grind correction" group) - the same
+pattern `min_step_target_yield`/`min_step_dose`/`min_step_temperature_offset`
+already use for `minimum_meaningful_step` above, seeded from the
+`definitions.yaml` defaults and persisted like any other dashboard setting
+(`BaristaRuntime._grind_correction_config`).
+
 **Overshoot damping is implemented.** `grind_correction.recommend_grind_delta`
 is otherwise a pure, memoryless function of the current shot's own
 `duration_ratio` - but Episode 1 of "How I Dial-In Espresso" shows a

@@ -257,6 +257,15 @@ expert_rules:
     # numeric ratios for "moderately" vs "grossly" off, only qualitative
     # language ("way too fast" vs "a little bit finer"). Revisit alongside
     # Phase 3b/4b once real shot history exists to calibrate them.
+    #
+    # Every duration_ratio_max below (other than grossly_restrictive's,
+    # which stays the fixed catch-all) and every grind_delta (other than
+    # healthy's, fixed at 0.0 - see recommend_grind_delta's own
+    # healthy_index lookup in grind_correction.py) is a dashboard-editable
+    # number entity (entities.number.grind_band_* below, "Connection and
+    # control" card) - these are just the seeded defaults;
+    # BaristaRuntime._grind_correction_config overrides them with whatever
+    # is currently persisted.
     bands:
       - name: grossly_fast
         duration_ratio_max: 0.6
@@ -676,6 +685,17 @@ entities:
       precision: 0
       requires_bag: true
 
+    # Display-only counterpart to the other grind bands' dashboard-editable
+    # grind_band_*_delta number entities below - healthy's own grind_delta
+    # is a fixed, non-editable 0.0 (see that band's own comment under
+    # expert_rules.grind_correction), so this is a read-only sensor rather
+    # than a number, always showing "0".
+    grind_band_healthy_delta:
+      source: runtime
+      field: grind_band_healthy_delta_label
+      translation_key: grind_band_healthy_delta
+      token: __GRIND_BAND_HEALTHY_DELTA__
+
   number:
     dose:
       source: bag
@@ -840,6 +860,133 @@ entities:
       max: 4
       step: 1
       unit: "°C"
+      mode: box
+
+    # --- Grind correction bands (expert_rules.grind_correction.bands) -------
+    # duration_ratio_max fields are each band's upper edge (see that key's
+    # own comment above); grind_delta fields are the DF54 correction each
+    # band recommends. grossly_restrictive has no max (always the
+    # catch-all last band) and healthy's grind_delta stays fixed at 0.0
+    # (recommend_grind_delta's overshoot-damping step locates "no
+    # correction needed" by that value) - neither is dashboard-editable.
+    grind_band_grossly_fast_max:
+      source: controller
+      field: grind_band_grossly_fast_max
+      translation_key: grind_band_grossly_fast_max
+      token: __GRIND_BAND_GROSSLY_FAST_MAX__
+      min: 0.3
+      max: 2.0
+      step: 0.01
+      mode: box
+
+    grind_band_grossly_fast_delta:
+      source: controller
+      field: grind_band_grossly_fast_delta
+      translation_key: grind_band_grossly_fast_delta
+      token: __GRIND_BAND_GROSSLY_FAST_DELTA__
+      min: -5.0
+      max: 5.0
+      step: 0.1
+      mode: box
+
+    grind_band_moderately_fast_max:
+      source: controller
+      field: grind_band_moderately_fast_max
+      translation_key: grind_band_moderately_fast_max
+      token: __GRIND_BAND_MODERATELY_FAST_MAX__
+      min: 0.3
+      max: 2.0
+      step: 0.01
+      mode: box
+
+    grind_band_moderately_fast_delta:
+      source: controller
+      field: grind_band_moderately_fast_delta
+      translation_key: grind_band_moderately_fast_delta
+      token: __GRIND_BAND_MODERATELY_FAST_DELTA__
+      min: -5.0
+      max: 5.0
+      step: 0.1
+      mode: box
+
+    grind_band_slightly_fast_max:
+      source: controller
+      field: grind_band_slightly_fast_max
+      translation_key: grind_band_slightly_fast_max
+      token: __GRIND_BAND_SLIGHTLY_FAST_MAX__
+      min: 0.3
+      max: 2.0
+      step: 0.01
+      mode: box
+
+    grind_band_slightly_fast_delta:
+      source: controller
+      field: grind_band_slightly_fast_delta
+      translation_key: grind_band_slightly_fast_delta
+      token: __GRIND_BAND_SLIGHTLY_FAST_DELTA__
+      min: -5.0
+      max: 5.0
+      step: 0.1
+      mode: box
+
+    grind_band_healthy_max:
+      source: controller
+      field: grind_band_healthy_max
+      translation_key: grind_band_healthy_max
+      token: __GRIND_BAND_HEALTHY_MAX__
+      min: 0.3
+      max: 2.0
+      step: 0.01
+      mode: box
+
+    grind_band_slightly_restrictive_max:
+      source: controller
+      field: grind_band_slightly_restrictive_max
+      translation_key: grind_band_slightly_restrictive_max
+      token: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__
+      min: 0.3
+      max: 2.0
+      step: 0.01
+      mode: box
+
+    grind_band_slightly_restrictive_delta:
+      source: controller
+      field: grind_band_slightly_restrictive_delta
+      translation_key: grind_band_slightly_restrictive_delta
+      token: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_DELTA__
+      min: -5.0
+      max: 5.0
+      step: 0.1
+      mode: box
+
+    grind_band_moderately_restrictive_max:
+      source: controller
+      field: grind_band_moderately_restrictive_max
+      translation_key: grind_band_moderately_restrictive_max
+      token: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
+      min: 0.3
+      max: 2.0
+      step: 0.01
+      mode: box
+
+    grind_band_moderately_restrictive_delta:
+      source: controller
+      field: grind_band_moderately_restrictive_delta
+      translation_key: grind_band_moderately_restrictive_delta
+      token: __GRIND_BAND_MODERATELY_RESTRICTIVE_DELTA__
+      min: -5.0
+      max: 5.0
+      step: 0.1
+      mode: box
+
+    grind_band_grossly_restrictive_delta:
+      source: controller
+      field: grind_band_grossly_restrictive_delta
+      translation_key: grind_band_grossly_restrictive_delta
+      token: __GRIND_BAND_GROSSLY_RESTRICTIVE_DELTA__
+      min: -5.0
+      max: 5.0
+      step: 0.1
       mode: box
 
   select:

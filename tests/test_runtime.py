@@ -1141,6 +1141,37 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         self.assertIsNotNone(recommended)
         self.assertLess(recommended, 0.0)
 
+    async def test_grind_band_entity_overrides_the_yaml_default_delta(self):
+        """grind_band_grossly_fast_delta (a dashboard-editable number
+        entity, the same pattern as min_step_target_yield) overrides
+        expert_rules.grind_correction.bands' grossly_fast grind_delta for
+        recommend_grind_delta, via BaristaRuntime._grind_correction_config -
+        not just seeded from it and then ignored."""
+        grossly_fast_delta = next(
+            d
+            for d in self.runtime.definitions.platform("number")
+            if d.key == "grind_band_grossly_fast_delta"
+        )
+        await self.runtime.async_set_entity_value(grossly_fast_delta, -3.5)
+        self.assertEqual(self.runtime.grind_band_grossly_fast_delta, -3.5)
+
+        await self.start_shot()
+        shot = self.runtime.active_shot
+        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=15.0, target_yield_g=36.0)
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+
+        await self.runtime._async_finalize("complete")
+
+        self.assertEqual(self.runtime.last_shot["classification"], "too_fast")
+        self.assertEqual(self.runtime.last_shot["recommended_grind_delta"], -3.5)
+
+    async def test_grind_band_healthy_delta_sensor_is_a_fixed_readonly_zero(self):
+        """healthy's grind_delta is never dashboard-editable (see
+        _GRIND_BAND_DELTA_FIELDS) - grind_band_healthy_delta is a read-only
+        sensor standing in for it, always "0"."""
+        healthy_delta = self.runtime.definitions.entity("sensor", "grind_band_healthy_delta")
+        self.assertEqual(self.runtime.entity_value(healthy_delta), "0")
+
     async def test_finalized_shot_has_no_grind_recommendation_when_healthy(self):
         await self.start_shot()
         shot = self.runtime.active_shot

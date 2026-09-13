@@ -297,13 +297,147 @@ views:
                 name: Minimum dose adjustment
               - entity: __MIN_STEP_TEMPERATURE_OFFSET__
                 name: Minimum temperature adjustment
-
           - type: button
             name: Integration settings (configure)
             icon: mdi:cog
             tap_action:
               action: navigate
               navigation_path: /config/integrations/integration/barista_assist
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Grind correction
+            heading_style: title
+            icon: mdi:tune-vertical
+
+          - type: heading
+            heading: Duration ratio bands that drive the recommended grind change after each shot
+            heading_style: subtitle
+
+          # Consecutive tiles read left-to-right as one ascending
+          # duration_ratio ladder (each band's own max: 0.6, 0.75, 0.88...) -
+          # the plain "–"/"∞" markdown cards between them are static text,
+          # nothing computed; each boundary value is only ever stored/shown
+          # once, on the tile to its left.
+          - type: markdown
+            content: "**-∞**"
+
+          - type: tile
+            entity: __GRIND_BAND_GROSSLY_FAST_MAX__
+            name: Grossly fast — max
+            color: blue
+            features: *number_buttons
+            features_position: bottom
+
+          - type: markdown
+            content: "**–**"
+
+          - type: tile
+            entity: __GRIND_BAND_MODERATELY_FAST_MAX__
+            name: Moderately fast — max
+            color: blue
+            features: *number_buttons
+            features_position: bottom
+
+          - type: markdown
+            content: "**–**"
+
+          - type: tile
+            entity: __GRIND_BAND_SLIGHTLY_FAST_MAX__
+            name: Slightly fast — max
+            color: blue
+            features: *number_buttons
+            features_position: bottom
+
+          - type: markdown
+            content: "**–**"
+
+          - type: tile
+            entity: __GRIND_BAND_HEALTHY_MAX__
+            name: Healthy — max
+            color: green
+            features: *number_buttons
+            features_position: bottom
+
+          - type: markdown
+            content: "**–**"
+
+          - type: tile
+            entity: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__
+            name: Slightly restrictive — max
+            color: red
+            features: *number_buttons
+            features_position: bottom
+
+          - type: markdown
+            content: "**–**"
+
+          - type: tile
+            entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
+            name: Moderately restrictive — max
+            color: red
+            features: *number_buttons
+            features_position: bottom
+
+          - type: markdown
+            content: "**–**"
+
+          - type: markdown
+            content: "**∞**"
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Grind deltas
+            heading_style: subtitle
+
+          - type: tile
+            entity: __GRIND_BAND_GROSSLY_FAST_DELTA__
+            name: Grossly fast — Δ
+            color: blue
+            features: *number_buttons
+            features_position: bottom
+
+          - type: tile
+            entity: __GRIND_BAND_MODERATELY_FAST_DELTA__
+            name: Moderately fast — Δ
+            color: blue
+            features: *number_buttons
+            features_position: bottom
+
+          - type: tile
+            entity: __GRIND_BAND_SLIGHTLY_FAST_DELTA__
+            name: Slightly fast — Δ
+            color: blue
+            features: *number_buttons
+            features_position: bottom
+
+          - type: tile
+            entity: __GRIND_BAND_HEALTHY_DELTA__
+            name: Healthy — Δ (fixed)
+            color: green
+
+          - type: tile
+            entity: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_DELTA__
+            name: Slightly restrictive — Δ
+            color: red
+            features: *number_buttons
+            features_position: bottom
+
+          - type: tile
+            entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_DELTA__
+            name: Moderately restrictive — Δ
+            color: red
+            features: *number_buttons
+            features_position: bottom
+
+          - type: tile
+            entity: __GRIND_BAND_GROSSLY_RESTRICTIVE_DELTA__
+            name: Grossly restrictive — Δ
+            color: red
+            features: *number_buttons
+            features_position: bottom
 
   - title: Shots
     path: shots
