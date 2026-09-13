@@ -90,19 +90,6 @@ class BaristaDatabase:
                 db.execute(f"PRAGMA user_version={version}")
         return current
 
-    def legacy_selected_slot(self) -> str | None:
-        """Read the v0.1 UI setting during upgrade; new code does not write it."""
-        with self._connect() as db:
-            exists = db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'"
-            ).fetchone()
-            if not exists:
-                return None
-            row = db.execute(
-                "SELECT value FROM settings WHERE key='selected_slot'"
-            ).fetchone()
-        return str(row["value"]) if row else None
-
     @staticmethod
     def _row_to_bag(row: sqlite3.Row) -> Bag:
         return Bag(**{column: row[column] for column in _BAG_COLUMNS})

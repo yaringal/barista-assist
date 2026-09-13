@@ -25,9 +25,7 @@ from .bookoo import BookooUltraClient
 from .const import (
     CONF_BREW_ENTITY,
     CONF_MACHINE_LIMIT_CONFIRMED,
-    CONF_MACHINE_MAX_SHOT_SECONDS,
     CONF_NOTIFY_SERVICE,
-    CONF_SAFETY_MARGIN_SECONDS,
     CONF_SCALE_ADDRESS,
     DOMAIN,
     SIGNAL_UPDATE,
@@ -77,6 +75,11 @@ _FLAVOR_AXES = {
     "extraction": [("sour_sharp", "Sour / Sharp"), ("bitter_harsh", "Bitter / Harsh")],
     "mouthfeel": [("thin_weak", "Thin / Weak"), ("dry_astringent", "Dry / Astringent")],
 }
+# tag value -> the same human-readable label _FLAVOR_AXES already uses for
+# notification action button titles - reused by _recommended_flavor_note/
+# _stalled_flavor_tags so the dashboard note never shows a raw tag key like
+# "sour_sharp".
+_FLAVOR_TAG_LABELS = {tag: title for tags in _FLAVOR_AXES.values() for tag, title in tags}
 # expert_rules.flavor_correction.minimum_meaningful_step's own YAML field
 # name -> the dashboard-editable BaristaRuntime attribute that overrides it
 # (see _flavor_correction_config and async_set_entity_value's "min_step_*"
@@ -440,43 +443,17 @@ class BaristaRuntime:
     # ---------------------------------------------------------------------
     async def async_initialize(self) -> None:
         """Load durable state, migrate the database, and start BLE."""
-        legacy_pi = float(
-            self.entry.options.get(
-                "preinfusion_seconds",
-                self.entry.data.get(
-                    "preinfusion_seconds",
-                    self.definitions.defaults["recipe"]["preinfusion_s"],
-                ),
-            )
-        )
-        await self.hass.async_add_executor_job(
-            lambda: self.db.initialize(legacy_preinfusion_s=legacy_pi)
-        )
+        await self.hass.async_add_executor_job(self.db.initialize)
         state = await self.store.async_load() or {}
         selected = state.get("selected_slot")
-        if selected is None:
-            selected = await self.hass.async_add_executor_job(self.db.legacy_selected_slot)
         if selected in self.definitions.slots:
             self.selected_slot = selected
 
-        # legacy_stop/legacy_stop_state chain: this setting has been renamed
-        # twice now (originally the config-flow option
-        # "stop_compensation_grams", then the dashboard-editable state key
-        # "stop_compensation_g", now "early_stop_margin_min_g") - each older
-        # key is checked as a fallback, in order, so a real installation's
-        # already-calibrated value (this project's own dev install has it set
-        # to 8.0) carries forward instead of silently resetting to the
-        # definitions.yaml default on the first load after the rename.
-        legacy_stop = self.entry.options.get(
-            "stop_compensation_grams",
-            self.entry.data.get(
-                "stop_compensation_grams",
-                self.definitions.defaults["controller"]["early_stop_margin_min_g"],
-            ),
-        )
-        legacy_stop_state = state.get("stop_compensation_g", legacy_stop)
         self.early_stop_margin_min_g = float(
-            state.get("early_stop_margin_min_g", legacy_stop_state)
+            state.get(
+                "early_stop_margin_min_g",
+                self.definitions.defaults["controller"]["early_stop_margin_min_g"],
+            )
         )
         self.early_stop_margin_max_g = float(
             state.get(
@@ -490,21 +467,13 @@ class BaristaRuntime:
         self.machine_pi_s = float(
             state.get("machine_pi_s", self.definitions.defaults["controller"]["machine_pi_s"])
         )
-        # machine_max_shot_s/safety_margin_s used to live only in entry.options
-        # (config-flow-managed) - now dashboard-editable like
-        # early_stop_margin_min_g, seeded once from whatever was last saved there.
-        legacy_machine_max_shot_s = self.entry.options.get(
-            CONF_MACHINE_MAX_SHOT_SECONDS,
-            self.definitions.defaults["controller"]["machine_max_shot_s"],
-        )
         self.machine_max_shot_s = float(
-            state.get("machine_max_shot_s", legacy_machine_max_shot_s)
-        )
-        legacy_safety_margin_s = self.entry.options.get(
-            CONF_SAFETY_MARGIN_SECONDS, self.definitions.defaults["controller"]["safety_margin_s"]
+            state.get(
+                "machine_max_shot_s", self.definitions.defaults["controller"]["machine_max_shot_s"]
+            )
         )
         self.safety_margin_s = float(
-            state.get("safety_margin_s", legacy_safety_margin_s)
+            state.get("safety_margin_s", self.definitions.defaults["controller"]["safety_margin_s"])
         )
         self.stop_latency_normal_s = float(
             state.get(
@@ -861,22 +830,24 @@ class BaristaRuntime:
 
     def _recommended_flavor_note(self, bag: Bag) -> str | None:
         """"Current -> recommended" text per flavor-correction axis (docs/
-        DESIGN.md section 13), e.g. "target_yield_g: 36.0 -> 41.0 (persistent
-        sour_sharp)", joined with "; " when more than one field currently has
-        a recommendation, plus a note for any axis that's converged as far
-        as it can go with nowhere further to escalate to
+        DESIGN.md section 13), e.g. "target_yield_g: 36.0 -> 41.0
+        (Sour / Sharp)", joined with "; " when more than one field currently
+        has a recommendation, plus a note for any axis that's converged as
+        far as it can go with nowhere further to escalate to
         (_stalled_flavor_tags) and the puck_prep_issue streak note (see
         _puck_prep_streak_note) when applicable. None when nothing has
         anything to report at all - that's a real "no recommendation"
-        state, not a fault."""
+        state, not a fault. Tags are shown via _FLAVOR_TAG_LABELS (the same
+        human-readable labels the notification action buttons use), not
+        their raw "sour_sharp"-style keys."""
         notes = [
-            f"{field}: {current:g} → {recommended:g} (persistent {tag})"
+            f"{field}: {current:g} → {recommended:g} ({_FLAVOR_TAG_LABELS[tag]})"
             for field, (current, recommended, tag) in self._all_flavor_field_recommendations(
                 bag
             ).items()
         ]
         notes.extend(
-            f"{tag} isn't resolving with automatic adjustment alone"
+            f"{_FLAVOR_TAG_LABELS[tag]} isn't resolving with automatic adjustment alone"
             for tag in self._stalled_flavor_tags(bag)
         )
         streak_note = self._puck_prep_streak_note(bag)
@@ -886,7 +857,7 @@ class BaristaRuntime:
 
     def _recipe_field_short_note(self, bag: Bag, field: str) -> str | None:
         """Compact "current -> recommended" text (e.g. "18.0 -> 18.5") for
-        one recipe field, without the "(persistent tag)" annotation
+        one recipe field, without the "(tag)" annotation
         _recommended_flavor_note includes - sized for a "recommended"
         secondary attribute on the same recipe field's own tile (see
         _recommended_note_for/entity_attributes) rather than a separate

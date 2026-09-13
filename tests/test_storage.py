@@ -704,7 +704,7 @@ class StorageTests(unittest.TestCase):
     def test_delete_shot_returns_false_for_an_unknown_id(self) -> None:
         self.assertFalse(self.db.delete_shot("does-not-exist"))
 
-    def test_v1_database_migrates_preinfusion_and_legacy_slot(self) -> None:
+    def test_v1_database_migrates_preinfusion(self) -> None:
         legacy_path = Path(self.tmp.name) / "legacy.sqlite3"
         legacy_db = storage.BaristaDatabase(legacy_path)
         with sqlite3.connect(legacy_path) as db:
@@ -712,7 +712,6 @@ class StorageTests(unittest.TestCase):
                 (legacy_db.migrations_dir / "001_initial.sql").read_text(encoding="utf-8")
             )
             db.execute("PRAGMA user_version=1")
-            db.execute("INSERT INTO settings(key,value) VALUES('selected_slot','decaf')")
             db.execute(
                 """
                 INSERT INTO bags(
@@ -723,7 +722,6 @@ class StorageTests(unittest.TestCase):
             )
         previous = legacy_db.initialize(legacy_preinfusion_s=9)
         self.assertEqual(previous, 1)
-        self.assertEqual(legacy_db.legacy_selected_slot(), "decaf")
         self.assertEqual(legacy_db.active_bags()["decaf"].preinfusion_s, 9)
 
 

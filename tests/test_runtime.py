@@ -52,9 +52,7 @@ ShotSample = runtime_module.ShotSample
 from custom_components.barista_assist.const import (  # noqa: E402
     CONF_BREW_ENTITY,
     CONF_MACHINE_LIMIT_CONFIRMED,
-    CONF_MACHINE_MAX_SHOT_SECONDS,
     CONF_NOTIFY_SERVICE,
-    CONF_SAFETY_MARGIN_SECONDS,
     CONF_SCALE_ADDRESS,
 )
 from custom_components.barista_assist.protocol import BookooReading  # noqa: E402
@@ -93,8 +91,6 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
             data={CONF_SCALE_ADDRESS: "11:22:33:44:55:66"},
             options={
                 CONF_BREW_ENTITY: BREW_ENTITY,
-                CONF_MACHINE_MAX_SHOT_SECONDS: 10.0,
-                CONF_SAFETY_MARGIN_SECONDS: 2.0,
                 CONF_MACHINE_LIMIT_CONFIRMED: True,
             },
         )
@@ -808,7 +804,8 @@ class BrewValidationTests(RuntimeTestCase):
         self.assertIsNone(self.runtime.active_shot)
 
     async def test_rejects_brew_when_preinfusion_exceeds_safe_deadline(self):
-        # Default options give safe_shot_deadline_s = 10 - 2 = 8.
+        self.runtime.machine_max_shot_s = 10.0
+        self.runtime.safety_margin_s = 2.0  # safe_shot_deadline_s = 10 - 2 = 8.
         await self.create_bag(preinfusion_s=9.0)
 
         with self.assertRaises(HomeAssistantError):
@@ -907,27 +904,28 @@ class ShotTimeoutTests(RuntimeTestCase):
 
 
 class SafetyTimeSettingsTests(RuntimeTestCase):
-    """machine_max_shot_s/safety_margin_s used to be read-only properties
-    sourced live from entry.options (config-flow-only); they're now
-    dashboard-editable number entities backed by the runtime's own Store,
-    the same pattern as early_stop_margin_min_g."""
+    """machine_max_shot_s/safety_margin_s are dashboard-editable number
+    entities backed by the runtime's own Store, the same pattern as
+    early_stop_margin_min_g - seeded from definitions.yaml's own defaults
+    (entry.options is not consulted at all)."""
 
     def _number(self, key: str):
         return next(d for d in self.runtime.definitions.platform("number") if d.key == key)
 
-    async def test_seeded_from_entry_options_on_first_load(self):
-        """asyncSetUp's FakeConfigEntry seeds machine_max_shot_seconds=10.0/
-        safety_margin_seconds=2.0 - since nothing has ever been saved to the
-        Store yet, async_initialize (already run in asyncSetUp) must have
-        migrated those in as the starting values."""
-        self.assertEqual(self.runtime.machine_max_shot_s, 10.0)
-        self.assertEqual(self.runtime.safety_margin_s, 2.0)
+    async def test_seeded_from_definitions_defaults_on_first_load(self):
+        """Nothing has ever been saved to the Store yet, so async_initialize
+        (already run in asyncSetUp) must have seeded these straight from
+        definitions.yaml's own defaults.controller."""
+        defaults = self.runtime.definitions.defaults["controller"]
+        self.assertEqual(self.runtime.machine_max_shot_s, defaults["machine_max_shot_s"])
+        self.assertEqual(self.runtime.safety_margin_s, defaults["safety_margin_s"])
 
     async def test_editable_via_the_declarative_entity_interface(self):
+        defaults = self.runtime.definitions.defaults["controller"]
         machine_max = self._number("machine_max_shot_seconds")
         margin = self._number("safety_margin_seconds")
-        self.assertEqual(self.runtime.entity_value(machine_max), 10.0)
-        self.assertEqual(self.runtime.entity_value(margin), 2.0)
+        self.assertEqual(self.runtime.entity_value(machine_max), defaults["machine_max_shot_s"])
+        self.assertEqual(self.runtime.entity_value(margin), defaults["safety_margin_s"])
 
         await self.runtime.async_set_entity_value(machine_max, 45.0)
         await self.runtime.async_set_entity_value(margin, 4.0)
@@ -937,15 +935,13 @@ class SafetyTimeSettingsTests(RuntimeTestCase):
         self.assertEqual(self.runtime.entity_value(machine_max), 45.0)
         self.assertEqual(self.runtime.entity_value(margin), 4.0)
 
-    async def test_persisted_value_wins_over_entry_options_on_next_load(self):
-        """Once a value has been saved to the Store (e.g. via the dashboard),
-        it must take priority over entry.options on a later reload - entry.
-        options only seeds the very first migration, it isn't re-consulted
-        forever."""
+    async def test_persisted_value_survives_a_reload(self):
+        """Once a value has been saved to the Store (e.g. via the
+        dashboard), a fresh BaristaRuntime for the same entry must load it
+        back rather than resetting to the definitions.yaml default."""
         machine_max = self._number("machine_max_shot_seconds")
         await self.runtime.async_set_entity_value(machine_max, 45.0)
 
-        self.entry.options[CONF_MACHINE_MAX_SHOT_SECONDS] = 999.0  # must be ignored now
         reloaded = BaristaRuntime(self.hass, self.entry)
         await reloaded.async_initialize()
         try:
@@ -1389,8 +1385,9 @@ class FlavorFeedbackTests(RuntimeTestCase):
         """docs/todo/LEVER_SEQUENCING_PLAN.md §3.2 point 1: the primary
         intervention fires on the *first* report, no repetition gate (this
         replaced the old require_persistent_pattern_shots-gated behavior) -
-        reads as "{field}: {current} -> {recommended} (persistent {tag})",
-        the same style as recommended_grind_note."""
+        reads as "{field}: {current} -> {recommended} ({label})", the same
+        style as recommended_grind_note, with the tag shown via its
+        _FLAVOR_TAG_LABELS display label rather than its raw key."""
         await self.create_bag()
         bag = self.runtime.selected_bag
         await self.runtime.async_brew()
@@ -1410,7 +1407,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
 
         note = self._recommended_flavor()
         self.assertIsNotNone(note)
-        self.assertIn("persistent sour_sharp", note)
+        self.assertIn("(Sour / Sharp)", note)
         self.assertIn(f"{bag.target_yield_g:g}", note)
 
     async def test_recommended_flavor_note_is_none_after_balanced(self):
@@ -1474,15 +1471,15 @@ class FlavorFeedbackTests(RuntimeTestCase):
 
     async def test_recommended_dose_attribute_shows_a_short_note_without_the_tag(self):
         """A decoration on the dose tile itself (state_content), not a
-        separate tile - just "current -> recommended", no "(persistent
-        tag)" suffix the combined recommended_flavor note has."""
+        separate tile - just "current -> recommended", no "(tag)" suffix
+        the combined recommended_flavor note has."""
         await self.create_bag()
         dose = self.runtime.selected_bag.dose_g
         await self._brew_and_tag("mouthfeel", "thin_weak", times=2)
 
         note = self._recommended_attribute("number", "dose")
         self.assertEqual(note, f"{dose:g} → {dose + self._tag_signed_delta('thin_weak'):g}")
-        self.assertNotIn("persistent", note)
+        self.assertNotIn("thin_weak", note)
 
     async def test_recommended_target_yield_attribute_shows_a_short_note(self):
         await self.create_bag()
@@ -1693,7 +1690,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
 
         note = self._recommended_flavor()
         self.assertIsNotNone(note)
-        self.assertIn("bitter_harsh isn't resolving with automatic adjustment alone", note)
+        self.assertIn("Bitter / Harsh isn't resolving with automatic adjustment alone", note)
 
     async def test_min_step_entity_overrides_the_yaml_default(self):
         """min_step_target_yield (a dashboard-editable number entity, the
