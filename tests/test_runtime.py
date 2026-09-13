@@ -44,6 +44,7 @@ from runtime_fakes import (  # noqa: E402
 )
 
 runtime_module = ha_stubs.import_runtime_module()
+runtime_peripherals_module = ha_stubs.import_barista_module("runtime_peripherals")
 BaristaRuntime = runtime_module.BaristaRuntime
 ShotPhase = runtime_module.ShotPhase
 HomeAssistantError = runtime_module.HomeAssistantError
@@ -77,8 +78,8 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         runtime_module.BookooUltraClient = FakeScale
-        runtime_module.SwitchBotBotConfigurator = FakeBotConfigurator
-        runtime_module.resolve_bluetooth_address = (
+        runtime_peripherals_module.SwitchBotBotConfigurator = FakeBotConfigurator
+        runtime_peripherals_module.resolve_bluetooth_address = (
             lambda hass, entity_id: "AA:BB:CC:DD:EE:FF"
         )
         FakeBotConfigurator.reset()
@@ -290,8 +291,8 @@ class InstantTapTests(RuntimeTestCase):
         self.assertFalse(phase_task.done())
 
         with (
-            mock.patch.object(runtime_module, "_QUICK_STOP_BOT_WAIT_TIMEOUT_S", 0.05),
-            mock.patch.object(runtime_module, "_BOT_PRESS_LOCK_TIMEOUT_S", 0.05),
+            mock.patch.object(runtime_peripherals_module, "_QUICK_STOP_BOT_WAIT_TIMEOUT_S", 0.05),
+            mock.patch.object(runtime_peripherals_module, "_BOT_PRESS_LOCK_TIMEOUT_S", 0.05),
         ):
             self.scale.push_reading(make_reading(weight_g=35.0))
             await self.hass.tasks[-1]  # async_stop_at_target()
@@ -1083,7 +1084,7 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         await self.wait_for_extracting()
         self.scale.push_reading(make_reading(weight_g=36.0))  # one sample: too few to classify
 
-        with self.assertLogs("custom_components.barista_assist.runtime", level="WARNING") as log:
+        with self.assertLogs("custom_components.barista_assist.runtime_shot", level="WARNING") as log:
             await self.runtime._async_finalize("complete")
 
         self.assertTrue(
@@ -1291,7 +1292,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
         self.hass.services.fail_next_call()
 
-        with self.assertLogs("custom_components.barista_assist.runtime", level="WARNING") as log:
+        with self.assertLogs("custom_components.barista_assist.runtime_peripherals", level="WARNING") as log:
             await self.runtime._async_send_flavor_feedback_notifications("shot-123", "bag-456")
 
         self.assertEqual(len(self.hass.services.calls), 2)  # both axes still attempted
@@ -1370,7 +1371,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
         from shot history - record_flavor_tag's UPDATE then silently affects
         zero rows rather than raising, so this must be logged somewhere
         instead of just doing nothing with no trace."""
-        with self.assertLogs("custom_components.barista_assist.runtime", level="WARNING") as log:
+        with self.assertLogs("custom_components.barista_assist.runtime_peripherals", level="WARNING") as log:
             await self.hass.bus.async_fire(
                 "mobile_app_notification_action",
                 {"action": "barista_flavor:no-such-shot:extraction:sour_sharp"},

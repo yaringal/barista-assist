@@ -27,7 +27,7 @@ defaults:
     # drink to actually be tasted, short enough that the shot is still fresh
     # in memory. Not dashboard-editable (unlike the settings above it): this
     # is a one-off UX tuning knob, not something that needs live recalibration.
-    flavor_feedback_delay_s: 300
+    flavor_feedback_delay_s: 120
   new_bag:
     starting_mass_g: 250.0
 
