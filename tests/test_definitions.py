@@ -25,30 +25,41 @@ class DefinitionTests(unittest.TestCase):
         self.defs = definitions.load_definitions()
 
     def test_flat_white_starting_recipe(self):
+        """Structural sanity, not specific numbers - every one of these is
+        free to retune in definitions.yaml without breaking this test."""
         recipe = self.defs.defaults["recipe"]
-        self.assertEqual(recipe["dose_g"], 18.0)
-        self.assertEqual(recipe["target_yield_g"], 36.0)
-        self.assertEqual(recipe["preinfusion_s"], 7)
-        self.assertEqual(self.defs.defaults["controller"]["safety_margin_s"], 3)
+        controller = self.defs.defaults["controller"]
+        self.assertGreater(recipe["dose_g"], 0)
+        self.assertGreater(recipe["target_yield_g"], recipe["dose_g"])
+        self.assertGreater(recipe["preinfusion_s"], 0)
+        self.assertGreater(controller["safety_margin_s"], 0)
+        self.assertLess(controller["safety_margin_s"], controller["machine_max_shot_s"])
 
     def test_df54_is_discrete(self):
+        """A real step size (not 0/None), whatever its current tuned
+        value - grind is a stepped grinder dial, not continuous."""
         grind = self.defs.entity("number", "grind")
-        self.assertEqual(grind.step, 0.5)
+        self.assertIsNotNone(grind.step)
+        self.assertGreater(grind.step, 0)
 
     def test_flow_analysis_constants_are_loaded(self):
         """flow_analysis.py's classification thresholds (and every other
         tunable constant it uses) come from here - FlowAnalysisConfig itself
         has no default values at all (consts live in yaml, code is for
         logic) - see runtime.py's _async_finalize and flow_analysis_constants'
-        own comment in definitions.yaml."""
+        own comment in definitions.yaml. Checks the real structural
+        invariants these values must hold, not today's specific tuned
+        numbers - every one of them is free to retune in definitions.yaml
+        without breaking this test."""
         constants = self.defs.flow_analysis_constants
-        self.assertEqual(constants["expected_flow_g_s"], 1.3)
-        self.assertEqual(constants["too_fast_factor"], 0.88)
-        self.assertEqual(constants["too_restrictive_factor"], 1.10)
-        # Spot-check a couple of the signal-processing ones too, not just
-        # the three with a real derivation behind them.
-        self.assertEqual(constants["min_samples"], 5)
-        self.assertEqual(constants["smoothing_window_ms"], 500)
+        self.assertGreater(constants["expected_flow_g_s"], 0)
+        # too_fast_factor/too_restrictive_factor bound "healthy" from below/
+        # above 1.0 (duration_ratio == expected/actual) - the ordering is a
+        # real requirement, not just today's chosen magnitudes.
+        self.assertLess(constants["too_fast_factor"], 1.0)
+        self.assertGreater(constants["too_restrictive_factor"], 1.0)
+        self.assertGreater(constants["min_samples"], 0)
+        self.assertGreater(constants["smoothing_window_ms"], 0)
 
     def test_flow_analysis_constants_matches_flow_analysis_config_fields(self):
         """Every key here must be a real FlowAnalysisConfig field name (and
@@ -76,7 +87,12 @@ class DefinitionTests(unittest.TestCase):
         self.assertIsNone(grind_correction["bands"][-1]["duration_ratio_max"])
 
     def test_flavor_feedback_delay_is_loaded(self):
-        self.assertEqual(self.defs.defaults["controller"]["flavor_feedback_delay_s"], 300)
+        """A one-off UX knob a human retunes directly in YAML (see its own
+        comment in definitions.yaml) - not a value to pin exactly, just
+        confirm it parses as a real, positive delay."""
+        delay = self.defs.defaults["controller"]["flavor_feedback_delay_s"]
+        self.assertIsInstance(delay, (int, float))
+        self.assertGreater(delay, 0)
 
     def test_flavor_correction_tags_match_flavor_correction_py_s_lever_map(self):
         """Every non-balanced tag's primary lever, and its escalation

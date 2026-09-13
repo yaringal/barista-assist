@@ -440,11 +440,20 @@ class RuntimeShotMixin:
             shot.stop_triggered = False
             raise HomeAssistantError(f"Failed to {verb} shot: {err}") from err
 
-    async def async_stop_at_target(self) -> None:
+    async def async_stop_at_target(self, shot_id: str) -> None:
+        """shot_id pins this to the exact shot _handle_reading scheduled it
+        for - the same guard _mark_extracting_after_preinfusion already
+        uses. Without it, a scheduled-but-not-yet-run stop from a shot
+        that was instead finalized manually (e.g. a test pushing a final
+        reading right at/after the auto-stop threshold, then calling
+        _async_finalize directly rather than waiting out this task) would
+        still fire later against whatever shot is active by the time the
+        event loop gets to it - silently stopping a completely different,
+        newer shot."""
         late = False
         async with self._actuation_lock:
             shot = self.active_shot
-            if shot is None or shot.stop_triggered:
+            if shot is None or shot.id != shot_id or shot.stop_triggered:
                 return
             elapsed_s = self._elapsed_since_press(shot)
             _LOGGER.debug("async_stop_at_target called at elapsed=%.2fs", elapsed_s)

@@ -113,7 +113,7 @@ class RuntimePeripheralsMixin:
                     threshold,
                 )
                 self.hass.async_create_task(
-                    self.async_stop_at_target(), "barista_assist_target_stop"
+                    self.async_stop_at_target(shot.id), "barista_assist_target_stop"
                 )
         self._notify()
 
