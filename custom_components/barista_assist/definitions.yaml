@@ -181,13 +181,20 @@ flow_analysis_constants:
 # stop_latency_*_s (BLE press + pump stop + drip settle, times live flow =
 # the adaptive stop margin) are learned, not fixed - see
 # _update_learned_stop_latency. Split into two buckets by flow rate at the
-# stop decision rather than one shared average: a shot's own flow at that
-# moment predicts its needed latency almost perfectly (0.97 correlation
-# across 5 real shots), so a fast shot isn't an outlier to exclude, just a
-# point needing a bigger estimate - one shared average risked dragging the
-# estimate past where early_stop_margin_min_g's floor still protects a
-# normal shot. Seed values (defaults.controller, 3.4s/4.3s) are the average
-# observed latency on each side of bucket_cutoff_g_s.
+# stop decision rather than one shared average - not because BLE/pump-stop
+# hardware itself responds slower at high flow (there's no physical reason
+# it would), but because _observed_stop_latency backs out "latency" by
+# assuming flow held constant at flow_at_decision for the whole window, and
+# shots in the elevated regime tend to still be speeding up (channeling)
+# through that window - that constant-flow assumption undercounts their
+# true tail grams, so the fitted "latency" inflates to compensate. 
+# A shot's own flow at decision time predicts its needed latency
+# almost perfectly in practice (0.97 correlation across 5 real shots), so a
+# fast shot isn't an outlier to exclude, just a point needing a bigger
+# estimate - one shared average risked dragging the estimate past where
+# early_stop_margin_min_g's floor still protects a normal shot. Seed values
+# (defaults.controller, 3.4s/4.3s) are the average observed latency on each
+# side of bucket_cutoff_g_s.
 # =============================================================================
 stop_latency_calibration:
   learning_rate: 0.15
