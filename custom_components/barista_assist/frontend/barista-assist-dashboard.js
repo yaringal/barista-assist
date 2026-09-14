@@ -195,9 +195,13 @@ const CHART_STYLES = `
 // through pre-infusion, then a straight ramp to target_yield_g at
 // markers.expected_flow_g_s (flow_analysis.blended_expected_flow_g_s,
 // fixed per-shot at brew time - see runtime.py's ActiveShot.
-// expected_flow_g_s/_shot_markers). Not a curve shape sourced from
-// anywhere - just the same flat-rate model duration_ratio itself already
-// uses for classification, drawn instead of only compared against.
+// expected_flow_g_s/_shot_markers). expected_flow_g_s is post-pre-infusion/
+// extraction-only, so pre-infusion is added on top (pi + expectedDurationMs
+// below) rather than folded into the rate - matching flow_analysis.py's own
+// analyze_shot expected_s formula exactly, not just approximately, so this
+// curve's completion point is the same point duration_ratio=1.0 means for
+// classification. Not a curve shape sourced from anywhere - just that same
+// flat-rate model, drawn instead of only compared against.
 // Returns [] (nothing to draw) until both figures are actually known.
 function idealizedWeightPoints(markers) {
   const { preinfusion_ms, expected_flow_g_s, target_yield_g } = markers || {};

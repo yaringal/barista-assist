@@ -99,7 +99,7 @@ class FlowAnalysisConfig:
     smoothing_window_ms: int
     suspicion_threshold: float
     first_flow_sustain_ms: int
-    expected_flow_g_s: float
+    expected_flow_g_s: float  # Extraction-phase-only rate (pre-infusion excluded)
     too_fast_factor: float
     too_restrictive_factor: float
     prior_weight_shots: float
@@ -165,7 +165,7 @@ class RoastLevelFlowBaseline:
     """
 
     shot_count: int
-    median_flow_g_s: float
+    median_flow_g_s: float  # Extraction-phase-only rate (pre-infusion excluded)
 
 
 @dataclass(slots=True)
@@ -177,9 +177,10 @@ class ShotAnalysis:
     baseline_eligible: bool
     invalid_reason: str | None
     # actual shot duration / expected duration for this bag (expected_s =
-    # target_yield_g / expected_flow_g_s, itself Bayesian-shrunk toward this
-    # bag's roast_level - other bags sharing it, not this bag's own history,
-    # see blended_expected_flow_g_s). Below 1.0 = ran
+    # preinfusion_s + target_yield_g / expected_flow_g_s - expected_flow_g_s
+    # is post-pre-infusion/extraction-only, itself Bayesian-shrunk toward
+    # this bag's roast_level - other bags sharing it, not this bag's own
+    # history, see blended_expected_flow_g_s). Below 1.0 = ran
     # fast, above 1.0 = ran slow/restrictive. None when a shot couldn't be
     # classified at all (t90 never reached and no samples to fall back on,
     # or too few samples). This is what expert_rules.grind_correction's
@@ -438,6 +439,15 @@ def blended_expected_flow_g_s(
     boundary - unlike mechanical suspicion below, there's nothing to protect
     against here, so the global prior is allowed to fully wash out as real
     shots accumulate rather than only ever being overridden, never replaced.
+
+    Both operands are post-pre-infusion/extraction-only rates -
+    config.expected_flow_g_s by definition (see its own field comment) and
+    baseline.median_flow_g_s because storage.roast_level_baseline subtracts
+    each pooled shot's own preinfusion_s before dividing. Blending a
+    pre-infusion-diluted observed rate against this pre-infusion-free prior
+    would drag the result down as real shots accumulate, silently
+    reintroducing the double-counted-pre-infusion bias expected_s's own
+    `preinfusion_s +` term exists to avoid.
     """
     if baseline is None:
         return config.expected_flow_g_s
@@ -522,7 +532,10 @@ def analyze_shot(
     holds no default numbers at all. baseline feeds channeling-suspicion
     scoring only. expected_flow_g_s feeds expected_s's flow-rate reference
     only (see module docstring for why these are two differently-scoped
-    baselines, not one) - it's the caller's own already-computed
+    baselines, not one) - it's a post-pre-infusion/extraction-only rate
+    (expected_s adds preinfusion_s on top, since duration_s below is
+    measured from the brew press and already includes it), the caller's own
+    already-computed
     blended_expected_flow_g_s(roast_level_baseline, config) result, not a
     baseline to blend here: runtime.py's async_brew computes and persists
     this once, at brew time, and _async_finalize must reuse that exact same

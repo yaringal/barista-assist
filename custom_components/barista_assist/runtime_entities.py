@@ -342,10 +342,16 @@ class RuntimeEntitiesMixin:
         docs/DESIGN.md's Phase 3b - fixed once per shot at
         brew time - see async_brew, ActiveShot.
         expected_flow_g_s) for the frontend's flat-then-ramp idealized
-        curve, derived there from target_yield_g. Same live-vs-frozen
-        dual source as _shot_plot_points. None values mean "not known
-        yet" (e.g. stop_command_elapsed_ms before the shot has actually
-        stopped) - the frontend must not treat that as zero."""
+        curve, derived there from target_yield_g. expected_flow_g_s is
+        post-pre-infusion/extraction-only (flow_analysis.py's own
+        module docstring/FlowAnalysisConfig.expected_flow_g_s) - the
+        frontend adds preinfusion_ms on top of target_yield_g/
+        expected_flow_g_s rather than folding it in, matching
+        analyze_shot's own expected_s formula exactly (see
+        barista-assist-dashboard.js's idealizedWeightPoints). Same
+        live-vs-frozen dual source as _shot_plot_points. None values mean
+        "not known yet" (e.g. stop_command_elapsed_ms before the shot has
+        actually stopped) - the frontend must not treat that as zero."""
         shot = self.active_shot
         if shot is not None and shot.press_monotonic is not None:
             return {

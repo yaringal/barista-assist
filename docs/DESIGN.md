@@ -1447,9 +1447,9 @@ leaving too little trustworthy data) and `runtime.py` logs it, so an
 invalid shot can be diagnosed - e.g. a BLE dropout vs. a disturbed cup -
 instead of showing up as an unexplained `invalid_measurement`.
 
-The duration thresholds (the expected total-flow rate and the too-fast/
-too-restrictive factors) are calibrated against this section's own Example
-A (18g -> 38g in 24s, explicitly "clearly fast") rather than picked
+The duration thresholds (the expected extraction-phase flow rate and the
+too-fast/too-restrictive factors) are calibrated against this section's own
+Example A (18g -> 38g in 24s, explicitly "clearly fast") rather than picked
 arbitrarily, but they're still a single anchor point, not derived data —
 see Phase 3b. The mechanical-suspicion threshold remains an unvalidated
 guess.
@@ -1459,7 +1459,14 @@ fixed constant: it blends the global prior with the median flow rate across
 *other* bags sharing the same `roast_level`, weighted by how many such
 shots exist, so a roast level that genuinely runs faster or slower than the
 generic guess stops being called "too fast"/"too restrictive" once this
-installation's own history for that roast level says otherwise. Deliberately
+installation's own history for that roast level says otherwise.
+`storage.roast_level_baseline`'s own per-shot rate subtracts that shot's
+real `preinfusion_s` before dividing, so it stays the same
+extraction-phase-only quantity `expected_flow_g_s` is (see
+`definitions.yaml`'s own comment on that key) - blending a pre-infusion-
+diluted observed rate against a pre-infusion-free prior would drag the
+blended estimate down as real shots accumulate, silently reintroducing the
+double-counted-pre-infusion bias `expected_s`'s own formula exists to avoid. Deliberately
 not blended toward the current bag's own history, unlike an earlier version
 of this design — bean-aging drift within one bag's life is handled by grind
 correction chasing a fixed reference instead, so a bag's own shots never

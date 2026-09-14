@@ -141,15 +141,21 @@ flow_analysis_constants:
   # §19/Phase 3b). One shared shrinkage weight, not one per prior. Placeholder.
   prior_weight_shots: 1.0
 
-  # expected_flow_g_s: the extraction-phase flow rate a "normal" shot runs at
-  # before this installation has its own roast-level history (blended with
-  # other bags' median flow as it accumulates - blended_expected_flow_g_s;
-  # never toward this bag's own history). too_fast_factor/too_restrictive_factor
-  # bound how far duration_s (measured from press time, so it includes
-  # pre-infusion) may deviate from expected_s = preinfusion_s + target_yield_g /
-  # expected_flow_g_s before a shot leaves "healthy" - the added preinfusion_s
-  # budgets that same dead time on the expected side instead of comparing a
-  # PI-inclusive duration against a PI-free expectation.
+  # expected_flow_g_s: the extraction-phase (post-pre-infusion) flow rate a
+  # "normal" shot runs at before this installation has its own roast-level
+  # history (blended with other bags' median flow as it accumulates -
+  # blended_expected_flow_g_s; never toward this bag's own history).
+  # too_fast_factor/too_restrictive_factor bound how far duration_s
+  # (measured from press time, so it includes pre-infusion) may deviate
+  # from expected_s = preinfusion_s + target_yield_g / expected_flow_g_s
+  # before a shot leaves "healthy" - the added preinfusion_s budgets that
+  # same dead time on the expected side instead of comparing a PI-inclusive
+  # duration against a PI-free expectation. Every value blended against or
+  # derived from this constant (RoastLevelFlowBaseline.median_flow_g_s,
+  # storage.roast_level_baseline's own query) must stay this same
+  # post-pre-infusion quantity - blending in a raw button-to-90%-yield rate
+  # would silently reintroduce the double-counted-pre-infusion bias this
+  # formula exists to avoid.
   #
   # Unlike everything else in this file, these three have a real derivation:
   # checked against every Hoffmann dial-in data point with an explicit

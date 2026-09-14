@@ -591,13 +591,23 @@ class BaristaDatabase:
         docs/DESIGN.md's Phase 3b for why healthy-only would risk
         a bootstrapping deadlock here. Returns None when roast_level is None
         (nothing to bucket by) or no matching shots exist yet.
+
+        median_flow_g_s is post-pre-infusion/extraction-only, matching
+        flow_analysis_constants.expected_flow_g_s (definitions.yaml's own
+        comment on that key) - each shot's own preinfusion_s is subtracted
+        before dividing, since analysis_json's t90_ms is measured from the
+        brew press and already includes it. Blending a pre-infusion-diluted
+        rate against the pre-infusion-free prior in
+        flow_analysis.blended_expected_flow_g_s would silently reintroduce
+        the double-counted-pre-infusion bias expected_s's own formula exists
+        to avoid.
         """
         if roast_level is None:
             return None
         with self._connect() as db:
             rows = db.execute(
                 """
-                SELECT s.dose_g, s.target_yield_g, s.analysis_json
+                SELECT s.dose_g, s.target_yield_g, s.preinfusion_s, s.analysis_json
                 FROM shots s JOIN bags b ON s.bag_id = b.id
                 WHERE b.roast_level=? AND b.id IS NOT ?
                   AND s.classification IN ('healthy', 'too_fast', 'too_restrictive')
@@ -613,9 +623,19 @@ class BaristaDatabase:
         doses = []
         for row in rows:
             data = json.loads(row["analysis_json"])
-            flow_rates.append(float(row["target_yield_g"]) / (float(data["t90_ms"]) / 1000.0))
+            # t90_ms is measured from the brew press, so it includes this
+            # shot's own preinfusion_s - subtracted here so median_flow_g_s
+            # stays the same extraction-phase-only quantity expected_flow_g_s
+            # now is (flow_analysis.py's analyze_shot expected_s formula),
+            # not diluted by a pre-infusion duration that varies shot to shot
+            # and would otherwise get blended in as if it were flow rate.
+            extraction_s = float(data["t90_ms"]) / 1000.0 - float(row["preinfusion_s"])
+            if extraction_s > 0:
+                flow_rates.append(float(row["target_yield_g"]) / extraction_s)
             ratios.append(float(row["target_yield_g"]) / float(row["dose_g"]))
             doses.append(float(row["dose_g"]))
+        if not flow_rates:
+            return None
         return {
             "shot_count": len(rows),
             "median_flow_g_s": statistics.median(flow_rates),

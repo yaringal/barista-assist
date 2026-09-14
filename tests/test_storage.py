@@ -605,19 +605,25 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.db.roast_level_baseline("medium")["shot_count"], 2)
 
     def test_roast_level_baseline_medians_across_bags_sharing_roast_level(self) -> None:
+        # finalize_with_analysis's own shots all carry preinfusion_s=7.0 -
+        # median_flow_g_s is extraction-only (t90 minus that preinfusion_s),
+        # matching flow_analysis.py's own expected_s formula, not the raw
+        # target_yield_g/t90 button-to-90%-yield rate.
         bag_a = self.new_bag(roast_level="medium")
-        # target_yield_g=36, dose_g=18 -> flow rate 1.8 g/s, ratio 2.0
+        # target_yield_g=36, dose_g=18, t90=20s -7s PI=13s -> flow rate
+        # 36/13 g/s, ratio 2.0
         self.finalize_with_analysis(bag_a, classification="healthy", late_accel=0.0, t90_ms=20000)
         # Replaces bag_a in the slot, but bag_a's own row/shots stay queryable.
         bag_b = self.new_bag(roast_level="medium")
-        # target_yield_g=36, dose_g=18 -> flow rate 1.2 g/s, ratio 2.0
+        # target_yield_g=36, dose_g=18, t90=30s -7s PI=23s -> flow rate
+        # 36/23 g/s, ratio 2.0
         self.finalize_with_analysis(bag_b, classification="healthy", late_accel=0.0, t90_ms=30000)
         bag_c = self.new_bag(roast_level="dark")
         self.finalize_with_analysis(bag_c, classification="healthy", late_accel=0.0, t90_ms=12000)
 
         baseline = self.db.roast_level_baseline("medium", exclude_bag_id=bag_b.id)
         self.assertEqual(baseline["shot_count"], 1)
-        self.assertAlmostEqual(baseline["median_flow_g_s"], 1.8)
+        self.assertAlmostEqual(baseline["median_flow_g_s"], 36.0 / 13.0)
         self.assertAlmostEqual(baseline["median_ratio"], 2.0)
         self.assertAlmostEqual(baseline["median_dose_g"], 18.0)
 
