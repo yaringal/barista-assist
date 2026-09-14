@@ -22,6 +22,7 @@ from .runtime_shared import (
     _GRIND_BAND_DELTA_FIELDS,
     _GRIND_BAND_MAX_FIELDS,
     _MIN_STEP_FIELDS,
+    _PUCK_PREP_STREAK_CONTROLLER_FIELDS,
 )
 from .storage import Bag
 
@@ -419,7 +420,7 @@ class RuntimeEntitiesMixin:
                 await self._async_save_state()
                 self._notify(force=True)
                 return
-            if field in _GRIND_BAND_CONTROLLER_FIELDS:
+            if field in _GRIND_BAND_CONTROLLER_FIELDS + _PUCK_PREP_STREAK_CONTROLLER_FIELDS:
                 setattr(self, field, float(value))
                 await self._async_save_state()
                 self._notify(force=True)

@@ -174,3 +174,13 @@ _GRIND_BAND_DELTA_FIELDS = {
 _GRIND_BAND_CONTROLLER_FIELDS = tuple(_GRIND_BAND_MAX_FIELDS.values()) + tuple(
     _GRIND_BAND_DELTA_FIELDS.values()
 )
+# expert_rules.grind_correction's own puck_prep_issue_streak_threshold/
+# puck_prep_issue_streak_coarsen_delta, dashboard-editable the same way as
+# the grind_band_* fields above (see runtime_shot.py's
+# _puck_prep_issue_streak_reached/_puck_prep_streak_coarsen_override) -
+# field name doubles as the BaristaRuntime attribute name, unlike the
+# grind bands, so no name-mapping dict is needed.
+_PUCK_PREP_STREAK_CONTROLLER_FIELDS = (
+    "puck_prep_issue_streak_threshold",
+    "puck_prep_issue_streak_coarsen_delta",
+)

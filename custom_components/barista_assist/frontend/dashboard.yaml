@@ -439,6 +439,26 @@ views:
             features: *number_buttons
             features_position: bottom
 
+      - type: grid
+        cards:
+          - type: heading
+            heading: Puck-prep issue streak override
+            heading_style: subtitle
+
+          - type: tile
+            entity: __PUCK_PREP_ISSUE_STREAK_THRESHOLD__
+            name: Streak threshold (shots)
+            color: red
+            features: *number_buttons
+            features_position: bottom
+
+          - type: tile
+            entity: __PUCK_PREP_ISSUE_STREAK_COARSEN_DELTA__
+            name: Coarsen Δ
+            color: red
+            features: *number_buttons
+            features_position: bottom
+
   - title: Shots
     path: shots
     icon: mdi:history

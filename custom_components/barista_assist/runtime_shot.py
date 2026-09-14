@@ -198,13 +198,13 @@ class RuntimeShotMixin:
 
     def _puck_prep_issue_streak_reached(self, streak: int) -> bool:
         """Whether `streak` consecutive puck_prep_issue-at-unchanged-recipe
-        shots has reached expert_rules.grind_correction.
-        puck_prep_issue_streak_threshold - shared by the actual grind-delta
+        shots has reached self.puck_prep_issue_streak_threshold - the live,
+        dashboard-editable value (see _PUCK_PREP_STREAK_CONTROLLER_FIELDS),
+        not just the YAML default - shared by the actual grind-delta
         override (_puck_prep_streak_coarsen_override) and the display note
         (runtime_entities.py's _puck_prep_streak_note) so the two can never
         disagree."""
-        threshold = self.definitions.expert_rules["grind_correction"]["puck_prep_issue_streak_threshold"]
-        return streak >= threshold
+        return streak >= self.puck_prep_issue_streak_threshold
 
     async def _puck_prep_streak_coarsen_override(
         self, shot: ActiveShot, current_recipe: dict[str, Any]
@@ -223,8 +223,7 @@ class RuntimeShotMixin:
         )
         if not self._puck_prep_issue_streak_reached(prior_streak + 1):
             return None
-        grind_config = self.definitions.expert_rules["grind_correction"]
-        return float(grind_config["puck_prep_issue_streak_coarsen_delta"])
+        return self.puck_prep_issue_streak_coarsen_delta
 
     # -- brew / stop / abort / finalize --
     async def async_brew(self) -> str:

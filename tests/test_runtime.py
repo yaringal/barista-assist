@@ -1569,6 +1569,33 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self._brew_puck_prep_issue_shot()
         self.assertEqual(self.runtime.last_shot["recommended_grind_delta"], coarsen_delta)
 
+    async def test_puck_prep_issue_streak_entities_override_the_yaml_defaults(self):
+        """puck_prep_issue_streak_threshold/puck_prep_issue_streak_coarsen_delta
+        (dashboard-editable number entities, the same pattern as
+        grind_band_grossly_fast_delta) override
+        expert_rules.grind_correction's own values for
+        _puck_prep_issue_streak_reached/_puck_prep_streak_coarsen_override,
+        not just seeded from them and then ignored."""
+        threshold_entity = next(
+            d
+            for d in self.runtime.definitions.platform("number")
+            if d.key == "puck_prep_issue_streak_threshold"
+        )
+        coarsen_delta_entity = next(
+            d
+            for d in self.runtime.definitions.platform("number")
+            if d.key == "puck_prep_issue_streak_coarsen_delta"
+        )
+        await self.runtime.async_set_entity_value(threshold_entity, 1)
+        await self.runtime.async_set_entity_value(coarsen_delta_entity, 2.5)
+        self.assertEqual(self.runtime.puck_prep_issue_streak_threshold, 1)
+        self.assertEqual(self.runtime.puck_prep_issue_streak_coarsen_delta, 2.5)
+
+        await self.create_bag()
+        await self._brew_puck_prep_issue_shot()
+
+        self.assertEqual(self.runtime.last_shot["recommended_grind_delta"], 2.5)
+
     async def test_puck_prep_streak_note_appears_once_threshold_reached(self):
         await self.create_bag()
         bag = self.runtime.selected_bag

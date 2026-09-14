@@ -428,6 +428,27 @@ number:
     step: 0.1
     mode: box
 
+  # --- Puck-prep issue streak override (expert_rules.grind_correction) ---
+  puck_prep_issue_streak_threshold:
+    source: controller
+    field: puck_prep_issue_streak_threshold
+    translation_key: puck_prep_issue_streak_threshold
+    token: __PUCK_PREP_ISSUE_STREAK_THRESHOLD__
+    min: 1
+    max: 10
+    step: 1
+    mode: box
+
+  puck_prep_issue_streak_coarsen_delta:
+    source: controller
+    field: puck_prep_issue_streak_coarsen_delta
+    translation_key: puck_prep_issue_streak_coarsen_delta
+    token: __PUCK_PREP_ISSUE_STREAK_COARSEN_DELTA__
+    min: 0.5
+    max: 5.0
+    step: 0.5
+    mode: box
+
 select:
   bean_slot:
     source: controller

@@ -48,6 +48,7 @@ from .runtime_shared import (
     _GRIND_BAND_CONTROLLER_FIELDS,
     _GRIND_BAND_DELTA_FIELDS,
     _GRIND_BAND_MAX_FIELDS,
+    _PUCK_PREP_STREAK_CONTROLLER_FIELDS,
     _recipe_snapshot,
 )
 from .runtime_shot import RuntimeShotMixin
@@ -55,6 +56,8 @@ from .storage import Bag, BaristaDatabase, ShotSample
 
 _LOGGER = logging.getLogger(__name__)
 _STORE_VERSION = 1
+
+
 def _grind_band_by_name(bands: list[dict[str, Any]], name: str) -> dict[str, Any]:
     """expert_rules.grind_correction.bands' entry for one band `name` - used
     to seed each grind_band_* controller attribute from its YAML default
@@ -108,6 +111,9 @@ class BaristaRuntime(
             setattr(self, attr, float(_grind_band_by_name(grind_bands, band_name)["duration_ratio_max"]))
         for band_name, attr in _GRIND_BAND_DELTA_FIELDS.items():
             setattr(self, attr, float(_grind_band_by_name(grind_bands, band_name)["grind_delta"]))
+        grind_correction = self.definitions.expert_rules["grind_correction"]
+        for attr in _PUCK_PREP_STREAK_CONTROLLER_FIELDS:
+            setattr(self, attr, float(grind_correction[attr]))
         self.draft = BagDraft(
             roast_date=date.today(),
             starting_mass_g=float(defaults["new_bag"]["starting_mass_g"]),
@@ -236,7 +242,7 @@ class BaristaRuntime(
         self.min_step_temperature_offset_c = float(
             state.get("min_step_temperature_offset_c", flavor_min_step["temperature_offset_c"])
         )
-        for attr in _GRIND_BAND_CONTROLLER_FIELDS:
+        for attr in _GRIND_BAND_CONTROLLER_FIELDS + _PUCK_PREP_STREAK_CONTROLLER_FIELDS:
             state.setdefault(attr, getattr(self, attr))
             setattr(self, attr, float(state[attr]))
         await self._async_save_state()
@@ -291,7 +297,10 @@ class BaristaRuntime(
                 "min_step_target_yield_g": self.min_step_target_yield_g,
                 "min_step_dose_g": self.min_step_dose_g,
                 "min_step_temperature_offset_c": self.min_step_temperature_offset_c,
-                **{attr: getattr(self, attr) for attr in _GRIND_BAND_CONTROLLER_FIELDS},
+                **{
+                    attr: getattr(self, attr)
+                    for attr in _GRIND_BAND_CONTROLLER_FIELDS + _PUCK_PREP_STREAK_CONTROLLER_FIELDS
+                },
             }
         )
 

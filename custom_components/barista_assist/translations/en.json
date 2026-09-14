@@ -198,6 +198,12 @@
       },
       "grind_band_grossly_restrictive_delta": {
         "name": "Grossly restrictive band: grind delta"
+      },
+      "puck_prep_issue_streak_threshold": {
+        "name": "Puck prep issue streak threshold"
+      },
+      "puck_prep_issue_streak_coarsen_delta": {
+        "name": "Puck prep issue streak coarsen delta"
       }
     },
     "select": {

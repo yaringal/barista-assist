@@ -549,7 +549,13 @@ overrides "repeat, don't touch grind" and instead recommends coarsening by
 note on the bag's dashboard summary. `runtime.py`'s `_async_finalize`
 computes the override; `flow_analysis.py`'s classification itself is
 unaffected - the override happens after classification, not by changing
-when a shot is called `puck_prep_issue`.
+when a shot is called `puck_prep_issue`. Both `puck_prep_issue_streak_threshold`
+and `puck_prep_issue_streak_coarsen_delta` are also dashboard-editable number
+entities (in the "Connection and control" card's "Grind correction" group,
+alongside the `grind_band_*` entities above), the same pattern - seeded from
+the `definitions.yaml` defaults and persisted like any other dashboard
+setting (`RuntimeShotMixin._puck_prep_issue_streak_reached`/
+`_puck_prep_streak_coarsen_override`).
 
 ---
 
