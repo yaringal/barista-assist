@@ -828,6 +828,31 @@ Decaf
 
 The active bag determines which recipe, history, and model are used.
 
+**Implemented, including a bug fix for the "history" part of that
+sentence.** Every per-bag cache in `async_refresh_cache` (`_bag_latest_shot`,
+`_bag_flavor_tags`, `_bag_flavor_latest_tagged_shot_recipe`,
+`_bag_puck_prep_streak`) is precomputed for *every* bag regardless of
+selection, so grind/flavor correction were always correctly scoped to
+whichever bag they're reasoning about. `BaristaRuntime.last_shot`
+(`storage.latest_shot_bag`) was not: it queried the single most recent shot
+across the *entire installation*, any bag, with no `bag_id` filter at all -
+so viewing the decaf bag's grind tile right after pulling a shot on the
+normal bag showed a "recommended" correction computed from the normal
+bag's own last shot and grind value, paired against the decaf bag's own
+live current grind as "current" - two different bags' numbers on the same
+tile. Fixed by scoping `storage.latest_shot_bag` to `bag_id` and refreshing
+`BaristaRuntime.last_shot` from the *currently selected* bag on every
+cache refresh. This one cache also needed `async_select_slot` itself to
+call `async_refresh_cache` (it previously only did on a recipe edit or a
+new bag) - the other four per-bag caches never needed that, since they
+already cover every bag up front, but `last_shot` is selected-bag-only by
+construction, so switching slots without this left it stuck on whichever
+bag was selected before the switch. Affects `last_yield`/
+`shot_classification`/`shot_channeling_suspicion`/`recommended_grind` (the
+four `source: last_shot` sensors) and the Live Shot/Shot History chart's
+"no active shot" fallback (`_shot_markers`/`_shot_plot_points`) alike, all
+via this one shared attribute.
+
 ---
 
 ## 18. Starting a new bag
@@ -1695,6 +1720,41 @@ persistence-count rule at all: a shot can't keep tasting more sour forever
 as yield keeps climbing, so sustained pushing in one direction is
 physically bound to produce either `balanced` or the axis's *other* tag
 within a bounded number of shots.
+
+**A recommendation is anchored to the shot it was actually tagged
+against, not recomputed off the bag's live recipe.** `runtime_entities.py`'s
+`_flavor_axis_state` reads "current" from `storage.latest_tagged_shot_recipe`
+(that shot's own frozen `dose_g`/`target_yield_g`/`temperature_offset_c`/
+`preinfusion_s`), never `getattr(bag, field)`. It resets to nothing tracked
+once *any* of `expert_rules.flavor_correction.hold_constant`'s own recipe
+fields has actually changed on the bag's latest shot since this axis was
+last tagged - the same field list/reasoning `grind_correction.hold_constant`
+already uses to attribute a taste change to a single lever, checked by
+comparing all of them between the tagged shot and the latest shot
+(`storage.latest_shot`, extended with the same recipe columns), not
+merely by checking whether a newer shot exists at all, and not only the one
+field this axis's own recommendation happens to touch. A shot where several
+things changed at once can't be cleanly attributed to any one of them - so
+if a *different* axis's own applied recommendation (or an unrelated manual
+edit) moved some other field, every axis's recommendation resets together,
+even the one whose own lever never moved, because the shot that would
+confirm or deny it no longer isolates it. Only when a newer, untagged shot
+is brewed identically to the last tagged one - nothing in `hold_constant`
+touched at all - does every existing recommendation stay exactly as
+accurate as it was; resetting it anyway would flicker away a valid
+suggestion for no reason. `resolve_flavor_state`'s replayed history/step
+size is untouched underneath regardless, ready to react correctly once the
+axis does get tagged again. Two failure modes this closes: recomputing
+"current" live would make the displayed numbers drift the moment a user
+edits the bag's recipe in anticipation of brewing, before that shot even
+exists - and never resetting once the recipe has genuinely moved would keep
+recommending a further step (e.g. "40 -> 44" right after the user already
+applied "36 -> 40") with zero new evidence the previous step even helped.
+The reset happens on an actual recipe change specifically, not any live
+pre-brew edit, so a user assembling a combination of recommendations across
+axes (say, yield from one and dose from another) before pressing Brew never
+has one reset out from under the other mid-edit - only once they actually
+brew again.
 
 **Citation, pinned here since it's easy to lose track of**: the actual
 yield magnitude each of those repeated pushes uses (`sour_sharp`'s

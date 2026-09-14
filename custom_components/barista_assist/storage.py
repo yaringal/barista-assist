@@ -291,14 +291,38 @@ class BaristaDatabase:
                 ],
             )
 
-    def last_shot(self) -> dict[str, Any] | None:
+    def latest_shot_bag(self, bag_id: str) -> dict[str, Any] | None:
+        """Not to be confused with latest_shot below - a different method
+        for a different purpose. This one is about the coffee bag itself:
+        every shot column *plus* the bag's own display fields (coffee_name/
+        slot/roaster, via the join), with no classification filter, for
+        runtime.py's own BaristaRuntime.last_shot - the source for the
+        last_yield/shot_classification/shot_channeling_suspicion/
+        recommended_grind sensors and the Live Shot/Shot History chart's
+        "no active shot" fallback (_shot_markers/_shot_plot_points) - a
+        display record of whatever this bag's most recent shot actually
+        was. latest_shot is narrower and internal: a handful of fields
+        (classification/recommended_grind_delta/the recipe snapshot),
+        classified shots only, feeding the grind suppress-guard and flavor-
+        correction's own hold_constant staleness check, never shown
+        directly.
+
+        Deliberately scoped by bag_id, not global across the whole
+        installation - with two active slots (docs/DESIGN.md §17: "the
+        active bag determines which recipe, history, and model are used"),
+        showing a different bag's last shot while looking at this one would
+        attach a grind/flavor recommendation, yield figure, or chart
+        overlay to a bag it was never actually about. None if this bag has
+        no shot yet."""
         with self._connect() as db:
             row = db.execute(
                 """
                 SELECT s.*, b.coffee_name, b.slot, b.roaster
                 FROM shots s JOIN bags b ON b.id=s.bag_id
+                WHERE s.bag_id=?
                 ORDER BY s.started_at DESC LIMIT 1
-                """
+                """,
+                (bag_id,),
             ).fetchone()
         return dict(row) if row else None
 
@@ -487,19 +511,58 @@ class BaristaDatabase:
             ).fetchone()
         return dict(row) if row else None
 
-    def latest_shot_health(self, bag_id: str) -> dict[str, Any] | None:
-        """This bag's own most recent classified shot's classification and
-        recommended_grind_delta - runtime.py's input for docs/DESIGN.md's
-        Phase 5 suppress-taste-while-grind-is-correcting guard. None if
-        this bag has no classified shot yet (nothing to suppress against).
-        Scoped strictly by bag_id, same reasoning as
-        previous_grind_correction_shot above."""
+    def latest_shot(self, bag_id: str) -> dict[str, Any] | None:
+        """Not to be confused with latest_shot_bag above - see that method's own
+        docstring for the distinction (that one's a full display record of
+        the bag's most recent shot; this one's a narrow internal signal,
+        classified shots only). This bag's own most recent classified
+        shot's id, classification,
+        recommended_grind_delta, and recipe snapshot (dose_g/target_yield_g/
+        temperature_offset_c/preinfusion_s) - runtime.py's input for docs/
+        DESIGN.md's Phase 5 suppress-taste-while-grind-is-correcting guard,
+        and (via its own id/recipe fields) for detecting whether any of
+        expert_rules.flavor_correction.hold_constant's fields has actually
+        changed since a flavor axis was last tagged (see
+        latest_tagged_shot_recipe below - runtime_entities.py's
+        _flavor_axis_state compares this shot's own hold_constant field
+        values against that one's, not just whether a newer shot exists at
+        all, so an untagged shot that changed nothing relevant doesn't
+        needlessly reset every axis's recommendation). None if this bag has
+        no classified shot yet (nothing to suppress against). Scoped
+        strictly by bag_id, same reasoning as previous_grind_correction_shot
+        above."""
         with self._connect() as db:
             row = db.execute(
                 """
-                SELECT classification, recommended_grind_delta
+                SELECT id, classification, recommended_grind_delta,
+                       dose_g, target_yield_g, temperature_offset_c, preinfusion_s
                 FROM shots
                 WHERE bag_id=? AND classification IS NOT NULL
+                ORDER BY started_at DESC LIMIT 1
+                """,
+                (bag_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def latest_tagged_shot_recipe(self, bag_id: str, axis: str) -> dict[str, Any] | None:
+        """The most recent shot on this bag answered on `axis` (a non-null
+        flavor tag there), together with that shot's own id and recipe
+        snapshot (dose_g/target_yield_g/temperature_offset_c/
+        preinfusion_s) - runtime_entities.py's own input for freezing a
+        flavor recommendation's "current" value to the shot it was
+        actually reported against, and for detecting a newer, not-yet-
+        tagged shot since (docs/DESIGN.md's Phase 5): the bag's live recipe
+        fields can already be mid-edit toward a combination of pending
+        recommendations before the user even presses Brew, so "current"
+        must never be read live off the bag. None if this bag has never
+        been tagged on this axis."""
+        tag_column = self._FLAVOR_AXIS_COLUMNS[axis]
+        with self._connect() as db:
+            row = db.execute(
+                f"""
+                SELECT id, dose_g, target_yield_g, temperature_offset_c, preinfusion_s
+                FROM shots
+                WHERE bag_id=? AND {tag_column} IS NOT NULL
                 ORDER BY started_at DESC LIMIT 1
                 """,
                 (bag_id,),

@@ -26,7 +26,13 @@ class RuntimeBagMixin:
         self.selected_slot = slot
         _LOGGER.debug("Selected bean slot: %s", slot)
         await self._async_save_state()
-        self._notify(force=True)
+        # self.last_shot/_last_shot_samples are scoped to the selected bag
+        # (storage.latest_shot_bag) - every other per-bag cache here
+        # (_bag_latest_shot, _bag_flavor_tags, etc.) is already precomputed
+        # for every bag regardless of selection, but these two aren't, so
+        # switching slots without this would leave them showing the
+        # previously selected bag's own last shot instead of this one's.
+        await self.async_refresh_cache()
 
     def _validate_recipe_field(self, field: str, value: float | int) -> float | int:
         matching = [

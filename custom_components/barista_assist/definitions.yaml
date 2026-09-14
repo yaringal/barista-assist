@@ -334,6 +334,19 @@ expert_rules:
       dose_g: 0.5
       target_yield_g: 4
 
+    # Same list/reasoning as grind_correction.hold_constant above, applied
+    # to taste attribution instead of grind: a flavor-axis recommendation's
+    # "current" figure is only a clean, still-attributable comparison point
+    # if none of these moved since it was tagged - not just the one field
+    # that axis's own lever happens to touch. If any of them changed for
+    # any reason (this axis's own recommendation applied, a different
+    # axis's recommendation applied, or an unrelated manual edit),
+    # every axis's recommendation resets until re-tagged, not just the
+    # one whose field moved - a shot where several things changed at once
+    # can't be cleanly attributed to any single one of them (runtime_
+    # entities.py's _flavor_axis_state).
+    hold_constant: [dose_g, target_yield_g, temperature_offset_c, preinfusion_s]
+
     # How much smaller each overshoot correction is than the step that
     # caused it - not sourced from any transcript (evidence says "smaller,"
     # not "half"). grind_correction's own damping uses a discrete

@@ -19,6 +19,16 @@ populations it splits shots into? Built from the same fixture set, using
 runtime.py's own _observed_stop_latency (the exact formula
 _update_learned_stop_latency itself nudges stop_latency_normal_s/elevated_s
 with) so this can never drift out of sync with the real mechanism.
+
+docs/todo/ADAPTIVE_LEARNING_PLAN.md §3 (GrindFlavorConsistencyReport): does
+duration_ratio far from 1.0 actually correlate with the taste complaint a
+real recorded shot's own flavor tag would predict - or not? Ground-truth
+taste labels per shot didn't exist before flavor_correction.py's
+taste-feedback notifications; now that fixtures can carry
+flavor_extraction_tag/flavor_mouthfeel_tag (real_shot_fixtures.py), this
+checks whether a shot classified too_fast/too_restrictive (or healthy) and
+tagged with an under-/over-extraction-signature complaint actually agree on
+direction.
 """
 
 from __future__ import annotations
@@ -177,6 +187,90 @@ class StopLatencyBucketDriftReport(unittest.TestCase):
             "in a low-density gap, and whether there's enough data yet to "
             "consider a continuous flow->latency regression instead of the "
             "two-bucket model (docs/DESIGN.md's Phase 3b).\n"
+        )
+
+
+# A tag's expert_rules.flavor_correction.tags[tag] "lever"/"direction" ->
+# which extraction direction it signals (see docs/data/DIAL_IN_RULES.md's
+# own reasoning for sour_sharp/bitter_harsh/dry_astringent): a "yield"-lever
+# tag asking to "increase" yield is an under-extraction complaint (predicts
+# a fast/short shot, duration_ratio < 1.0); "decrease" is an over-extraction
+# complaint (predicts a slow/restrictive shot, duration_ratio > 1.0).
+# thin_weak (lever: dose) has no duration_ratio-relevant direction at all -
+# excluded by the lever check below, not a special case. "balanced" has
+# neither field set (definitions.yaml's own tags.balanced entry), so it's
+# excluded the same way - nothing to check a "no complaint" report against.
+_DIRECTION_BY_TAG_DIRECTION = {"increase": "under", "decrease": "over"}
+_DIRECTION_BY_CLASSIFICATION = {"too_fast": "under", "too_restrictive": "over"}
+
+
+class GrindFlavorConsistencyReport(unittest.TestCase):
+    """See module docstring - this never fails the suite, it only reports."""
+
+    def test_report_duration_ratio_disagreements_with_recorded_flavor_tags(self) -> None:
+        tags_config = definitions.load_definitions().expert_rules["flavor_correction"]["tags"]
+
+        def tag_direction(tag: str | None) -> str | None:
+            if tag is None:
+                return None
+            config = tags_config.get(tag)
+            if config is None or config.get("lever") != "yield":
+                return None
+            return _DIRECTION_BY_TAG_DIRECTION[config["direction"]]
+
+        checked = 0
+        findings = []
+        for path in sorted(FIXTURES_DIR.glob("*.txt")):
+            shot = load_real_shot(path.stem)
+            for axis, tag in (
+                ("extraction", shot.flavor_extraction_tag),
+                ("mouthfeel", shot.flavor_mouthfeel_tag),
+            ):
+                expected = tag_direction(tag)
+                if expected is None:
+                    continue
+                checked += 1
+                result = analyze_shot(
+                    shot.samples,
+                    target_yield_g=shot.target_yield_g,
+                    preinfusion_s=shot.preinfusion_s,
+                    baseline=None,
+                    expected_flow_g_s=CONFIG.expected_flow_g_s,
+                    config=CONFIG,
+                )
+                actual = _DIRECTION_BY_CLASSIFICATION.get(str(result.classification))
+                if actual is not None and actual != expected:
+                    ratio = f"{result.duration_ratio:.3f}" if result.duration_ratio is not None else "n/a"
+                    caveat = (
+                        " (bitter_harsh's own fines_caveat: this can be a weaker signal - "
+                        "bitter without watery/drying mouthfeel may itself be "
+                        "under-extraction/channeling, not over-extraction)"
+                        if tag == "bitter_harsh"
+                        else ""
+                    )
+                    findings.append(
+                        f"{path.stem} ({axis}={tag}, implies '{expected}'-extracted): "
+                        f"classified {result.classification} (duration_ratio={ratio}){caveat}"
+                    )
+
+        print(
+            "\n=== Grind-vs-flavor consistency report "
+            "(docs/todo/ADAPTIVE_LEARNING_PLAN.md §3) ==="
+        )
+        print(
+            f"  {checked} fixture/axis pair(s) carried a directional flavor "
+            "tag (sour_sharp/bitter_harsh/dry_astringent) to check "
+            "duration_ratio's implied direction against"
+        )
+        if findings:
+            for line in findings:
+                print(f"  {line}")
+        print(
+            "  Not a pass/fail check - a disagreement means timing and "
+            "taste point opposite directions for this shot, worth a "
+            "human's attention once enough tagged fixtures exist to see a "
+            "real pattern rather than one noisy data point (docs/todo/"
+            "ADAPTIVE_LEARNING_PLAN.md §3).\n"
         )
 
 

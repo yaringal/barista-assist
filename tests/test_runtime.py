@@ -613,6 +613,53 @@ class ShotMarkersTests(RuntimeTestCase):
         self.assertGreater(self.runtime.active_shot.expected_flow_g_s, global_prior)
 
 
+class MultiSlotLastShotScopingTests(RuntimeTestCase):
+    """docs/DESIGN.md §17: "the active bag determines which recipe,
+    history, and model are used" - self.last_shot (storage.latest_shot_bag) and
+    everything sourced from it (last_yield/shot_classification/
+    shot_channeling_suspicion/recommended_grind sensors, the Live Shot
+    chart's "no active shot" fallback) must reflect the *currently
+    selected* bag's own last shot, never a different bag's, even though
+    both bags/slots share the same runtime instance and caches."""
+
+    def _sensor(self, key: str):
+        definition = self.runtime.definitions.entity("sensor", key)
+        return self.runtime.entity_value(definition)
+
+    async def test_last_shot_does_not_leak_across_a_slot_switch(self):
+        await self.start_shot()
+        await self.wait_for_extracting()
+        self.scale.push_reading(make_reading(weight_g=36.0))
+        await self.runtime._async_finalize("complete")
+        normal_shot_id = self.runtime.last_shot["id"]
+        self.assertIsNotNone(self.runtime.last_shot)
+        self.assertEqual(self._sensor("shot_classification"), self.runtime.last_shot["classification"])
+
+        # A brand-new bag in the *other* slot, never brewed - selecting it
+        # must not keep showing the normal slot's own last shot.
+        await self.runtime.async_new_bag(
+            {
+                "slot": "decaf",
+                "coffee_name": "Decaf Coffee",
+                "preinfusion_s": 1.0,
+                "target_yield_g": 36.0,
+                "roast_level": None,
+            }
+        )
+        self.assertEqual(self.runtime.selected_slot, "decaf")
+        self.assertIsNone(self.runtime.last_shot)
+        self.assertIsNone(self._sensor("shot_classification"))
+        self.assertIsNone(self._sensor("last_yield"))
+
+        # Switching back must restore the normal slot's own last shot -
+        # async_select_slot must itself refresh the cache, not just leave
+        # last_shot at whatever the decaf slot last had (nothing).
+        await self.runtime.async_select_slot("normal")
+        self.assertIsNotNone(self.runtime.last_shot)
+        self.assertEqual(self.runtime.last_shot["id"], normal_shot_id)
+        self.assertEqual(self._sensor("shot_classification"), self.runtime.last_shot["classification"])
+
+
 class BotLockSerializationTests(RuntimeTestCase):
     async def test_press_waits_for_an_in_flight_prepare_call(self):
         """Regression test: _async_prepare_brew_bot (used by brew and the
@@ -1633,10 +1680,15 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.assertIn(f"puck_prep_issue x{threshold} in a row", note)
 
     async def test_suppress_guard_blanks_the_active_recommendation_but_not_the_summary(self):
-        """docs/todo/LEVER_SEQUENCING_PLAN.md §5: once the bag's last shot
-        needs grind correcting again, the single active (per-tile)
-        recommendation is suppressed, but the last-shot summary still shows
-        every lever that could help - the two surfaces split per §3.2/§4."""
+        """docs/DESIGN.md's Phase 5: the classification-based suppress
+        guard (_active_flavor_field_recommendation's own "not yet healthy"
+        check) only ever blanks the single active (per-tile) recommendation
+        - it plays no part in _flavor_axis_state's separate staleness reset
+        (see the field-change test below for that one in isolation), so a
+        too_fast shot that never touched target_yield_g leaves the
+        last-shot summary exactly as accurate as it was: still worth
+        showing as background context even while the active tile is
+        suppressed in favor of the more urgent grind correction."""
         await self.create_bag()
         target_yield = self.runtime.selected_bag.target_yield_g
         # Healthy shot + persistent-looking tag - establishes an active
@@ -1657,13 +1709,234 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self.runtime.async_refresh_cache()
         self.assertIsNotNone(self._recommended_attribute("number", "target_yield"))
 
-        # Now a too_fast shot - grind still has something to correct.
+        # Now a too_fast shot - grind still has something to correct, and
+        # target_yield_g was never touched, so the summary stays valid.
         await self._brew_too_fast_shot()
 
         self.assertIsNone(self._recommended_attribute("number", "target_yield"))
         note = self._recommended_flavor()
         self.assertIsNotNone(note)
         self.assertIn(f"{target_yield:g}", note)
+
+    async def test_suppress_guard_blanks_the_active_recommendation_for_a_puck_prep_issue_shot(self):
+        """The suppress-guard (runtime_entities.py's
+        _active_flavor_field_recommendation) gates on the last shot's
+        classification alone ("not yet healthy"), not on whether grind
+        correction actually has a concrete recommended_grind_delta to offer.
+        puck_prep_issue is exactly the case where those two diverge:
+        expert_rules.grind_correction excludes puck_prep_issue from ever
+        getting a grind delta (grind_correction.recommend_grind_delta
+        returns None for it), and below the puck-prep-issue streak
+        threshold there's no coarsen-override either - so grind correction
+        has nothing concrete to recommend at all, yet the active flavor
+        recommendation must still be suppressed, exactly as it would be for
+        a too_fast shot that does have one.
+
+        Tags the puck_prep_issue shot itself directly (bypassing the
+        normal healthy-only notification flow - record_flavor_tag has no
+        classification guard of its own) so that same shot stays
+        _flavor_axis_state's own recipe snapshot - isolating this
+        classification-based suppression from the newer-shot freshness
+        reset (see the test above), which would otherwise empty the
+        summary too for an unrelated reason and hide whether this guard
+        alone still works."""
+        # Pinned explicitly (not left at whatever definitions.yaml/the
+        # dashboard currently has it set to) so a single puck_prep_issue
+        # shot below is guaranteed to stay below the streak threshold -
+        # otherwise retuning puck_prep_issue_streak_threshold to 1 would
+        # make this very shot trigger the coarsen-override, breaking the
+        # recommended_grind_delta assertion below for an unrelated reason.
+        self.runtime.puck_prep_issue_streak_threshold = 2
+        await self.create_bag()
+        target_yield = self.runtime.selected_bag.target_yield_g
+
+        # A single puck_prep_issue shot - below the streak threshold pinned
+        # above, so no coarsen-override either: grind correction has
+        # nothing concrete to recommend at all.
+        await self._brew_puck_prep_issue_shot()
+        self.assertIsNone(self.runtime.last_shot["recommended_grind_delta"])
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
+        await self.runtime.async_refresh_cache()
+
+        self.assertIsNone(self._recommended_attribute("number", "target_yield"))
+        note = self._recommended_flavor()
+        self.assertIsNotNone(note)
+        self.assertIn(f"{target_yield:g}", note)
+
+    async def test_flavor_recommendation_ignores_a_live_recipe_edit_before_brewing(self):
+        """docs/DESIGN.md's Phase 5: _flavor_axis_state reads "current" from
+        the tagged shot's own frozen recipe snapshot, never the bag's live
+        field - a user assembling a combination of recommendations (or just
+        experimenting) by editing the dashboard before pressing Brew must
+        not see the displayed numbers shift out from under them mid-edit."""
+        await self.create_bag()
+        original_target_yield = self.runtime.selected_bag.target_yield_g
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
+        await self.runtime.async_refresh_cache()
+        before_edit = self._recommended_attribute("number", "target_yield")
+        self.assertIsNotNone(before_edit)
+        self.assertIn(f"{original_target_yield:g}", before_edit)
+
+        # Edit the recipe live, without brewing - no new shot exists yet.
+        await self.runtime.async_update_recipe_field("target_yield_g", original_target_yield + 1.0)
+
+        after_edit = self._recommended_attribute("number", "target_yield")
+        self.assertEqual(after_edit, before_edit)
+
+    async def test_flavor_recommendation_resets_once_the_recommended_field_actually_changes(self):
+        """docs/DESIGN.md's Phase 5: _flavor_axis_state resets to nothing
+        tracked once the *specific field the recommendation is about* has
+        actually changed since this axis was last tagged - checked by
+        comparing that field's value, not merely whether a newer shot
+        exists. Applying the recommendation (here, via async_update_recipe_
+        field, the real dashboard-edit path) and then brewing an untagged
+        shot at the new value is what makes it stale; the companion test
+        above shows the opposite case (a newer shot that never touches the
+        field) deliberately staying valid. Tagging the new shot
+        re-establishes a recommendation, now anchored to its own recipe."""
+        await self.create_bag()
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
+        await self.runtime.async_refresh_cache()
+        recommended_note = self._recommended_attribute("number", "target_yield")
+        self.assertIsNotNone(recommended_note)
+
+        # Apply the recommendation for real, then brew a new healthy shot
+        # at the changed value - not tagged yet.
+        new_target_yield = self.runtime.selected_bag.target_yield_g + 4.0
+        await self.runtime.async_update_recipe_field("target_yield_g", new_target_yield)
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=new_target_yield
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.async_refresh_cache()
+        self.assertEqual(self.runtime.last_shot["classification"], "healthy")
+        self.assertIsNone(self._recommended_attribute("number", "target_yield"))
+        self.assertIsNone(self._recommended_flavor())
+
+        # Tagging the new shot re-establishes a recommendation.
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
+        await self.runtime.async_refresh_cache()
+        self.assertIsNotNone(self._recommended_attribute("number", "target_yield"))
+
+    async def test_flavor_recommendation_survives_an_untagged_shot_that_never_touched_the_field(
+        self,
+    ) -> None:
+        """The mirror image of the field-change test above, isolated from
+        classification suppression: a new *healthy*, untagged shot that
+        never touched target_yield_g leaves the active (per-tile)
+        recommendation exactly as valid as it was, not just the summary -
+        an untagged shot alone is not what makes a recommendation stale."""
+        await self.create_bag()
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
+        await self.runtime.async_refresh_cache()
+        before = self._recommended_attribute("number", "target_yield")
+        self.assertIsNotNone(before)
+
+        # A second healthy shot, untagged, at the same target_yield_g.
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.async_refresh_cache()
+        self.assertEqual(self.runtime.last_shot["classification"], "healthy")
+
+        after = self._recommended_attribute("number", "target_yield")
+        self.assertEqual(after, before)
+
+    async def test_flavor_recommendation_resets_when_an_unrelated_hold_constant_field_changes(
+        self,
+    ) -> None:
+        """expert_rules.flavor_correction.hold_constant covers dose_g too,
+        not just target_yield_g - extraction's own sour_sharp/yield
+        recommendation resets once *dose* changes, even though yield
+        itself never moved, because a shot where dose also changed can't
+        cleanly confirm or deny whether the yield recommendation alone
+        would have helped. This is the cross-field case the "survives an
+        untouched field" test above deliberately does not cover."""
+        await self.create_bag()
+        original_dose = self.runtime.selected_bag.dose_g
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag,
+            self.runtime.last_shot["id"],
+            "extraction",
+            "sour_sharp",
+        )
+        await self.runtime.async_refresh_cache()
+        self.assertIsNotNone(self._recommended_attribute("number", "target_yield"))
+
+        # Change dose only - target_yield_g stays exactly as it was.
+        await self.runtime.async_update_recipe_field("dose_g", original_dose + 0.5)
+        await self.runtime.async_brew()
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        await self.runtime.async_refresh_cache()
+        self.assertEqual(self.runtime.last_shot["classification"], "healthy")
+
+        self.assertIsNone(self._recommended_attribute("number", "target_yield"))
+        self.assertIsNone(self._recommended_flavor())
 
     async def _brew_too_fast_shot(self) -> None:
         await self.runtime.async_brew()

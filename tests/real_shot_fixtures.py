@@ -68,6 +68,20 @@ class RealShot:
         raw = self.fields.get("actual_yield_g", "")
         return float(raw) if raw else None
 
+    @property
+    def flavor_extraction_tag(self) -> str | None:
+        """None when blank - most fixtures predate flavor-tag capture (or
+        the barista simply never tagged that shot), so this is absent far
+        more often than present. tests/test_constant_drift.py's
+        GrindFlavorConsistencyReport is the one consumer so far - see
+        docs/todo/ADAPTIVE_LEARNING_PLAN.md §3."""
+        return self.fields.get("flavor_extraction_tag") or None
+
+    @property
+    def flavor_mouthfeel_tag(self) -> str | None:
+        """None when blank - same scope as flavor_extraction_tag above."""
+        return self.fields.get("flavor_mouthfeel_tag") or None
+
 
 def load_real_shot(name: str) -> RealShot:
     """Parse tests/fixtures/real_shots/{name}.txt."""

@@ -17,6 +17,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .definitions import EntityDefinition
 from .flavor_correction import resolve_flavor_state
 from .runtime_shared import (
+    _FLAVOR_AXES,
     _FLAVOR_TAG_LABELS,
     _GRIND_BAND_CONTROLLER_FIELDS,
     _GRIND_BAND_DELTA_FIELDS,
@@ -24,7 +25,6 @@ from .runtime_shared import (
     _MIN_STEP_FIELDS,
     _PUCK_PREP_STREAK_CONTROLLER_FIELDS,
 )
-from .storage import Bag
 
 _LOGGER = logging.getLogger(__name__)
 # Cap on points returned by _shot_plot_points, regardless of how many raw
@@ -67,7 +67,7 @@ class RuntimeEntitiesMixin:
             if field == "remaining_g":
                 return self._bag_remaining.get(self.selected_slot)
             if field == "recommended_flavor_note":
-                return self._recommended_flavor_note(bag)
+                return self._recommended_flavor_note()
             return getattr(bag, str(field))
         raise HomeAssistantError(f"Unsupported entity source: {source}")
 
@@ -78,8 +78,13 @@ class RuntimeEntitiesMixin:
         shot was created) rather than the bag's live current grind, which
         may have since been changed for an unrelated reason and would no
         longer match what recommended_grind_delta was computed against.
-        None when the last shot has no recommendation at all (healthy, or
-        excluded as puck_prep_issue/invalid_measurement)."""
+        self.last_shot is itself scoped to the currently selected bag
+        (storage.latest_shot_bag) - backs both the standalone recommended_grind
+        sensor and (via _recommended_note_for) the grind tile's own
+        "recommended" decoration, so switching slots always shows this
+        bag's own last shot, never a different bag's. None when the last
+        shot has no recommendation at all (healthy, or excluded as
+        puck_prep_issue/invalid_measurement)."""
         if not self.last_shot:
             return None
         delta = self.last_shot.get("recommended_grind_delta")
@@ -126,25 +131,140 @@ class RuntimeEntitiesMixin:
             bands.append(overridden)
         return {**config, "bands": bands}
 
-    def _stalled_flavor_tags(self, bag: Bag) -> list[str]:
+    def _flavor_axis_state(
+        self, axis: str
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """resolve_flavor_state's result for the *currently selected* bag's
+        own axis, reset to
+        "nothing tracked" ({"recommendation": None, "active_tag": None})
+        once *any* of expert_rules.flavor_correction.hold_constant's own
+        recipe fields (dose_g/target_yield_g/temperature_offset_c/
+        preinfusion_s - the same list/reasoning grind_correction's own
+        hold_constant uses to attribute a taste change to a single lever)
+        has changed since this axis was last tagged - not just the one
+        field this axis's own recommendation happens to touch, and not
+        merely because a newer shot exists at all. A shot where several
+        things changed at once can't be cleanly attributed to any one of
+        them: even if this axis's own lever never moved, some *other*
+        change (a different axis's own applied recommendation, an
+        unrelated manual edit) means the shot that would confirm or deny
+        this axis's recommendation no longer isolates it, so every axis
+        resets together, not just whichever one's field happened to move.
+        But if nothing in hold_constant moved at all - a newer, untagged
+        shot brewed identically to the last tagged one - every existing
+        recommendation is still exactly as accurate as it was, so there's
+        no reason to hide any of them. Reset happens on an actual recipe
+        change specifically, not any live pre-brew edit (see storage.
+        latest_tagged_shot_recipe's own docstring) - so a user assembling
+        several recommendations at once (e.g. yield from one axis, dose
+        from another) before brewing never has one of them reset out from
+        under the other mid-edit, only once they actually brew again.
+
+        Returns (state, recipe): recipe is the tagged shot's own frozen
+        recipe snapshot (dose_g/target_yield_g/temperature_offset_c/
+        preinfusion_s - storage.latest_tagged_shot_recipe, cached in
+        async_refresh_cache) to compute "current" from instead of the
+        bag's live, possibly not-yet-brewed values - None whenever there's
+        nothing currently tracked or nothing to check staleness against
+        (the "stalled, nowhere further to escalate" state has no specific
+        field/number that could go stale, so it's returned as-is,
+        ungated)."""
+        bag = self.selected_bag
+        if bag is None:
+            return {"recommendation": None, "active_tag": None}, None
+        config = self._flavor_correction_config()
+        history = list(reversed(self._bag_flavor_tags.get(bag.id, {}).get(axis, [])))
+        # we predict what flavour recommendation we need to make: (not retrospective simulation)
+        state = resolve_flavor_state(history, config)
+        if state["active_tag"] is None:
+            _LOGGER.debug("Bag %s: %s axis has nothing tracked (no tag history)", bag.id, axis)
+            return state, None
+        recommendation = state["recommendation"]
+        if recommendation is None:
+            _LOGGER.debug(
+                "Bag %s: %s axis stalled on %s - nowhere further to escalate, no field to "
+                "check staleness against",
+                bag.id, axis, state["active_tag"],
+            )
+            return state, None
+        # we finalized our last shot and it's in the database, get it
+        recipe = self._bag_flavor_latest_tagged_shot_recipe.get(bag.id, {}).get(axis)
+        latest_shot = self._bag_latest_shot.get(bag.id)
+        if recipe is None or latest_shot is None:
+            # active_tag is set, so at least one tag was recorded for this
+            # axis - a missing recipe/latest_shot here means the cache
+            # (async_refresh_cache) and the tag history it read disagree,
+            # which shouldn't happen; logged louder than the routine reset
+            # below since it points at a real bug, not an expected state.
+            _LOGGER.warning(
+                "Bag %s: %s axis has active_tag=%s but recipe=%r latest_shot=%r - "
+                "cache inconsistency, treating as nothing tracked",
+                bag.id, axis, state["active_tag"], recipe, latest_shot,
+            )
+            return {"recommendation": None, "active_tag": None}, None
+        # we look at changed vs the finalized latest shot
+        # (so if the last shot used the same recipe without
+        # following the recommendation, it will not flag)
+        #
+        # `recipe` and `latest_shot` are two *separate* rows only until this
+        # axis's own next tag lands on whichever shot changed the recipe -
+        # `recipe` always comes from THIS axis's own most recently tagged
+        # shot (storage.latest_tagged_shot_recipe), so the moment this axis
+        # gets tagged again, `recipe` becomes that same new shot's row and
+        # `latest_shot` (the bag's own latest shot) is that identical row
+        # read a second time - comparing a row against itself, always
+        # empty, never flagged. So "changed" isn't a one-time bag-wide
+        # switch that flips back off on its own: each axis clears it
+        # independently, only by being re-tagged itself. A worked example:
+        # shot1 tagged extraction=sour_sharp (36->40) and mouthfeel=
+        # thin_weak; user applies the yield change, brews shot2 untagged -
+        # both axes now see recipe(shot1, yield=36) != latest_shot(shot2,
+        # yield=40), so both reset to {}. Tagging shot2 extraction=
+        # sour_sharp again moves extraction's own `recipe` to shot2 itself
+        # (recipe == latest_shot -> not flagged -> reappears as 40->44),
+        # while mouthfeel's `recipe` is still shot1 (still flagged, still
+        # {}) until mouthfeel itself gets tagged on shot2 or later.
+        changed = [
+            hc_field
+            for hc_field in config["hold_constant"]
+            if recipe[hc_field] != latest_shot[hc_field]
+        ]
+        if changed:
+            _LOGGER.debug(
+                "Bag %s: %s axis's last tag was on shot %s, but the latest shot %s changed "
+                "%s - stale, resetting until this axis is tagged again",
+                bag.id, axis, recipe["id"], latest_shot["id"], changed,
+            )
+            return {"recommendation": None, "active_tag": None}, None
+        _LOGGER.debug(
+            "Bag %s: %s axis fresh - active_tag=%s recommendation=%s, recipe unchanged since "
+            "shot %s (now on shot %s)",
+            bag.id, axis, state["active_tag"], recommendation,
+            recipe["id"], latest_shot["id"],
+        )
+        return state, recipe
+
+    def _stalled_flavor_tags(self) -> list[str]:
         """Which axes have converged as far as they can go with nowhere
         further to escalate to (resolve_flavor_state's own "recommendation
         is None but active_tag is still set" signal) - a real,
         informative state _all_flavor_field_recommendations can't
         represent on its own (it only ever returns fields that *do* have a
         recommendation), so _recommended_flavor_note surfaces it
-        separately instead of staying silent."""
-        config = self._flavor_correction_config()
+        separately instead of staying silent. No selected-bag guard needed
+        here - _flavor_axis_state already returns "nothing tracked" when
+        there isn't one, which this loop naturally skips."""
         stalled = []
-        for tags_by_axis in self._bag_flavor_tags.get(bag.id, {}).values():
-            state = resolve_flavor_state(list(reversed(tags_by_axis)), config)
+        for axis in _FLAVOR_AXES:
+            state, _recipe = self._flavor_axis_state(axis)
             if state["recommendation"] is None and state["active_tag"] is not None:
                 stalled.append(state["active_tag"])
         return stalled
 
-    def _all_flavor_field_recommendations(self, bag: Bag) -> dict[str, tuple[float, float, str]]:
+    def _all_flavor_field_recommendations(self) -> dict[str, tuple[float, float, str]]:
         """recipe field -> (current, recommended, tag) for every axis's
-        current-stage recommendation on this bag (docs/DESIGN.md's Phase 5
+        current-stage recommendation on the currently selected bag
+        (docs/DESIGN.md's Phase 5
         escalation model, replayed fresh via
         flavor_correction.resolve_flavor_state - derived, not
         persisted, same convention as elsewhere in this class), regardless
@@ -160,13 +280,19 @@ class RuntimeEntitiesMixin:
         combined (logged at debug level, not silent, since it's a real
         collision worth being able to spot). Not yet resolved more precisely
         than that - a rare enough edge case to leave for once it's actually
-        seen in practice."""
-        config = self._flavor_correction_config()
+        seen in practice.
+
+        "current" is the tagged shot's own frozen recipe snapshot
+        (_flavor_axis_state's recipe return value), not the bag's live
+        field value - see that method's own docstring for why a
+        recommendation must be anchored to the shot it was actually
+        reported against rather than recomputed off whatever the bag's
+        recipe happens to read right now."""
+        bag = self.selected_bag
+        bag_id = bag.id if bag else None
         result: dict[str, tuple[float, float, str]] = {}
-        for tags_by_axis in self._bag_flavor_tags.get(bag.id, {}).values():
-            # storage.recent_flavor_tags (cached here in async_refresh_cache)
-            # returns newest-first; resolve_flavor_state replays oldest-first.
-            state = resolve_flavor_state(list(reversed(tags_by_axis)), config)
+        for axis in _FLAVOR_AXES:
+            state, recipe = self._flavor_axis_state(axis)
             recommendation = state["recommendation"]
             if recommendation is None:
                 continue
@@ -174,52 +300,66 @@ class RuntimeEntitiesMixin:
             if field in result:
                 _LOGGER.debug(
                     "Bag %s: %s axis's recommendation for %s dropped - %s already claimed it",
-                    bag.id,
+                    bag_id,
                     state["active_tag"],
                     field,
                     result[field][2],
                 )
                 continue
-            current = getattr(bag, field)
+            current = recipe[field]
             signed_delta = (
                 recommendation["delta"]
                 if recommendation["direction"] == "increase"
                 else -recommendation["delta"]
             )
             result[field] = (current, current + signed_delta, state["active_tag"])
+            _LOGGER.debug(
+                "Bag %s: %s axis claims %s: %s -> %s",
+                bag_id, state["active_tag"], field, current, result[field][1],
+            )
+        _LOGGER.debug("Bag %s: all_flavor_field_recommendations = %s", bag_id, result)
         return result
 
-    def _active_flavor_field_recommendation(self, bag: Bag) -> dict[str, tuple[float, float, str]]:
-        """The single future-shot recipe recommendation (docs/DESIGN.md's
+    def _active_flavor_field_recommendation(self) -> dict[str, tuple[float, float, str]]:
+        """The single future-shot recipe recommendation for the currently
+        selected bag (docs/DESIGN.md's
         Phase 5 suppress-guard): {} entirely while this bag's last
         shot still needs grind correcting (not yet classified
-        "healthy", per _bag_shot_health cached in async_refresh_cache), and
+        "healthy", per _bag_latest_shot cached in async_refresh_cache), and
         narrowed to at most one field even when
         _all_flavor_field_recommendations finds more than one (same
         axis-iteration-order tie-break that method already uses for a
         same-field collision, just extended into a cross-field "only one
         lever active at all" rule)."""
-        health = self._bag_shot_health.get(bag.id)
-        if health is not None and health["classification"] != "healthy":
+        bag = self.selected_bag
+        if bag is None:
             return {}
-        all_recommendations = self._all_flavor_field_recommendations(bag)
+        latest_shot = self._bag_latest_shot.get(bag.id)
+        if latest_shot is not None and latest_shot["classification"] != "healthy":
+            return {}
+        all_recommendations = self._all_flavor_field_recommendations()
         if not all_recommendations:
             return {}
         field = next(iter(all_recommendations))
         return {field: all_recommendations[field]}
 
-    def _puck_prep_streak_note(self, bag: Bag) -> str | None:
-        """A note once this bag's consecutive puck_prep_issue-at-unchanged-
-        recipe streak (_bag_puck_prep_streak, cached in async_refresh_cache)
-        reaches the streak threshold - None below that, a real "nothing to
-        flag" state, not a fault."""
+    def _puck_prep_streak_note(self) -> str | None:
+        """A note once the currently selected bag's consecutive
+        puck_prep_issue-at-unchanged-recipe streak (_bag_puck_prep_streak,
+        cached in async_refresh_cache) reaches the streak threshold - None
+        below that (or with no bag selected), a real "nothing to flag"
+        state, not a fault."""
+        bag = self.selected_bag
+        if bag is None:
+            return None
         streak = self._bag_puck_prep_streak.get(bag.id, 0)
         if not self._puck_prep_issue_streak_reached(streak):
             return None
         return f"puck_prep_issue x{streak} in a row at this recipe - grind overridden to coarsen"
 
-    def _recommended_flavor_note(self, bag: Bag) -> str | None:
-        """"Current -> recommended" text per flavor-correction axis (docs/
+    def _recommended_flavor_note(self) -> str | None:
+        """"Current -> recommended" text per flavor-correction axis for the
+        currently selected bag (docs/
         DESIGN.md section 13), e.g. "target_yield_g: 36.0 -> 41.0
         (Sour / Sharp)", joined with "; " when more than one field currently
         has a recommendation, plus a note for any axis that's converged as
@@ -232,35 +372,34 @@ class RuntimeEntitiesMixin:
         their raw "sour_sharp"-style keys."""
         notes = [
             f"{field}: {current:g} → {recommended:g} ({_FLAVOR_TAG_LABELS[tag]})"
-            for field, (current, recommended, tag) in self._all_flavor_field_recommendations(
-                bag
-            ).items()
+            for field, (current, recommended, tag) in self._all_flavor_field_recommendations().items()
         ]
         notes.extend(
             f"{_FLAVOR_TAG_LABELS[tag]} isn't resolving with automatic adjustment alone"
-            for tag in self._stalled_flavor_tags(bag)
+            for tag in self._stalled_flavor_tags()
         )
-        streak_note = self._puck_prep_streak_note(bag)
+        streak_note = self._puck_prep_streak_note()
         if streak_note is not None:
             notes.append(streak_note)
         return "; ".join(notes) if notes else None
 
-    def _recipe_field_short_note(self, bag: Bag, field: str) -> str | None:
+    def _recipe_field_short_note(self, field: str) -> str | None:
         """Compact "current -> recommended" text (e.g. "18.0 -> 18.5") for
-        one recipe field, without the "(tag)" annotation
+        one recipe field on the currently selected bag, without the
+        "(tag)" annotation
         _recommended_flavor_note includes - sized for a "recommended"
         secondary attribute on the same recipe field's own tile (see
         _recommended_note_for/entity_attributes) rather than a separate
         tile or the combined dashboard summary. Uses
         _active_flavor_field_recommendation (the single, suppress-gated
         recommendation), not the full diagnostic set."""
-        recommendation = self._active_flavor_field_recommendation(bag).get(field)
+        recommendation = self._active_flavor_field_recommendation().get(field)
         if recommendation is None:
             return None
         current, recommended, _tag = recommendation
         return f"{current:g} → {recommended:g}"
 
-    def _recommended_note_for(self, definition: EntityDefinition, bag: Bag | None) -> str | None:
+    def _recommended_note_for(self, definition: EntityDefinition) -> str | None:
         """The "recommended" attribute's value for one recipe-field entity
         (dose/grind/target_yield/temperature_offset) - a decoration on that
         field's own tile (via dashboard.yaml's state_content), not a
@@ -271,9 +410,7 @@ class RuntimeEntitiesMixin:
         selected bag (_recipe_field_short_note, Phase 5)."""
         if definition.field == "grind":
             return self._recommended_grind_note()
-        if bag is None:
-            return None
-        return self._recipe_field_short_note(bag, str(definition.field))
+        return self._recipe_field_short_note(str(definition.field))
 
     def entity_attributes(self, definition: EntityDefinition) -> dict[str, Any]:
         if not definition.attributes:
@@ -298,7 +435,7 @@ class RuntimeEntitiesMixin:
             elif attribute == "remaining_g":
                 value = self._bag_remaining.get(self.selected_slot) if bag else None
             elif attribute == "recommended":
-                value = self._recommended_note_for(definition, bag)
+                value = self._recommended_note_for(definition)
             elif bag and hasattr(bag, attribute):
                 value = getattr(bag, attribute)
             else:
@@ -349,9 +486,13 @@ class RuntimeEntitiesMixin:
         expected_flow_g_s rather than folding it in, matching
         analyze_shot's own expected_s formula exactly (see
         barista-assist-dashboard.js's idealizedWeightPoints). Same
-        live-vs-frozen dual source as _shot_plot_points. None values mean
-        "not known yet" (e.g. stop_command_elapsed_ms before the shot has
-        actually stopped) - the frontend must not treat that as zero."""
+        live-vs-frozen dual source as _shot_plot_points. self.last_shot
+        (the "no active shot" fallback below) is itself scoped to the
+        currently selected bag (storage.latest_shot_bag), not global across
+        every bag/slot - switching slots switches which shot's markers
+        this shows. None values mean "not known yet" (e.g.
+        stop_command_elapsed_ms before the shot has actually stopped) -
+        the frontend must not treat that as zero."""
         shot = self.active_shot
         if shot is not None and shot.press_monotonic is not None:
             return {

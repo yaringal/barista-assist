@@ -69,8 +69,8 @@ class StorageTests(unittest.TestCase):
             adapt_pi=False,
             expected_flow_g_s=1.35,
         )
-        self.assertAlmostEqual(self.db.last_shot()["expected_flow_g_s"], 1.35)
-        self.assertEqual(shot_id, self.db.last_shot()["id"])
+        self.assertAlmostEqual(self.db.latest_shot_bag(bag.id)["expected_flow_g_s"], 1.35)
+        self.assertEqual(shot_id, self.db.latest_shot_bag(bag.id)["id"])
 
     def test_create_shot_expected_flow_g_s_defaults_to_none(self) -> None:
         bag = self.new_bag()
@@ -81,7 +81,7 @@ class StorageTests(unittest.TestCase):
             preinfusion_s=7.0,
             adapt_pi=False,
         )
-        self.assertIsNone(self.db.last_shot()["expected_flow_g_s"])
+        self.assertIsNone(self.db.latest_shot_bag(bag.id)["expected_flow_g_s"])
 
     def test_completed_shot_reduces_estimated_remaining(self) -> None:
         bag = self.new_bag()
@@ -105,7 +105,7 @@ class StorageTests(unittest.TestCase):
             samples=samples,
         )
         self.assertAlmostEqual(self.db.bag_remaining_g(bag.id), 232.0)
-        last = self.db.last_shot()
+        last = self.db.latest_shot_bag(bag.id)
         self.assertEqual(last["sample_count"], 2)
         self.assertAlmostEqual(last["actual_yield_g"], 36.2)
 
@@ -236,7 +236,7 @@ class StorageTests(unittest.TestCase):
     def test_finalize_shot_persists_analysis_fields(self) -> None:
         bag = self.new_bag()
         self.finalize_with_analysis(bag, classification="healthy", late_accel=0.05, t90_ms=20000)
-        last = self.db.last_shot()
+        last = self.db.latest_shot_bag(bag.id)
         self.assertEqual(last["classification"], "healthy")
         self.assertAlmostEqual(last["channeling_suspicion"], 0.1)
         self.assertEqual(json.loads(last["analysis_json"]), {"late_accel": 0.05, "t90_ms": 20000})
@@ -263,7 +263,7 @@ class StorageTests(unittest.TestCase):
             samples=[],
             effective_stop_margin_g=6.8,
         )
-        self.assertAlmostEqual(self.db.last_shot()["effective_stop_margin_g"], 6.8)
+        self.assertAlmostEqual(self.db.latest_shot_bag(bag.id)["effective_stop_margin_g"], 6.8)
 
     def test_finalize_shot_effective_stop_margin_defaults_to_none(self) -> None:
         """A manually aborted/timed-out shot never had a weight-triggered
@@ -284,7 +284,7 @@ class StorageTests(unittest.TestCase):
             stop_command_elapsed_ms=12000,
             samples=[],
         )
-        self.assertIsNone(self.db.last_shot()["effective_stop_margin_g"])
+        self.assertIsNone(self.db.latest_shot_bag(bag.id)["effective_stop_margin_g"])
 
     def test_finalize_shot_persists_recommended_grind_delta(self) -> None:
         """Phase 4's (docs/DESIGN.md section 28) expert-system grind
@@ -307,7 +307,7 @@ class StorageTests(unittest.TestCase):
             samples=[],
             recommended_grind_delta=-1.0,
         )
-        self.assertAlmostEqual(self.db.last_shot()["recommended_grind_delta"], -1.0)
+        self.assertAlmostEqual(self.db.latest_shot_bag(bag.id)["recommended_grind_delta"], -1.0)
 
     def test_finalize_shot_recommended_grind_delta_defaults_to_none(self) -> None:
         """A healthy shot (or one excluded as puck_prep_issue/
@@ -330,7 +330,7 @@ class StorageTests(unittest.TestCase):
             stop_command_elapsed_ms=25000,
             samples=[],
         )
-        self.assertIsNone(self.db.last_shot()["recommended_grind_delta"])
+        self.assertIsNone(self.db.latest_shot_bag(bag.id)["recommended_grind_delta"])
 
     def test_new_bag_persists_roast_level(self) -> None:
         bag = self.new_bag(roast_level="medium")
@@ -352,7 +352,7 @@ class StorageTests(unittest.TestCase):
         )
         self.db.record_flavor_tag(shot_id, "extraction", "sour_sharp")
         self.db.record_flavor_tag(shot_id, "mouthfeel", "dry_astringent")
-        shot = self.db.last_shot()
+        shot = self.db.latest_shot_bag(bag.id)
         self.assertEqual(shot["flavor_extraction_tag"], "sour_sharp")
         self.assertEqual(shot["flavor_mouthfeel_tag"], "dry_astringent")
 
@@ -369,7 +369,7 @@ class StorageTests(unittest.TestCase):
             adapt_pi=False,
         )
         self.db.record_flavor_tag(shot_id, "extraction", "bitter_harsh")
-        self.assertIsNone(self.db.last_shot()["flavor_mouthfeel_tag"])
+        self.assertIsNone(self.db.latest_shot_bag(bag.id)["flavor_mouthfeel_tag"])
 
     def test_record_flavor_tag_returns_whether_a_shot_was_found(self) -> None:
         """Mirrors delete_shot's own return convention - lets a caller (see
@@ -410,7 +410,7 @@ class StorageTests(unittest.TestCase):
         bag = self.new_bag()
         self.assertEqual(self.db.recent_flavor_tags(bag.id, "mouthfeel"), [])
 
-    def test_recent_shots_and_last_shot_include_the_bag_s_roaster(self) -> None:
+    def test_recent_shots_and_latest_shot_bag_include_the_bag_s_roaster(self) -> None:
         bag = self.new_bag()  # new_bag() sets roaster="Test Roaster"
         self.db.create_shot(
             bag=bag,
@@ -419,7 +419,7 @@ class StorageTests(unittest.TestCase):
             preinfusion_s=7.0,
             adapt_pi=False,
         )
-        self.assertEqual(self.db.last_shot()["roaster"], "Test Roaster")
+        self.assertEqual(self.db.latest_shot_bag(bag.id)["roaster"], "Test Roaster")
         self.assertEqual(self.db.recent_shots(limit=None)[0]["roaster"], "Test Roaster")
 
     def _finalize_classified_shot(
@@ -428,7 +428,7 @@ class StorageTests(unittest.TestCase):
         """Create+finalize a shot at bag's own current recipe snapshot,
         carrying just a classification (and optionally
         recommended_grind_delta) - the shared helper behind
-        latest_shot_health/consecutive_puck_prep_issue_count tests below,
+        latest_shot/consecutive_puck_prep_issue_count tests below,
         which only care about classification/recipe fields, not full flow
         analysis."""
         shot_id = self.db.create_shot(
@@ -449,11 +449,11 @@ class StorageTests(unittest.TestCase):
             recommended_grind_delta=recommended_grind_delta,
         )
 
-    def test_latest_shot_health_is_none_with_no_classified_shot(self) -> None:
+    def test_latest_shot_is_none_with_no_classified_shot(self) -> None:
         bag = self.new_bag()
-        self.assertIsNone(self.db.latest_shot_health(bag.id))
+        self.assertIsNone(self.db.latest_shot(bag.id))
 
-    def test_latest_shot_health_returns_the_most_recent_classified_shot(self) -> None:
+    def test_latest_shot_returns_the_most_recent_classified_shot(self) -> None:
         bag = self.new_bag()
         self._finalize_classified_shot(
             bag, classification="too_fast", started_at="2026-08-16T17:00:00+00:00",
@@ -462,20 +462,56 @@ class StorageTests(unittest.TestCase):
         self._finalize_classified_shot(
             bag, classification="healthy", started_at="2026-08-16T17:05:00+00:00",
         )
-        health = self.db.latest_shot_health(bag.id)
-        self.assertEqual(health["classification"], "healthy")
-        self.assertIsNone(health["recommended_grind_delta"])
+        shot = self.db.latest_shot(bag.id)
+        self.assertEqual(shot["classification"], "healthy")
+        self.assertIsNone(shot["recommended_grind_delta"])
 
-    def test_latest_shot_health_is_scoped_to_the_bag(self) -> None:
+    def test_latest_shot_is_scoped_to_the_bag(self) -> None:
         """A bag swap mints a fresh id (new_bag), so a different bag's
-        shots never leak into this one's health check."""
+        shots never leak into this one's latest-shot lookup."""
         bag_a = self.new_bag()
         self._finalize_classified_shot(
             bag_a, classification="too_fast", started_at="2026-08-16T17:00:00+00:00"
         )
         bag_b = self.new_bag()
-        self.assertIsNone(self.db.latest_shot_health(bag_b.id))
-        self.assertEqual(self.db.latest_shot_health(bag_a.id)["classification"], "too_fast")
+        self.assertIsNone(self.db.latest_shot(bag_b.id))
+        self.assertEqual(self.db.latest_shot(bag_a.id)["classification"], "too_fast")
+
+    def test_latest_shot_bag_is_scoped_to_the_bag(self) -> None:
+        """Same scoping as latest_shot above, for latest_shot_bag - the
+        broader (every column, unclassified shots included) query behind
+        BaristaRuntime.last_shot and its last_yield/shot_classification/
+        shot_channeling_suspicion/recommended_grind sensors. A different
+        bag's own most recent shot must never leak into this one's."""
+        bag_a = self.new_bag()
+        self.db.create_shot(
+            bag=bag_a,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        bag_b = self.new_bag()
+        self.assertIsNone(self.db.latest_shot_bag(bag_b.id))
+        self.assertIsNotNone(self.db.latest_shot_bag(bag_a.id))
+
+    def test_latest_shot_bag_returns_the_most_recent_shot_on_that_bag(self) -> None:
+        bag = self.new_bag()
+        self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        newer_shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:05:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.assertEqual(self.db.latest_shot_bag(bag.id)["id"], newer_shot_id)
 
     def test_consecutive_puck_prep_issue_count_is_zero_with_no_history(self) -> None:
         bag = self.new_bag()
@@ -683,7 +719,7 @@ class StorageTests(unittest.TestCase):
             samples=[storage.ShotSample(0, 0, 0, 0.0, 0.0, 90)],
         )
         self.assertTrue(self.db.delete_shot(shot_id))
-        self.assertIsNone(self.db.last_shot())
+        self.assertIsNone(self.db.latest_shot_bag(bag.id))
         self.assertEqual(self.db.shot_samples(shot_id), [])
 
     def test_delete_shot_updates_the_bag_remaining_estimate(self) -> None:

@@ -312,13 +312,21 @@ class BaristaRuntime(
 
     async def async_refresh_cache(self) -> None:
         self._bags = await self.hass.async_add_executor_job(self.db.active_bags)
-        self.last_shot = await self.hass.async_add_executor_job(self.db.last_shot)
+        # Scoped to the currently selected bag, not global across every
+        # bag/slot (docs/DESIGN.md §17) - see storage.latest_shot_bag's own
+        # docstring for why.
+        self.last_shot = (
+            await self.hass.async_add_executor_job(self.db.latest_shot_bag, self.selected_bag.id)
+            if self.selected_bag is not None
+            else None
+        )
         self._bag_remaining = {
             slot: await self.hass.async_add_executor_job(self.db.bag_remaining_g, bag.id)
             for slot, bag in self._bags.items()
         }
         self._bag_flavor_tags = {}
-        self._bag_shot_health = {}
+        self._bag_latest_shot = {}
+        self._bag_flavor_latest_tagged_shot_recipe = {}
         self._bag_puck_prep_streak = {}
         for bag in self._bags.values():
             # A nested comprehension here would need `await` inside a
@@ -340,9 +348,15 @@ class BaristaRuntime(
                 )
                 for axis in _FLAVOR_AXES
             }
-            self._bag_shot_health[bag.id] = await self.hass.async_add_executor_job(
-                self.db.latest_shot_health, bag.id
+            self._bag_latest_shot[bag.id] = await self.hass.async_add_executor_job(
+                self.db.latest_shot, bag.id
             )
+            self._bag_flavor_latest_tagged_shot_recipe[bag.id] = {
+                axis: await self.hass.async_add_executor_job(
+                    self.db.latest_tagged_shot_recipe, bag.id, axis
+                )
+                for axis in _FLAVOR_AXES
+            }
             self._bag_puck_prep_streak[bag.id] = await self.hass.async_add_executor_job(
                 self.db.consecutive_puck_prep_issue_count,
                 bag.id,

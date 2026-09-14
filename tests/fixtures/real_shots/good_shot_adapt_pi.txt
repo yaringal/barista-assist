@@ -2,6 +2,9 @@
 # NOTE: this shot predates the adapt_pi export field - adapt_pi=True below is
 # a fixture annotation reflecting the barista's own recollection, not raw
 # export data; see real_shot_fixtures.py.
+# NOTE: this shot also predates flavor-tag capture - flavor_extraction_tag/
+# flavor_mouthfeel_tag=balanced below are a fixture annotation reflecting
+# the barista's own "Good shot" recollection above, not raw export data.
 
 [SHOT]
 shot_id=d04b924e70444a1dbe222823056d71bf
@@ -16,6 +19,8 @@ ended_at=2026-08-31T10:32:38.633662+00:00
 status=complete
 classification=healthy
 channeling_suspicion=0.0
+flavor_extraction_tag=balanced
+flavor_mouthfeel_tag=balanced
 analysis_json={"classification": "healthy", "channeling_suspicion": 0.0, "baseline_eligible": true, "invalid_reason": null, "t_first_flow_ms": 9249, "t10_ms": 11259, "t50_ms": 23049, "t90_ms": 29589, "early_flow_g_s": 0.5000000000000004, "mid_flow_g_s": 2.19780219780219, "late_flow_g_s": 2.3283920309696917, "max_flow_g_s": 4.999999999999953, "flow_slope": 0.08196493431952288, "flow_curvature": -3.6147334804997264, "flow_variance": 1.0953753552775052, "mid_accel": -0.009218230719743307, "late_accel": -0.39202212843472334}
 dose_g=18.0
 grind=15.0
