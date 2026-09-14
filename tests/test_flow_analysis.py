@@ -503,7 +503,15 @@ class FlowAnalysisTests(unittest.TestCase):
     def test_baseline_deviation_can_escalate_a_shot_the_absolute_check_would_miss(self) -> None:
         """A rise too small to trip the fixed prior alone is still flagged for a bag
         whose own history has been unusually flat."""
-        switch_s = 20.0
+        # switch_s=17.0 is empirically tuned (not derived from a closed-form
+        # relationship) so the "unflagged" shot below lands squarely in the
+        # healthy band for CONFIG's own live expected_flow_g_s - the late
+        # 0.3 g/s^2 acceleration doesn't scale with that constant, so
+        # simply keeping switch_s proportional to expected_flow_g_s isn't
+        # enough on its own. Needs re-tuning again if expected_flow_g_s or
+        # too_fast_factor/too_restrictive_factor move enough to shift the
+        # healthy band off this point.
+        switch_s = 17.0
         base_rate = (2 / 3 * TARGET_YIELD_G) / switch_s  # reach the late-third boundary right at the switch
 
         def flow_fn(t: float) -> float:
@@ -511,7 +519,7 @@ class FlowAnalysisTests(unittest.TestCase):
                 return base_rate
             return base_rate + 0.3 * (t - switch_s)
 
-        samples = _simulate(flow_fn, duration_s=32.0)
+        samples = _simulate(flow_fn, duration_s=27.0)
 
         unflagged = analyze_shot(
             samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG

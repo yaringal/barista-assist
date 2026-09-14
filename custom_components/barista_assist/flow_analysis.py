@@ -623,22 +623,32 @@ def analyze_shot(
     late_accel = _linear_slope(late_times, late_values)
 
     duration_s = (t90_ms if t90_ms is not None else times_ms[-1]) / 1000.0
-    # expected_s scales with target_yield_g on purpose - this is a statement
-    # about the bag's characteristic flow RATE, not a fixed personal time
-    # preference. "How I Dial-In Espresso" Episode 1 holds grind (hence
-    # rate) constant while deliberately pushing yield up (38g->42g, "keep
-    # the grind where it is and just push a little bit more liquid through
-    # it") and never compensates to keep the shot's absolute time fixed - a
-    # mechanically unchanged shot (same rate) that's deliberately pulled to
-    # a larger yield should take longer and still read as healthy. If
-    # expected_s didn't scale with target_yield_g, that same shot would be
-    # wrongly flagged too_restrictive purely for running longer, with
-    # nothing actually wrong. Open caveat, not yet addressed: flow isn't
-    # necessarily constant across a whole pour (a real ramp-up period
-    # between first-flow and a roughly-steady rate), and this formula
-    # doesn't budget preinfusion_s or that ramp-up as separate dead time -
-    # needs real data to fit the ramp-up shape before changing it.
-    expected_s = target_yield_g / expected_flow_g_s if expected_flow_g_s > 0 else 0.0
+    # expected_s's target_yield_g/expected_flow_g_s term scales with
+    # target_yield_g on purpose - this is a statement about the bag's
+    # characteristic flow RATE, not a fixed personal time preference. "How I
+    # Dial-In Espresso" Episode 1 holds grind (hence rate) constant while
+    # deliberately pushing yield up (38g->42g, "keep the grind where it is
+    # and just push a little bit more liquid through it") and never
+    # compensates to keep the shot's absolute time fixed - a mechanically
+    # unchanged shot (same rate) that's deliberately pulled to a larger
+    # yield should take longer and still read as healthy. If expected_s
+    # didn't scale with target_yield_g, that same shot would be wrongly
+    # flagged too_restrictive purely for running longer, with nothing
+    # actually wrong. preinfusion_s is added on top rather than folded into
+    # the rate term: duration_s (t90_ms) is measured from press_monotonic,
+    # i.e. it already includes the full pre-infusion hold, so expected_s
+    # must budget that same dead time or every shot reads as slower than it
+    # actually poured - matching the idealized-curve overlay the dashboard
+    # already draws (flat through pre-infusion, then ramping to
+    # target_yield_g over expected_s). Open caveat, not yet addressed: flow
+    # isn't necessarily constant across the pour itself (a real ramp-up
+    # period between first-flow and a roughly-steady rate), and this
+    # formula doesn't budget that ramp-up as separate dead time on top of
+    # preinfusion_s - needs real data to fit the ramp-up shape before
+    # changing it.
+    expected_s = (
+        preinfusion_s + target_yield_g / expected_flow_g_s if expected_flow_g_s > 0 else 0.0
+    )
     duration_ratio = duration_s / expected_s if expected_s > 0 else None
 
     absolute_score = _absolute_mechanical_suspicion(mid_accel, late_accel, config)

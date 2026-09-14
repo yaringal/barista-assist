@@ -210,16 +210,16 @@ class GoodButFlaggedMachinePiTests(unittest.TestCase):
     it, so this shot is no longer wrongly discarded - matching the
     barista's actual complaint ("not sure why invalid").
 
-    It classifies as too_fast, not healthy, though: at duration_ratio=0.835
-    (23.1s against an expected ~27.7s for this yield, using
-    flow_analysis_constants' Hoffmann-calibrated expected_flow_g_s/
-    too_fast_factor), it lands a real ~5% below the too_fast_factor=0.88
-    cutoff, not a rounding-error miss. The barista's note was about the
-    wrongly-invalid classification specifically, not a considered
-    healthy-vs-too_fast judgment call - and the sibling fixture right below
-    (StaleScaleClockMachinePiTests) has a barista comment that literally
-    says "seems to be too fast" for an analogous case, confirming too_fast
-    is a normal, expected real-world outcome here, not a sign the
+    It classifies as too_fast, not healthy, though: at duration_ratio~0.79
+    (23.1s against an expected ~29.2s - this shot's own 8s preinfusion_s plus
+    ~21.2s for this yield at flow_analysis_constants' Hoffmann-calibrated
+    expected_flow_g_s, per too_fast_factor), it lands well below the
+    too_fast_factor=0.88 cutoff, not a rounding-error miss. The barista's
+    note was about the wrongly-invalid classification specifically, not a
+    considered healthy-vs-too_fast judgment call - and the sibling fixture
+    right below (StaleScaleClockMachinePiTests) has a barista comment that
+    literally says "seems to be too fast" for an analogous case, confirming
+    too_fast is a normal, expected real-world outcome here, not a sign the
     classifier regressed."""
 
     def setUp(self) -> None:

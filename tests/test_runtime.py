@@ -108,6 +108,21 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         shutil.rmtree(self._temp_dir, ignore_errors=True)
 
+    def _ramp_seconds_for_ratio(
+        self, target_ratio: float, *, target_yield_g: float = 36.0, flat_ms: int = 1000
+    ) -> float:
+        """The ramp_seconds a FlowAnalysisWiringTests._ramp_samples shot
+        needs to land at target_ratio, for the currently selected bag's own
+        preinfusion_s and the live expected_flow_g_s - computed rather than
+        a hardcoded duration, so a future retune of either can't silently
+        move a synthetic shot into a different classification band out from
+        under a test that depends on it landing in a specific one."""
+        expected_flow_g_s = self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"]
+        preinfusion_s = self.runtime.selected_bag.preinfusion_s
+        expected_s = preinfusion_s + target_yield_g / expected_flow_g_s
+        duration_s = target_ratio * expected_s
+        return (duration_s - flat_ms / 1000) / 0.9
+
     async def create_bag(
         self,
         *,
@@ -531,8 +546,11 @@ class ShotMarkersTests(RuntimeTestCase):
         self.assertEqual(markers["preinfusion_ms"], 2000)
         self.assertIsNone(markers["stop_command_elapsed_ms"])
         # No prior healthy shots for this brand-new bag - falls back to the
-        # global prior (flow_analysis_constants.expected_flow_g_s = 1.3).
-        self.assertAlmostEqual(markers["expected_flow_g_s"], 1.3)
+        # global prior (flow_analysis_constants.expected_flow_g_s).
+        self.assertAlmostEqual(
+            markers["expected_flow_g_s"],
+            self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"],
+        )
         self.assertEqual(markers["target_yield_g"], 36.0)
 
     async def test_reflects_the_last_finished_shot(self):
@@ -1123,9 +1141,7 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         """Phase 4 (docs/DESIGN.md section 28): a shot classified too_fast
         gets a real (non-None) recommended_grind_delta from grind_correction.
         recommend_grind_delta, driven by expert_rules.grind_correction
-        (definitions.yaml) - not left as a placeholder. Default target_yield_g
-        is 36g and expert_rules.flow_classification.expected_flow_g_s is
-        1.3, so the ~27.7s expected duration makes a 15s shot clearly fast."""
+        (definitions.yaml) - not left as a placeholder."""
         await self.start_shot()
         shot = self.runtime.active_shot
         shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=15.0, target_yield_g=36.0)
@@ -1154,7 +1170,10 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
 
         await self.start_shot()
         shot = self.runtime.active_shot
-        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=15.0, target_yield_g=36.0)
+        # 0.5: comfortably inside grossly_fast (duration_ratio_max 0.6), so
+        # this shot actually exercises the overridden band, not a neighbor.
+        ramp_seconds = self._ramp_seconds_for_ratio(0.5)
+        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=ramp_seconds, target_yield_g=36.0)
         shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
 
         await self.runtime._async_finalize("complete")
@@ -1172,7 +1191,9 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
     async def test_finalized_shot_has_no_grind_recommendation_when_healthy(self):
         await self.start_shot()
         shot = self.runtime.active_shot
-        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=26.0, target_yield_g=36.0)
+        # 1.0: dead center of the healthy band.
+        ramp_seconds = self._ramp_seconds_for_ratio(1.0)
+        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=ramp_seconds, target_yield_g=36.0)
         shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
 
         await self.runtime._async_finalize("complete")
@@ -1201,7 +1222,9 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
     async def test_recommended_grind_note_is_none_when_healthy(self):
         await self.start_shot()
         shot = self.runtime.active_shot
-        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=26.0, target_yield_g=36.0)
+        # 1.0: dead center of the healthy band.
+        ramp_seconds = self._ramp_seconds_for_ratio(1.0)
+        shot.samples = self._ramp_samples(flat_ms=1000, ramp_seconds=ramp_seconds, target_yield_g=36.0)
         shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
         await self.runtime._async_finalize("complete")
 
@@ -1232,12 +1255,12 @@ class FlavorFeedbackTests(RuntimeTestCase):
     async def test_a_completed_shot_schedules_a_notification_task(self):
         """docs/todo/LEVER_SEQUENCING_PLAN.md §3.1: Stage 2 only engages
         once a shot is healthy - needs a real ramp landing in the healthy
-        band (~27.7s expected for 36g/1.3g/s), not just any completed shot."""
+        band, not just any completed shot."""
         self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
         await self.start_shot()
         shot = self.runtime.active_shot
         shot.samples = FlowAnalysisWiringTests._ramp_samples(
-            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
         )
         shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
         await self.runtime._async_finalize("complete")
@@ -1394,7 +1417,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self.runtime.async_brew()
         shot = self.runtime.active_shot
         shot.samples = FlowAnalysisWiringTests._ramp_samples(
-            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
         )
         shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
         await self.runtime._async_finalize("complete")
@@ -1417,7 +1440,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self.start_shot()
         shot = self.runtime.active_shot
         shot.samples = FlowAnalysisWiringTests._ramp_samples(
-            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
         )
         shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
         await self.runtime._async_finalize("complete")
@@ -1436,16 +1459,16 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.assertIsNone(self.runtime.entity_value(definition))
 
     async def _brew_and_tag(self, axis: str, tag: str, *, times: int) -> None:
-        """Each shot lands in the healthy band (~27.7s expected for
-        36g/1.3g/s) - docs/todo/LEVER_SEQUENCING_PLAN.md §5's suppress-guard
-        would otherwise blank out _active_flavor_field_recommendation (the
+        """Each shot lands in the healthy band -
+        docs/todo/LEVER_SEQUENCING_PLAN.md §5's suppress-guard would
+        otherwise blank out _active_flavor_field_recommendation (the
         per-tile badges this helper's callers check) for a non-healthy last
         shot, same as real usage."""
         for _ in range(times):
             await self.runtime.async_brew()
             shot = self.runtime.active_shot
             shot.samples = FlowAnalysisWiringTests._ramp_samples(
-                flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+                flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
             )
             shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
             await self.runtime._async_finalize("complete")
@@ -1621,7 +1644,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self.runtime.async_brew()
         shot = self.runtime.active_shot
         shot.samples = FlowAnalysisWiringTests._ramp_samples(
-            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
         )
         shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
         await self.runtime._async_finalize("complete")
@@ -1662,7 +1685,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self.runtime.async_brew()
         shot = self.runtime.active_shot
         shot.samples = FlowAnalysisWiringTests._ramp_samples(
-            flat_ms=1000, ramp_seconds=27.0, target_yield_g=36.0
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=36.0
         )
         shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
         await self.runtime._async_finalize("complete")
