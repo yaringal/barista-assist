@@ -1,21 +1,11 @@
-# Barista Assist v0.3.1
+# Barista Assist v0.3.2
 
-A dashboard-polish follow-up to v0.3.0: shot history now shows flavor tags, grind-correction bands show a live "how many seconds is this" hint, pending recipe recommendations get a ⚠️ to draw the eye, and a couple of layout/step-size tweaks.
-
-## Added
-
-- **Shot history now shows each shot's own Extraction/Mouthfeel flavor tags**, right after Roaster in the Shots view's expanded detail.
-- **Grind-correction band tiles now show a live "how many seconds is this" hint** next to each band's raw duration_ratio value (e.g. "≤ 16.9s" or "16.9s .. 21.1s"), computed from your own live settings rather than a fixed number.
-- **Dose/Grind/Target yield/Temperature offset now show a ⚠️ next to their "current → recommended" note when a recommendation is pending**, so it's easier to spot at a glance.
-
-## Changed
-
-- Recipe target yield's dashboard +/- step is now 1g, not 2.5g.
-- The System view's settings were reorganized: "Integration settings (Configure)" moved to the very end of the view.
+A calibration fix-up from two newly-logged real shots: a false "invalid" classification is fixed, and the automatic stop's margin projection is measurably (not perfectly) improved for fast-flowing shots.
 
 ## Fixed
 
-- A dashboard-internal bug where a live template referencing an entity ID embedded inside a longer string (rather than as the whole value) silently failed to resolve.
+- A shot with a brief noise wobble right after pressing brew could be wrongly marked invalid even though pre-infusion was genuinely honored - fixed by requiring a slightly longer sustained crossing before counting it as real flow.
+- Fast-flowing shots near the top of the "normal" flow range were projecting too much stop margin and undershooting target by a few grams. The seed latency for that range has been lowered based on real shot data - noticeably better, though not a complete fix (see CHANGELOG for the full numbers and what's still open).
 
 ## Upgrade
 
@@ -23,4 +13,4 @@ No manual steps required. Update via HACS and restart Home Assistant as usual - 
 
 ## Testing
 
-- Full suite: 316 tests, all passing (up from 311).
+- Full suite: 318 tests, all passing (up from 316).

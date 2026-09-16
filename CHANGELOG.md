@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2
+
+### Fixed
+
+- **A real shot with a small, sustained noise wobble near the tare baseline (~1.5s in, raw weight oscillating between -0.5g and -0.1g) could be wrongly classified `invalid_measurement`/`flow_started_before_preinfusion_end`**, even though pre-infusion had genuinely been honored - the noise happened to cross `first_flow_threshold_g_s` for exactly the old 300ms `first_flow_sustain_ms` window. Raised `first_flow_sustain_ms` to 600ms (`definitions.yaml`) - verified across the whole 300-1200ms range against every real shot fixture on file, this fixes the false positive with zero change to any other fixture's own classification.
+- **A fast-flowing shot's automatic stop projected too much margin and undershot target by 3.5g/9%** (37.5g target, 34.0g actual). Traced to `stop_latency_normal_s`'s seed value (3.4s): averaged across the 4 real "normal"-bucket shots now on file (flow 0.97-2.81 g/s at the stop decision), the true observed latency is 3.17s, not 3.4s - lowered the seed to 3.2s. This measurably helps (that shot's own projected error drops from +3.45g to +2.89g) but doesn't fully resolve it - the 4-point sample actually shows observed latency *falling* as flow rises within the bucket, the opposite of the trend the two-bucket model assumes, which isn't enough data yet to justify a bigger redesign (a continuous flow→latency model) rather than a nudge to the shared average. The "elevated" bucket (4.3s) has its own real gaps (still under/overshooting on two of its four fixtures) but wasn't touched - out of scope for this fix.
+
+### Testing
+
+- Added two new real shot fixtures (`tests/fixtures/real_shots/choked_adapt_pi.txt`, `too_fast_but_flagged_invalid_adapt_pi.txt`) with matching regression tests, and fixed two tests that hardcoded the old `stop_latency_normal_s` value instead of reading it live.
+- Full suite: 318 tests, all passing (up from 316).
+
 ## 0.3.1
 
 ### Added
