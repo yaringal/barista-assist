@@ -1244,35 +1244,24 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         expected_flow_g_s = self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"]
         return recipe["preinfusion_s"] + recipe["target_yield_g"] / expected_flow_g_s
 
-    def _seconds_hint(self, key: str) -> str | None:
+    def _seconds_upper(self, key: str) -> float | None:
         definition = self.runtime.definitions.entity("number", key)
-        return self.runtime.entity_attributes(definition).get("seconds_hint")
+        return self.runtime.entity_attributes(definition).get("seconds_upper")
 
-    async def test_first_grind_band_seconds_hint_is_an_upper_bound_only(self):
-        """grossly_fast has no previous band, so its seconds_hint is a
-        single "(≤ Xs)" bound, not a range - dashboard.yaml's Grind
-        correction section's own "how many seconds is this" hint."""
+    async def test_grind_band_seconds_upper_matches_its_own_live_value(self):
+        """Each grind-band max entity's own seconds_upper is its live
+        duration_ratio value times the shared 1:2-ratio reference - the raw
+        number dashboard.yaml's markdown reference card builds its own
+        "lower ≤ name ≤ upper" chains from (a band's lower bound is simply
+        the previous band's own seconds_upper)."""
         reference = self._grind_band_reference_expected_s()
-        expected_upper = self.runtime.grind_band_grossly_fast_max * reference
-        self.assertEqual(
-            self._seconds_hint("grind_band_grossly_fast_max"), f"(≤ {expected_upper:.1f}s)"
-        )
+        expected = self.runtime.grind_band_moderately_fast_max * reference
+        self.assertEqual(self._seconds_upper("grind_band_moderately_fast_max"), expected)
 
-    async def test_middle_grind_band_seconds_hint_is_a_range(self):
-        """moderately_fast's own hint spans from grossly_fast_max (the
-        previous band's own boundary) to its own max."""
-        reference = self._grind_band_reference_expected_s()
-        lower = self.runtime.grind_band_grossly_fast_max * reference
-        upper = self.runtime.grind_band_moderately_fast_max * reference
-        self.assertEqual(
-            self._seconds_hint("grind_band_moderately_fast_max"),
-            f"({lower:.1f}s ≤ {upper:.1f}s)",
-        )
-
-    async def test_grind_band_seconds_hint_tracks_a_live_dashboard_edit(self):
-        """seconds_hint is computed live off the current grind_band_*_max
-        value, not a snapshot from startup - editing the entity changes the
-        hint on the next read."""
+    async def test_grind_band_seconds_upper_tracks_a_live_dashboard_edit(self):
+        """seconds_upper is computed live off the current grind_band_*_max
+        value, not a snapshot from startup - editing the entity changes it
+        on the next read."""
         moderately_fast_max = next(
             d
             for d in self.runtime.definitions.platform("number")
@@ -1280,26 +1269,15 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         )
         await self.runtime.async_set_entity_value(moderately_fast_max, 0.7)
         reference = self._grind_band_reference_expected_s()
-        lower = self.runtime.grind_band_grossly_fast_max * reference
-        upper = 0.7 * reference
         self.assertEqual(
-            self._seconds_hint("grind_band_moderately_fast_max"),
-            f"({lower:.1f}s ≤ {upper:.1f}s)",
+            self._seconds_upper("grind_band_moderately_fast_max"), 0.7 * reference
         )
 
-    async def test_beyond_grind_band_seconds_hint_is_a_lower_bound_only(self):
-        """grossly_restrictive has no max entity of its own (the unbounded
-        catch-all past moderately_restrictive_max), so its "(≥ Xs)" hint
-        rides on moderately_restrictive_max's own entity instead - the
-        "Severely restrictive" markdown card in dashboard.yaml reads it via
-        state_attr rather than a separate entity."""
-        definition = self.runtime.definitions.entity("number", "grind_band_moderately_restrictive_max")
-        reference = self._grind_band_reference_expected_s()
-        lower = self.runtime.grind_band_moderately_restrictive_max * reference
-        self.assertEqual(
-            self.runtime.entity_attributes(definition).get("beyond_seconds_hint"),
-            f"(≥ {lower:.1f}s)",
-        )
+    async def test_seconds_upper_is_none_for_a_non_grind_band_entity(self):
+        """_grind_band_seconds_upper only covers _GRIND_BAND_MAX_FIELDS'
+        six entities - anything else (e.g. a grind-band delta, which isn't
+        a max at all) gets no such attribute."""
+        self.assertIsNone(self._seconds_upper("grind_band_grossly_fast_delta"))
 
     async def test_finalized_shot_has_no_grind_recommendation_when_healthy(self):
         await self.start_shot()

@@ -21,7 +21,7 @@ class DashboardTests(unittest.TestCase):
         data = yaml.safe_load(DASHBOARD.read_text(encoding="utf-8"))
         self.assertEqual(data["title"], "Barista Assist")
         self.assertEqual(
-            [view["path"] for view in data["views"]], ["brew", "bags", "system", "shots"]
+            [view["path"] for view in data["views"]], ["brew", "bags", "shots", "system"]
         )
 
     def test_every_placeholder_is_declared(self):

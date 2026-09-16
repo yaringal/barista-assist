@@ -452,10 +452,8 @@ class RuntimeEntitiesMixin:
                 value = self._bag_remaining.get(self.selected_slot) if bag else None
             elif attribute == "recommended":
                 value = self._recommended_note_for(definition)
-            elif attribute == "seconds_hint":
-                value = self._grind_band_seconds_hint(definition)
-            elif attribute == "beyond_seconds_hint":
-                value = self._grind_band_beyond_seconds_hint()
+            elif attribute == "seconds_upper":
+                value = self._grind_band_seconds_upper(definition)
             elif bag and hasattr(bag, attribute):
                 value = getattr(bag, attribute)
             else:
@@ -467,43 +465,32 @@ class RuntimeEntitiesMixin:
         """expected_s for a fixed 1:2-ratio reference shot
         (defaults.recipe's own dose_g/target_yield_g - already exactly
         1:2 - and preinfusion_s) at flow_analysis_constants.
-        expected_flow_g_s - the shared basis for every grind-band tile's
-        "how many seconds is this" hint (dashboard.yaml's seconds_hint/
-        beyond_seconds_hint attributes below), since duration_ratio alone
-        isn't an intuitive unit. Read live from definitions.yaml rather
-        than hardcoded, so it can never drift out of sync with those
-        settings."""
+        expected_flow_g_s - the shared basis for every grind-band entity's
+        seconds_upper attribute below, since duration_ratio alone isn't an
+        intuitive unit. Read live from definitions.yaml rather than
+        hardcoded, so it can never drift out of sync with those settings."""
         recipe = self.definitions.defaults["recipe"]
         expected_flow_g_s = self.definitions.flow_analysis_constants["expected_flow_g_s"]
         return recipe["preinfusion_s"] + recipe["target_yield_g"] / expected_flow_g_s
 
-    def _grind_band_seconds_hint(self, definition: EntityDefinition) -> str | None:
-        """"(≤ Xs)"/"(Xs ≤ Ys)" - the duration_ratio range one grind-band
-        max tile's own entity covers (this band's max, and the previous
-        band's max or nothing for the first band), converted to seconds
-        via _reference_expected_s(). None for any entity that isn't one of
-        _GRIND_BAND_MAX_FIELDS' six."""
+    def _grind_band_seconds_upper(self, definition: EntityDefinition) -> float | None:
+        """This grind-band max entity's own boundary, in seconds
+        (_reference_expected_s() times its live duration_ratio value).
+        None for any entity that isn't one of _GRIND_BAND_MAX_FIELDS' six.
+
+        Deliberately just this one number, not a pre-formatted "(X ≤ Y)"
+        string: dashboard.yaml's markdown card (the only consumer - see its
+        own comment) builds each line's "lower ≤ name ≤ upper" chain itself
+        by reading two consecutive bands' own seconds_upper (band N's lower
+        bound is band N-1's own upper bound, and grossly_restrictive's own
+        lower bound is grind_band_moderately_restrictive_max's), which
+        needs the raw numbers, not a string already bundling two of them
+        together."""
         fields = list(_GRIND_BAND_MAX_FIELDS.values())
         field = str(definition.field)
         if field not in fields:
             return None
-        index = fields.index(field)
-        reference = self._reference_expected_s()
-        upper = getattr(self, field) * reference
-        if index == 0:
-            return f"(≤ {upper:.1f}s)"
-        lower = getattr(self, fields[index - 1]) * reference
-        return f"({lower:.1f}s ≤ {upper:.1f}s)"
-
-    def _grind_band_beyond_seconds_hint(self) -> str:
-        """"(≥ Xs)" for grossly_restrictive, the one band with no max
-        entity of its own (it's the unbounded catch-all past
-        grind_band_moderately_restrictive_max - see grind_correction.py's
-        _matched_band_index) - lives as an extra attribute on
-        moderately_restrictive_max's own entity instead, read by
-        dashboard.yaml's "Severely restrictive" markdown card."""
-        upper = self.grind_band_moderately_restrictive_max * self._reference_expected_s()
-        return f"(≥ {upper:.1f}s)"
+        return getattr(self, field) * self._reference_expected_s()
 
     def _shot_plot_points(self) -> list[list[float]]:
         """[elapsed_ms, weight_g, flow_g_s] points for the dashboard's Live

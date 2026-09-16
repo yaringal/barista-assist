@@ -318,9 +318,10 @@ number:
     max: 2.0
     step: 0.01
     mode: box
-    # "(≤ Xs)" duration-in-seconds hint, shown via dashboard.yaml's
-    # state_content - see runtime_entities.py's _grind_band_seconds_hint.
-    attributes: [seconds_hint]
+    # This band's own boundary in seconds (a 1:2-ratio reference shot),
+    # read by dashboard.yaml's markdown reference card - see
+    # runtime_entities.py's _grind_band_seconds_upper.
+    attributes: [seconds_upper]
 
   grind_band_grossly_fast_delta:
     source: controller
@@ -341,7 +342,7 @@ number:
     max: 2.0
     step: 0.01
     mode: box
-    attributes: [seconds_hint]
+    attributes: [seconds_upper]
 
   grind_band_moderately_fast_delta:
     source: controller
@@ -362,7 +363,7 @@ number:
     max: 2.0
     step: 0.01
     mode: box
-    attributes: [seconds_hint]
+    attributes: [seconds_upper]
 
   grind_band_slightly_fast_delta:
     source: controller
@@ -383,7 +384,7 @@ number:
     max: 2.0
     step: 0.01
     mode: box
-    attributes: [seconds_hint]
+    attributes: [seconds_upper]
 
   grind_band_slightly_restrictive_max:
     source: controller
@@ -394,7 +395,7 @@ number:
     max: 2.0
     step: 0.01
     mode: box
-    attributes: [seconds_hint]
+    attributes: [seconds_upper]
 
   grind_band_slightly_restrictive_delta:
     source: controller
@@ -415,10 +416,7 @@ number:
     max: 2.0
     step: 0.01
     mode: box
-    # beyond_seconds_hint is grossly_restrictive's own "(≥ Xs)" range - it
-    # has no max entity of its own (the unbounded catch-all band), so it
-    # rides on this, the last real max entity, instead.
-    attributes: [seconds_hint, beyond_seconds_hint]
+    attributes: [seconds_upper]
 
   grind_band_moderately_restrictive_delta:
     source: controller

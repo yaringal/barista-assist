@@ -332,47 +332,38 @@ views:
             show_header_toggle: false
             entities:
               - type: section
-                label: Duration ratio bands to drive grind change (seconds hints for a 1:2 yield ratio)
+                label: Duration ratio bands to drive grind change
               # These rows read top-to-bottom as one ascending
               # duration_ratio ladder (each band's own max: 0.6, 0.75,
               # 0.88...); each boundary value is only ever stored/shown
-              # once, on the row above it. seconds_hint/beyond_seconds_hint
-              # are computed server-side (runtime_entities.py's
-              # _grind_band_seconds_hint/_grind_band_beyond_seconds_hint,
-              # off definitions.yaml's live defaults, not a hardcoded
-              # constant) and shown as each row's secondary_info - a tile
-              # card's `name`/`icon`/`color` can't be templated at all (a
-              # rejected HA feature request: https://github.com/
-              # home-assistant/frontend/discussions/19930), which is why
-              # an earlier version of this section tried and failed to
-              # template the hint directly into a tile's own name.
+              # once, on the row above it. The seconds-equivalent hints
+              # live in the separate markdown card right below this one,
+              # not inline here - a plain entity row's secondary_info does
+              # NOT actually support a custom attribute despite the docs'
+              # wording ("any attribute of the entity"); that's why
+              # third-party rows like secondaryinfo-entity-row exist at
+              # all. A tile card's `name`/`icon`/`color` can't be
+              # templated either (a rejected HA feature request:
+              # https://github.com/home-assistant/frontend/discussions/
+              # 19930) - only a markdown card's own `content` genuinely
+              # supports live templates, hence the split below.
               - entity: __GRIND_BAND_GROSSLY_FAST_MAX__
                 name: Grossly fast
-                secondary_info: seconds_hint
               - entity: __GRIND_BAND_MODERATELY_FAST_MAX__
                 name: Moderately fast
-                secondary_info: seconds_hint
               - entity: __GRIND_BAND_SLIGHTLY_FAST_MAX__
                 name: Slightly fast
-                secondary_info: seconds_hint
               - entity: __GRIND_BAND_HEALTHY_MAX__
                 name: Healthy
-                secondary_info: seconds_hint
               - entity: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__
                 name: Slightly restrictive
-                secondary_info: seconds_hint
               - entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
                 name: Moderately restrictive
-                secondary_info: seconds_hint
-              # grossly_restrictive has no max of its own (it's the
+              # grossly_restrictive has no max of its own at all (it's the
               # unbounded catch-all past moderately_restrictive_max - see
-              # grind_correction.py's _matched_band_index), so this is a
-              # read-only "attribute" row off moderately_restrictive_max's
-              # own entity instead of a real editable row.
-              - type: attribute
-                entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
-                attribute: beyond_seconds_hint
-                name: Severely restrictive
+              # grind_correction.py's _matched_band_index) - nothing to
+              # put here; see the markdown card below for its own
+              # "Severely restrictive" reference line.
 
               - type: section
                 label: Grind deltas
@@ -397,6 +388,41 @@ views:
                 name: Streak threshold (shots)
               - entity: __PUCK_PREP_ISSUE_STREAK_COARSEN_DELTA__
                 name: Coarsen Δ
+
+          # Reference-only equivalent of the bands above, in seconds for a
+          # fixed 1:2 yield ratio - duration_ratio alone isn't an intuitive
+          # unit. A markdown card's own `content` genuinely does support
+          # live Jinja templates (unlike a plain entity row's
+          # secondary_info, or a tile card's name/icon/color - see the
+          # comment on the entities card above). Each band's own
+          # seconds_upper attribute (runtime_entities.py's
+          # _grind_band_seconds_upper, off definitions.yaml's live
+          # defaults, not a hardcoded constant) is a plain number, not a
+          # pre-formatted string, so this template builds each
+          # "lower ≤ name ≤ upper" chain itself: a band's lower bound is
+          # simply the previous band's own upper bound, and
+          # grossly_restrictive (no max entity of its own - see
+          # grind_correction.py's _matched_band_index) reuses
+          # grind_band_moderately_restrictive_max's own upper bound as its
+          # one-sided lower bound.
+          - type: markdown
+            content: >-
+              **Duration ratio bands, in seconds (1:2 yield ratio)**
+
+
+              Grossly fast ≤ {{ '%.1f'|format(state_attr('__GRIND_BAND_GROSSLY_FAST_MAX__', 'seconds_upper')) }}s
+
+              {{ '%.1f'|format(state_attr('__GRIND_BAND_GROSSLY_FAST_MAX__', 'seconds_upper')) }}s ≤ Moderately fast ≤ {{ '%.1f'|format(state_attr('__GRIND_BAND_MODERATELY_FAST_MAX__', 'seconds_upper')) }}s
+
+              {{ '%.1f'|format(state_attr('__GRIND_BAND_MODERATELY_FAST_MAX__', 'seconds_upper')) }}s ≤ Slightly fast ≤ {{ '%.1f'|format(state_attr('__GRIND_BAND_SLIGHTLY_FAST_MAX__', 'seconds_upper')) }}s
+
+              {{ '%.1f'|format(state_attr('__GRIND_BAND_SLIGHTLY_FAST_MAX__', 'seconds_upper')) }}s ≤ Healthy ≤ {{ '%.1f'|format(state_attr('__GRIND_BAND_HEALTHY_MAX__', 'seconds_upper')) }}s
+
+              {{ '%.1f'|format(state_attr('__GRIND_BAND_HEALTHY_MAX__', 'seconds_upper')) }}s ≤ Slightly restrictive ≤ {{ '%.1f'|format(state_attr('__GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__', 'seconds_upper')) }}s
+
+              {{ '%.1f'|format(state_attr('__GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__', 'seconds_upper')) }}s ≤ Moderately restrictive ≤ {{ '%.1f'|format(state_attr('__GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__', 'seconds_upper')) }}s
+
+              {{ '%.1f'|format(state_attr('__GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__', 'seconds_upper')) }}s ≤ Severely restrictive
 
       - type: grid
         cards:
