@@ -47,7 +47,16 @@ def _dashboard_entity_map(hass: HomeAssistant, runtime) -> dict[str, str]:
 
 def _replace_tokens(value: Any, mapping: dict[str, str]) -> Any:
     if isinstance(value, str):
-        return mapping.get(value, value)
+        # A whole-string match (the common case: entity: __GRIND__) is just
+        # the single-occurrence case of this same replace - but a card
+        # condition's own value_template (a Jinja string) needs a token
+        # substituted *inside* a larger string, e.g.
+        # "{{ state_attr('__GRIND__', 'recommended') ... }}", so every
+        # occurrence of every token is replaced, not just an exact match.
+        for token, entity_id in mapping.items():
+            if token in value:
+                value = value.replace(token, entity_id)
+        return value
     if isinstance(value, list):
         return [_replace_tokens(item, mapping) for item in value]
     if isinstance(value, dict):

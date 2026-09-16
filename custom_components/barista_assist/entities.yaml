@@ -186,9 +186,10 @@ number:
     min: 15.0
     max: 80.0
     # UI increment only (_validate_recipe_field checks min/max, not step
-    # alignment) - matches Hoffmann's 2-3g yield-finetune ceiling (DESIGN.md
-    # §6.3), distinct from sour_sharp's own 5g delta_g.
-    step: 2.5
+    # alignment) - 1g per user preference, finer-grained than Hoffmann's
+    # 2-3g yield-finetune ceiling (DESIGN.md §6.3) since the +/- buttons make
+    # a few extra taps cheap.
+    step: 1
     unit: g
     mode: box
     requires_bag: true
@@ -317,6 +318,9 @@ number:
     max: 2.0
     step: 0.01
     mode: box
+    # "(≤ Xs)" duration-in-seconds hint, shown via dashboard.yaml's
+    # state_content - see runtime_entities.py's _grind_band_seconds_hint.
+    attributes: [seconds_hint]
 
   grind_band_grossly_fast_delta:
     source: controller
@@ -337,6 +341,7 @@ number:
     max: 2.0
     step: 0.01
     mode: box
+    attributes: [seconds_hint]
 
   grind_band_moderately_fast_delta:
     source: controller
@@ -357,6 +362,7 @@ number:
     max: 2.0
     step: 0.01
     mode: box
+    attributes: [seconds_hint]
 
   grind_band_slightly_fast_delta:
     source: controller
@@ -377,6 +383,7 @@ number:
     max: 2.0
     step: 0.01
     mode: box
+    attributes: [seconds_hint]
 
   grind_band_slightly_restrictive_max:
     source: controller
@@ -387,6 +394,7 @@ number:
     max: 2.0
     step: 0.01
     mode: box
+    attributes: [seconds_hint]
 
   grind_band_slightly_restrictive_delta:
     source: controller
@@ -407,6 +415,10 @@ number:
     max: 2.0
     step: 0.01
     mode: box
+    # beyond_seconds_hint is grossly_restrictive's own "(≥ Xs)" range - it
+    # has no max entity of its own (the unbounded catch-all band), so it
+    # rides on this, the last real max entity, instead.
+    attributes: [seconds_hint, beyond_seconds_hint]
 
   grind_band_moderately_restrictive_delta:
     source: controller

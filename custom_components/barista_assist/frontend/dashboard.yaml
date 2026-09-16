@@ -297,12 +297,6 @@ views:
                 name: Minimum dose adjustment
               - entity: __MIN_STEP_TEMPERATURE_OFFSET__
                 name: Minimum temperature adjustment
-          - type: button
-            name: Integration settings (configure)
-            icon: mdi:cog
-            tap_action:
-              action: navigate
-              navigation_path: /config/integrations/integration/barista_assist
 
       - type: grid
         cards:
@@ -312,79 +306,90 @@ views:
             icon: mdi:tune-vertical
 
           - type: heading
-            heading: Duration ratio bands that drive the recommended grind change after each shot
+            heading: Duration ratio bands to drive grind change
             heading_style: subtitle
 
-          # Consecutive tiles read left-to-right as one ascending
-          # duration_ratio ladder (each band's own max: 0.6, 0.75, 0.88...) -
-          # the plain "–"/"∞" markdown cards between them are static text,
-          # nothing computed; each boundary value is only ever stored/shown
-          # once, on the tile to its left.
-          - type: markdown
-            content: "**-∞**"
-
+          # These tiles read left-to-right as one ascending duration_ratio
+          # ladder (each band's own max: 0.6, 0.75, 0.88...); each boundary
+          # value is only ever stored/shown once, on the tile to its left.
+          # The unbounded -∞/∞ ends aren't stated separately anywhere - the
+          # first tile's own seconds_hint reads "(≤ Xs)" instead of a
+          # range, and the trailing "Severely restrictive" markdown card
+          # below reads "(≥ Xs)" for the same reason (grossly_restrictive
+          # has no max entity of its own).
+          #
+          # Each tile's seconds_hint attribute is the same "how many
+          # seconds is this" range this section originally tried to
+          # template directly into name - tile cards don't support
+          # templates on name/icon/color at all (an explicitly rejected HA
+          # feature request: https://github.com/home-assistant/frontend/
+          # discussions/19930), so it rendered as literal "{{ ... }}"
+          # instead of evaluating. seconds_hint is computed for real in
+          # Python instead (runtime_entities.py's _grind_band_seconds_hint,
+          # off definitions.yaml's live defaults - no hardcoded reference
+          # constant to go stale here) and shown via state_content, the
+          # same proven mechanism the "recommended" attribute already uses
+          # elsewhere on this dashboard.
           - type: tile
             entity: __GRIND_BAND_GROSSLY_FAST_MAX__
-            name: Grossly fast — max
+            name: Grossly fast
             color: blue
+            state_content: [state, seconds_hint]
             features: *number_buttons
             features_position: bottom
-
-          - type: markdown
-            content: "**–**"
 
           - type: tile
             entity: __GRIND_BAND_MODERATELY_FAST_MAX__
-            name: Moderately fast — max
+            name: Moderately fast
             color: blue
+            state_content: [state, seconds_hint]
             features: *number_buttons
             features_position: bottom
-
-          - type: markdown
-            content: "**–**"
 
           - type: tile
             entity: __GRIND_BAND_SLIGHTLY_FAST_MAX__
-            name: Slightly fast — max
+            name: Slightly fast
             color: blue
+            state_content: [state, seconds_hint]
             features: *number_buttons
             features_position: bottom
-
-          - type: markdown
-            content: "**–**"
 
           - type: tile
             entity: __GRIND_BAND_HEALTHY_MAX__
-            name: Healthy — max
+            name: Healthy
             color: green
+            state_content: [state, seconds_hint]
             features: *number_buttons
             features_position: bottom
-
-          - type: markdown
-            content: "**–**"
 
           - type: tile
             entity: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__
-            name: Slightly restrictive — max
+            name: Slightly restrictive
             color: red
+            state_content: [state, seconds_hint]
             features: *number_buttons
             features_position: bottom
-
-          - type: markdown
-            content: "**–**"
 
           - type: tile
             entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
-            name: Moderately restrictive — max
+            name: Moderately restrictive
             color: red
+            state_content: [state, seconds_hint]
             features: *number_buttons
             features_position: bottom
 
+          # grossly_restrictive has no max of its own (it's the unbounded
+          # catch-all past moderately_restrictive_max - see
+          # grind_correction.py's _matched_band_index), so there's no
+          # editable tile for it, but the ladder still needs a label for
+          # its range. Markdown card content DOES genuinely support Jinja
+          # templates (unlike tile card fields), but state_attr here reads
+          # the same Python-computed beyond_seconds_hint attribute rather
+          # than recomputing the seconds conversion in the template itself
+          # - one source of truth, not two.
           - type: markdown
-            content: "**–**"
-
-          - type: markdown
-            content: "**∞**"
+            content: >-
+              **Severely restrictive {{ state_attr('__GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__', 'beyond_seconds_hint') }}**
 
       - type: grid
         cards:
@@ -398,6 +403,8 @@ views:
             color: blue
             features: *number_buttons
             features_position: bottom
+            grid_options:
+              columns: 3
 
           - type: tile
             entity: __GRIND_BAND_MODERATELY_FAST_DELTA__
@@ -405,6 +412,8 @@ views:
             color: blue
             features: *number_buttons
             features_position: bottom
+            grid_options:
+              columns: 3
 
           - type: tile
             entity: __GRIND_BAND_SLIGHTLY_FAST_DELTA__
@@ -412,11 +421,15 @@ views:
             color: blue
             features: *number_buttons
             features_position: bottom
+            grid_options:
+              columns: 3
 
           - type: tile
             entity: __GRIND_BAND_HEALTHY_DELTA__
             name: Healthy — Δ (fixed)
             color: green
+            grid_options:
+              columns: 3
 
           - type: tile
             entity: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_DELTA__
@@ -424,6 +437,8 @@ views:
             color: red
             features: *number_buttons
             features_position: bottom
+            grid_options:
+              columns: 3
 
           - type: tile
             entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_DELTA__
@@ -431,6 +446,8 @@ views:
             color: red
             features: *number_buttons
             features_position: bottom
+            grid_options:
+              columns: 3
 
           - type: tile
             entity: __GRIND_BAND_GROSSLY_RESTRICTIVE_DELTA__
@@ -438,6 +455,8 @@ views:
             color: red
             features: *number_buttons
             features_position: bottom
+            grid_options:
+              columns: 3
 
       - type: grid
         cards:
@@ -451,6 +470,8 @@ views:
             color: red
             features: *number_buttons
             features_position: bottom
+            grid_options:
+              columns: 3
 
           - type: tile
             entity: __PUCK_PREP_ISSUE_STREAK_COARSEN_DELTA__
@@ -458,6 +479,17 @@ views:
             color: red
             features: *number_buttons
             features_position: bottom
+            grid_options:
+              columns: 3
+
+      - type: grid
+        cards:
+          - type: button
+            name: Integration settings (configure)
+            icon: mdi:cog
+            tap_action:
+              action: navigate
+              navigation_path: /config/integrations/integration/barista_assist
 
   - title: Shots
     path: shots

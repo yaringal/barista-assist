@@ -1235,6 +1235,72 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         healthy_delta = self.runtime.definitions.entity("sensor", "grind_band_healthy_delta")
         self.assertEqual(self.runtime.entity_value(healthy_delta), "0")
 
+    def _grind_band_reference_expected_s(self) -> float:
+        """Same formula as runtime_entities.py's _reference_expected_s,
+        rebuilt here from live definitions.yaml values (never hardcoded -
+        see the standing rule in this repo's own test conventions) so this
+        test doesn't silently drift from the real implementation."""
+        recipe = self.runtime.definitions.defaults["recipe"]
+        expected_flow_g_s = self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"]
+        return recipe["preinfusion_s"] + recipe["target_yield_g"] / expected_flow_g_s
+
+    def _seconds_hint(self, key: str) -> str | None:
+        definition = self.runtime.definitions.entity("number", key)
+        return self.runtime.entity_attributes(definition).get("seconds_hint")
+
+    async def test_first_grind_band_seconds_hint_is_an_upper_bound_only(self):
+        """grossly_fast has no previous band, so its seconds_hint is a
+        single "(≤ Xs)" bound, not a range - dashboard.yaml's Grind
+        correction section's own "how many seconds is this" hint."""
+        reference = self._grind_band_reference_expected_s()
+        expected_upper = self.runtime.grind_band_grossly_fast_max * reference
+        self.assertEqual(
+            self._seconds_hint("grind_band_grossly_fast_max"), f"(≤ {expected_upper:.1f}s)"
+        )
+
+    async def test_middle_grind_band_seconds_hint_is_a_range(self):
+        """moderately_fast's own hint spans from grossly_fast_max (the
+        previous band's own boundary) to its own max."""
+        reference = self._grind_band_reference_expected_s()
+        lower = self.runtime.grind_band_grossly_fast_max * reference
+        upper = self.runtime.grind_band_moderately_fast_max * reference
+        self.assertEqual(
+            self._seconds_hint("grind_band_moderately_fast_max"),
+            f"({lower:.1f}s .. {upper:.1f}s)",
+        )
+
+    async def test_grind_band_seconds_hint_tracks_a_live_dashboard_edit(self):
+        """seconds_hint is computed live off the current grind_band_*_max
+        value, not a snapshot from startup - editing the entity changes the
+        hint on the next read."""
+        moderately_fast_max = next(
+            d
+            for d in self.runtime.definitions.platform("number")
+            if d.key == "grind_band_moderately_fast_max"
+        )
+        await self.runtime.async_set_entity_value(moderately_fast_max, 0.7)
+        reference = self._grind_band_reference_expected_s()
+        lower = self.runtime.grind_band_grossly_fast_max * reference
+        upper = 0.7 * reference
+        self.assertEqual(
+            self._seconds_hint("grind_band_moderately_fast_max"),
+            f"({lower:.1f}s .. {upper:.1f}s)",
+        )
+
+    async def test_beyond_grind_band_seconds_hint_is_a_lower_bound_only(self):
+        """grossly_restrictive has no max entity of its own (the unbounded
+        catch-all past moderately_restrictive_max), so its "(≥ Xs)" hint
+        rides on moderately_restrictive_max's own entity instead - the
+        "Severely restrictive" markdown card in dashboard.yaml reads it via
+        state_attr rather than a separate entity."""
+        definition = self.runtime.definitions.entity("number", "grind_band_moderately_restrictive_max")
+        reference = self._grind_band_reference_expected_s()
+        lower = self.runtime.grind_band_moderately_restrictive_max * reference
+        self.assertEqual(
+            self.runtime.entity_attributes(definition).get("beyond_seconds_hint"),
+            f"(≥ {lower:.1f}s)",
+        )
+
     async def test_finalized_shot_has_no_grind_recommendation_when_healthy(self):
         await self.start_shot()
         shot = self.runtime.active_shot
@@ -1264,7 +1330,7 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
 
         current_grind = self.runtime.last_shot["grind"]
         delta = self.runtime.last_shot["recommended_grind_delta"]
-        self.assertEqual(note, f"{current_grind:g} → {current_grind + delta:g}")
+        self.assertEqual(note, f"⚠️ {current_grind:g} → {current_grind + delta:g}")
 
     async def test_recommended_grind_note_is_none_when_healthy(self):
         await self.start_shot()
@@ -1549,7 +1615,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
         await self._brew_and_tag("mouthfeel", "thin_weak", times=2)
 
         note = self._recommended_attribute("number", "dose")
-        self.assertEqual(note, f"{dose:g} → {dose + self._tag_signed_delta('thin_weak'):g}")
+        self.assertEqual(note, f"⚠️ {dose:g} → {dose + self._tag_signed_delta('thin_weak'):g}")
         self.assertNotIn("thin_weak", note)
 
     async def test_recommended_target_yield_attribute_shows_a_short_note(self):
@@ -1559,7 +1625,7 @@ class FlavorFeedbackTests(RuntimeTestCase):
 
         note = self._recommended_attribute("number", "target_yield")
         self.assertEqual(
-            note, f"{target_yield:g} → {target_yield + self._tag_signed_delta('sour_sharp'):g}"
+            note, f"⚠️ {target_yield:g} → {target_yield + self._tag_signed_delta('sour_sharp'):g}"
         )
 
     async def test_recommended_temperature_attribute_is_none_without_a_persistent_pattern(self):

@@ -82,16 +82,23 @@ class RuntimeEntitiesMixin:
         (storage.latest_shot_bag) - backs both the standalone recommended_grind
         sensor and (via _recommended_note_for) the grind tile's own
         "recommended" decoration, so switching slots always shows this
-        bag's own last shot, never a different bag's. None when the last
-        shot has no recommendation at all (healthy, or excluded as
-        puck_prep_issue/invalid_measurement)."""
+        bag's own last shot, never a different bag's, and both display the
+        exact same ⚠️-prefixed text. None when the last shot has no
+        recommendation at all (healthy, or excluded as puck_prep_issue/
+        invalid_measurement). The ⚠️ prefix is the attention-grabbing cue
+        dashboard.yaml's tile cards can't provide themselves - a tile's
+        `color` only tints its icon, never this secondary state_content
+        text, and tile fields don't support Jinja templates at all (a
+        rejected HA feature request: https://github.com/home-assistant/
+        frontend/discussions/19930), so the emphasis has to live in the
+        attribute's own text rather than in dashboard.yaml."""
         if not self.last_shot:
             return None
         delta = self.last_shot.get("recommended_grind_delta")
         if delta is None:
             return None
         current = self.last_shot["grind"]
-        return f"{current:g} → {current + delta:g}"
+        return f"⚠️ {current:g} → {current + delta:g}"
 
     def _flavor_correction_config(self) -> dict[str, Any]:
         """expert_rules.flavor_correction, with minimum_meaningful_step
@@ -392,12 +399,19 @@ class RuntimeEntitiesMixin:
         _recommended_note_for/entity_attributes) rather than a separate
         tile or the combined dashboard summary. Uses
         _active_flavor_field_recommendation (the single, suppress-gated
-        recommendation), not the full diagnostic set."""
+        recommendation), not the full diagnostic set. The ⚠️ prefix is the
+        attention-grabbing cue dashboard.yaml's own tile cards can't
+        provide themselves - a tile's `color` only tints its icon, never
+        this secondary state_content text, and tile fields don't support
+        Jinja templates at all (a rejected HA feature request:
+        https://github.com/home-assistant/frontend/discussions/19930), so
+        the emphasis has to live in the attribute's own text rather than
+        in dashboard.yaml."""
         recommendation = self._active_flavor_field_recommendation().get(field)
         if recommendation is None:
             return None
         current, recommended, _tag = recommendation
-        return f"{current:g} → {recommended:g}"
+        return f"⚠️ {current:g} → {recommended:g}"
 
     def _recommended_note_for(self, definition: EntityDefinition) -> str | None:
         """The "recommended" attribute's value for one recipe-field entity
@@ -405,9 +419,11 @@ class RuntimeEntitiesMixin:
         field's own tile (via dashboard.yaml's state_content), not a
         separate card. Dispatches by definition.field to whichever
         recommendation source actually covers it: grind's comes from the
-        last completed shot (_recommended_grind_note, Phase 4); the others
-        come from flavor_correction's persistent-pattern tags on the
-        selected bag (_recipe_field_short_note, Phase 5)."""
+        last completed shot (_recommended_grind_note, Phase 4, already
+        ⚠️-prefixed there since the standalone recommended_grind sensor
+        needs the exact same text); the others come from flavor_correction's
+        persistent-pattern tags on the selected bag (_recipe_field_short_note,
+        Phase 5, ⚠️-prefixed there too)."""
         if definition.field == "grind":
             return self._recommended_grind_note()
         return self._recipe_field_short_note(str(definition.field))
@@ -436,12 +452,58 @@ class RuntimeEntitiesMixin:
                 value = self._bag_remaining.get(self.selected_slot) if bag else None
             elif attribute == "recommended":
                 value = self._recommended_note_for(definition)
+            elif attribute == "seconds_hint":
+                value = self._grind_band_seconds_hint(definition)
+            elif attribute == "beyond_seconds_hint":
+                value = self._grind_band_beyond_seconds_hint()
             elif bag and hasattr(bag, attribute):
                 value = getattr(bag, attribute)
             else:
                 continue
             result[attribute] = value
         return result
+
+    def _reference_expected_s(self) -> float:
+        """expected_s for a fixed 1:2-ratio reference shot
+        (defaults.recipe's own dose_g/target_yield_g - already exactly
+        1:2 - and preinfusion_s) at flow_analysis_constants.
+        expected_flow_g_s - the shared basis for every grind-band tile's
+        "how many seconds is this" hint (dashboard.yaml's seconds_hint/
+        beyond_seconds_hint attributes below), since duration_ratio alone
+        isn't an intuitive unit. Read live from definitions.yaml rather
+        than hardcoded, so it can never drift out of sync with those
+        settings."""
+        recipe = self.definitions.defaults["recipe"]
+        expected_flow_g_s = self.definitions.flow_analysis_constants["expected_flow_g_s"]
+        return recipe["preinfusion_s"] + recipe["target_yield_g"] / expected_flow_g_s
+
+    def _grind_band_seconds_hint(self, definition: EntityDefinition) -> str | None:
+        """"(≤ Xs)"/"(Xs .. Ys)" - the duration_ratio range one grind-band
+        max tile's own entity covers (this band's max, and the previous
+        band's max or nothing for the first band), converted to seconds
+        via _reference_expected_s(). None for any entity that isn't one of
+        _GRIND_BAND_MAX_FIELDS' six."""
+        fields = list(_GRIND_BAND_MAX_FIELDS.values())
+        field = str(definition.field)
+        if field not in fields:
+            return None
+        index = fields.index(field)
+        reference = self._reference_expected_s()
+        upper = getattr(self, field) * reference
+        if index == 0:
+            return f"(≤ {upper:.1f}s)"
+        lower = getattr(self, fields[index - 1]) * reference
+        return f"({lower:.1f}s .. {upper:.1f}s)"
+
+    def _grind_band_beyond_seconds_hint(self) -> str:
+        """"(≥ Xs)" for grossly_restrictive, the one band with no max
+        entity of its own (it's the unbounded catch-all past
+        grind_band_moderately_restrictive_max - see grind_correction.py's
+        _matched_band_index) - lives as an extra attribute on
+        moderately_restrictive_max's own entity instead, read by
+        dashboard.yaml's "Severely restrictive" markdown card."""
+        upper = self.grind_band_moderately_restrictive_max * self._reference_expected_s()
+        return f"(≥ {upper:.1f}s)"
 
     def _shot_plot_points(self) -> list[list[float]]:
         """[elapsed_ms, weight_g, flow_g_s] points for the dashboard's Live

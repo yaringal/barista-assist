@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.1
+
+### Added
+
+- **Shot history now shows each shot's own Extraction/Mouthfeel flavor tags**, right after Roaster in the Shots view's expanded detail - the data was already being recorded, just wasn't surfaced there before.
+- **Grind-correction band tiles (System view → "Connection and control" → "Grind correction") now show a live "how many seconds is this" hint alongside each band's raw duration_ratio value**, e.g. "(≤ 16.9s)" or "(16.9s .. 21.1s)" - duration_ratio alone isn't an intuitive unit, but a shot length in seconds is. It's computed server-side (`runtime_entities.py`'s `_grind_band_seconds_hint`/`_grind_band_beyond_seconds_hint`) from a fixed 1:2-ratio reference shot using definitions.yaml's own live defaults (dose_g/target_yield_g/preinfusion_s/expected_flow_g_s) - not a hardcoded constant, so it can't silently drift out of sync with those settings - and shown via each entity's own `seconds_hint`/`beyond_seconds_hint` attribute, the same mechanism the existing "recommended" attribute already uses. (An inline Jinja template directly on the tile's `name` was tried first, but Home Assistant's tile card doesn't support templating on `name`/`icon`/`color` at all - an explicitly rejected upstream feature request - so it rendered as literal, broken `{{ ... }}` text instead of evaluating.)
+- **The Dose/Grind/Target yield/Temperature offset recipe tiles now prefix their "current → recommended" note with a ⚠️ when a recommendation is pending**, e.g. "⚠️ 15.0 → 14.0" - a tile's own `color` only tints its icon, never this secondary text, and (as above) tile fields can't be templated at all, so the emphasis lives in the attribute's own text instead of in dashboard.yaml.
+
+### Changed
+
+- **Recipe target yield's dashboard +/- step is now 1g, not 2.5g.**
+- **The System view's settings layout was reorganized**: "Integration settings (Configure)" moved to its own section at the very end of the view (it was previously stuck in the middle, above the grind-correction settings); the grind-correction band ladder's separator markdown cards were simplified.
+
+### Fixed
+
+- **The packaged dashboard's `__TOKEN__` → real-entity-id substitution only ever matched a token that was the *entire* string value of a YAML field**, so it couldn't resolve a token embedded inside a larger string (needed for the markdown "Severely restrictive" card's own live template above, which reads `state_attr('__GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__', ...)` - the token is only part of that string). `websocket.py`'s `_replace_tokens` now substitutes a token wherever it appears in a string, not just when it's the whole value.
+
+### Testing
+
+- Added tests for the grind-band seconds hints (first-band edge case, mid-band range, live-edit tracking, and the trailing unbounded-band hint) and the token-substitution fix.
+- Full suite: 316 tests, all passing (up from 311).
+
 ## 0.3.0
 
 ### Added

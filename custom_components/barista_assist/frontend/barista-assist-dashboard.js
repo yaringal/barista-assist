@@ -393,6 +393,16 @@ const CLASSIFICATION_LABELS = {
   invalid_measurement: "Invalid",
 };
 
+// Mirrors runtime_shared.py's _FLAVOR_TAG_LABELS - kept in sync by hand
+// since this card has no access to that Python-side dict.
+const FLAVOR_TAG_LABELS = {
+  sour_sharp: "Sour / Sharp",
+  bitter_harsh: "Bitter / Harsh",
+  thin_weak: "Thin / Weak",
+  dry_astringent: "Dry / Astringent",
+  balanced: "Balanced",
+};
+
 class BaristaAssistShotHistoryCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Shot history" };
@@ -545,6 +555,12 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
             shot.channeling_suspicion != null ? this._formatNumber(shot.channeling_suspicion, 2) : "—"
           }</div>
           <div><b>Roaster</b> ${this._escape(shot.roaster || "—")}</div>
+          <div><b>Extraction tag</b> ${this._escape(
+            FLAVOR_TAG_LABELS[shot.flavor_extraction_tag] || "—"
+          )}</div>
+          <div><b>Mouthfeel tag</b> ${this._escape(
+            FLAVOR_TAG_LABELS[shot.flavor_mouthfeel_tag] || "—"
+          )}</div>
         </div>
         ${renderShotChart(samples, this._shotMarkers(shot))}
       </div>`;

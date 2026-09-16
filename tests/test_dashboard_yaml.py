@@ -66,6 +66,38 @@ class TokenSubstitutionInNestedKeysTests(unittest.TestCase):
         condition = data["views"][0]["cards"][0]["visibility"][0]
         self.assertEqual(condition["entity"], "switch.barista_assist_adapt_pi")
 
+    def test_substitutes_a_token_embedded_inside_a_template_string(self):
+        """A conditional card's value_template embeds the token inside a
+        larger Jinja string (e.g. "{{ state_attr('__GRIND__', ...) }}"),
+        not as the whole string value - _replace_tokens must substitute it
+        there too, not just when the token is the entire string."""
+        template = {
+            "views": [
+                {
+                    "cards": [
+                        {
+                            "type": "conditional",
+                            "conditions": [
+                                {
+                                    "condition": "template",
+                                    "value_template": (
+                                        "{{ state_attr('__GRIND__', 'recommended') "
+                                        "not in [None, ''] }}"
+                                    ),
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+        entity_map = {"__GRIND__": "number.barista_assist_grind"}
+        text = websocket.render_dashboard_yaml(template, entity_map)
+        data = yaml.safe_load(text)
+        value_template = data["views"][0]["cards"][0]["conditions"][0]["value_template"]
+        self.assertIn("number.barista_assist_grind", value_template)
+        self.assertNotIn("__GRIND__", value_template)
+
 
 if __name__ == "__main__":
     unittest.main()
