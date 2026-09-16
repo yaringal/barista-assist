@@ -181,38 +181,41 @@ const CHART_STYLES = `
   .legend-weight::before, .legend-flow::before { content: "—"; margin-right: 4px; font-weight: 700; }
   .legend-weight::before { color: #2196f3; }
   .legend-flow::before { color: #00bcd4; }
-  .legend-expected::before { content: "- -"; margin-right: 4px; font-weight: 700; color: var(--secondary-text-color, #888); }
+  .legend-expected::before { content: "●"; margin-right: 4px; font-weight: 700; color: var(--secondary-text-color, #888); }
   .empty { opacity: 0.7; padding: 8px 0; }
   .pi-band { fill: var(--secondary-text-color, #888); opacity: 0.08; }
-  .expected-line { stroke: var(--secondary-text-color, #888); stroke-width: 1.5; stroke-dasharray: 5,4; }
+  .expected-marker { fill: var(--secondary-text-color, #888); stroke: var(--card-background-color, #fff); stroke-width: 1; }
   .stop-line { stroke: var(--error-color, #c62828); stroke-width: 1.5; stroke-dasharray: 2,3; }
   .event-labels { position: relative; height: 14px; font-size: 0.65rem; opacity: 0.75; }
   .event-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
   .event-labels .stop-label { color: var(--error-color, #c62828); }
 `;
 
-// The idealized ("expected") weight trajectory for a shot: flat at 0
-// through pre-infusion, then a straight ramp to target_yield_g at
-// markers.expected_flow_g_s (flow_analysis.blended_expected_flow_g_s,
-// fixed per-shot at brew time - see runtime.py's ActiveShot.
-// expected_flow_g_s/_shot_markers). expected_flow_g_s is post-pre-infusion/
-// extraction-only, so pre-infusion is added on top (pi + expectedDurationMs
-// below) rather than folded into the rate - matching flow_analysis.py's own
-// analyze_shot expected_s formula exactly, not just approximately, so this
-// curve's completion point is the same point duration_ratio=1.0 means for
-// classification. Not a curve shape sourced from anywhere - just that same
-// flat-rate model, drawn instead of only compared against.
-// Returns [] (nothing to draw) until both figures are actually known.
-function idealizedWeightPoints(markers) {
+// The single "expected completion" reference point for a shot - where/when
+// it should reach target_yield_g at markers.expected_flow_g_s
+// (flow_analysis.blended_expected_flow_g_s, fixed per-shot at brew time -
+// see runtime.py's ActiveShot.expected_flow_g_s/_shot_markers).
+// expected_flow_g_s is post-pre-infusion/extraction-only, so pre-infusion
+// is added on top (pi + expectedDurationMs below) rather than folded into
+// the rate - matching flow_analysis.py's own analyze_shot expected_s
+// formula exactly, so this point is the same point duration_ratio=1.0
+// means for classification.
+//
+// Deliberately just a marker, not a full drawn trajectory from press to
+// here (an earlier version of this chart drew a straight line): real flow
+// isn't constant across a pour (there's a ramp-up period this project
+// doesn't yet have enough real shot data to model - see flow_analysis.py's
+// own analyze_shot "Open caveat" comment), so a full straight line implies
+// a shape that was never actually true. This one point is the part of the
+// model that IS backed by the same math classification itself uses; the
+// path in between it isn't a claim this chart should make.
+// Returns null until both figures are actually known.
+function expectedCompletionPoint(markers) {
   const { preinfusion_ms, expected_flow_g_s, target_yield_g } = markers || {};
-  if (expected_flow_g_s == null || target_yield_g == null) return [];
+  if (expected_flow_g_s == null || target_yield_g == null) return null;
   const pi = preinfusion_ms ?? 0;
   const expectedDurationMs = (target_yield_g / expected_flow_g_s) * 1000;
-  return [
-    { elapsed_ms: 0, weight_g: 0 },
-    { elapsed_ms: pi, weight_g: 0 },
-    { elapsed_ms: pi + expectedDurationMs, weight_g: target_yield_g },
-  ];
+  return { elapsed_ms: pi + expectedDurationMs, weight_g: target_yield_g };
 }
 
 // Cosmetic-only smoothing for the flow line: real per-reading flow_g_s is
@@ -235,17 +238,19 @@ function smoothedFlowSeries(samples, windowMs = 600) {
 
 // Shared geometry between renderShotChart's static markup and
 // attachChartTooltip's hit-testing, so the two can never drift out of sync.
-// markers (see runtime.py's _shot_markers) factors the idealized curve's
-// own endpoint into maxT/maxWeight too, so the chart auto-scales to fit
-// both curves even when the real shot hasn't caught up to (or has
-// overshot) the ideal line yet.
+// markers (see runtime.py's _shot_markers) factors the expected-completion
+// marker's own point into maxT/maxWeight too, so the chart auto-scales to
+// show it even when the real shot hasn't caught up to (or has overshot) it
+// yet.
 function chartGeometry(samples, markers = {}) {
   const width = 600;
   const height = 200;
   const padding = 28;
-  const idealPoints = idealizedWeightPoints(markers);
-  const maxT = Math.max(1, ...samples.map((s) => s.elapsed_ms), ...idealPoints.map((p) => p.elapsed_ms));
-  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...idealPoints.map((p) => p.weight_g));
+  const expectedPoint = expectedCompletionPoint(markers);
+  const extraT = expectedPoint ? [expectedPoint.elapsed_ms] : [];
+  const extraWeight = expectedPoint ? [expectedPoint.weight_g] : [];
+  const maxT = Math.max(1, ...samples.map((s) => s.elapsed_ms), ...extraT);
+  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...extraWeight);
   const maxFlow = Math.max(1, ...samples.map((s) => s.flow_g_s));
   const x = (t) => padding + (t / maxT) * (width - 2 * padding);
   const yFor = (max) => (v) => height - padding - (Math.max(0, v) / max) * (height - 2 * padding);
@@ -271,7 +276,7 @@ function renderShotChart(samples, markers = {}) {
       .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.elapsed_ms).toFixed(1)},${yAccessor(p).toFixed(1)}`)
       .join(" ");
   const smoothedFlow = smoothedFlowSeries(samples);
-  const idealPoints = idealizedWeightPoints(markers);
+  const expectedPoint = expectedCompletionPoint(markers);
 
   const step = niceStepSeconds(maxT / 1000);
   const ticks = [];
@@ -287,8 +292,8 @@ function renderShotChart(samples, markers = {}) {
     preinfusionMs > 0
       ? `<rect x="${padding}" y="${padding}" width="${(x(preinfusionMs) - padding).toFixed(1)}" height="${height - 2 * padding}" class="pi-band" />`
       : "";
-  const idealPath = idealPoints.length
-    ? `<path d="${pathFor(idealPoints, (p) => yWeight(p.weight_g))}" class="expected-line" fill="none" />`
+  const expectedMarker = expectedPoint
+    ? `<circle cx="${x(expectedPoint.elapsed_ms).toFixed(1)}" cy="${yWeight(expectedPoint.weight_g).toFixed(1)}" r="4" class="expected-marker" />`
     : "";
   const stopMs = markers?.stop_command_elapsed_ms;
   const hasStopMarker = stopMs != null;
@@ -305,10 +310,10 @@ function renderShotChart(samples, markers = {}) {
         ${piBand}
         <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" class="axis" />
         <line x1="${padding}" y1="${padding}" x2="${padding}" y2="${height - padding}" class="axis" />
-        ${idealPath}
         ${stopLine}
         <path d="${pathFor(samples, (s) => yWeight(s.weight_g))}" class="weight-line" fill="none" />
         <path d="${pathFor(smoothedFlow, (s) => yFlow(s.flow_g_s))}" class="flow-line" fill="none" />
+        ${expectedMarker}
         <line class="cursor-line" x1="0" y1="${padding}" x2="0" y2="${height - padding}" />
       </svg>
       <div class="axis-labels">${axisLabels}</div>
@@ -318,7 +323,7 @@ function renderShotChart(samples, markers = {}) {
     <div class="legend">
       <span class="legend-weight">Weight (max ${maxWeight.toFixed(1)}g)</span>
       <span class="legend-flow">Flow (max ${maxFlow.toFixed(1)} g/s)</span>
-      ${idealPath ? `<span class="legend-expected">Expected</span>` : ""}
+      ${expectedPoint ? `<span class="legend-expected">Expected</span>` : ""}
     </div>`;
 }
 
@@ -403,6 +408,14 @@ const FLAVOR_TAG_LABELS = {
   balanced: "Balanced",
 };
 
+// A plain emoji (📋) here was reported invisible on at least one desktop
+// browser/OS while rendering fine on mobile - inconsistent emoji font
+// coverage, not a code bug (🗑 next to it happens to be more universally
+// covered). An inline SVG has no font dependency at all, so it renders
+// identically everywhere; fill="currentColor" picks up button.export's own
+// color/opacity from CSS the same way the emoji glyph used to.
+const EXPORT_ICON_SVG = `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="vertical-align:middle"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
+
 class BaristaAssistShotHistoryCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Shot history" };
@@ -469,24 +482,81 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
           this._flashExportButton(button, "✅");
           return;
         } catch (_clipboardError) {
-          // fall through to the manual prompt below
+          // fall through to the manual copy modal below
         }
       }
-      window.prompt(`Copy ${coffeeName || "this shot"}'s data:`, result.text);
+      // window.prompt used to be the fallback here, but it's a single-line
+      // native dialog that collapses every newline in the exported text
+      // (tab-delimited sample rows become one unreadable line) - matches
+      // BaristaAssistExportCard's own <textarea readonly> fallback instead,
+      // which genuinely preserves line breaks.
+      this._showManualCopyModal(result.text, coffeeName);
     } catch (error) {
       window.alert(`Could not export shot: ${error?.message || error}`);
     }
   }
 
+  // Appended to document.body, not this.shadowRoot: _render() replaces
+  // this card's whole shadow-DOM innerHTML wholesale (e.g. on the next
+  // websocket update), which would otherwise wipe the modal out from under
+  // an open copy dialog.
+  _showManualCopyModal(text, coffeeName) {
+    const overlay = document.createElement("div");
+    overlay.innerHTML = `
+      <style>
+        .barista-export-modal-backdrop {
+          position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5);
+          display: flex; align-items: center; justify-content: center;
+          z-index: 1000; padding: 16px; box-sizing: border-box;
+        }
+        .barista-export-modal {
+          background: var(--card-background-color, #fff);
+          color: var(--primary-text-color, #000);
+          border-radius: 8px; padding: 16px; max-width: 600px; width: 100%;
+          box-sizing: border-box;
+        }
+        .barista-export-modal p { margin: 0 0 8px; opacity: 0.8; }
+        .barista-export-modal textarea {
+          width: 100%; box-sizing: border-box; font-family: monospace;
+          font-size: 0.85rem; margin-bottom: 12px;
+        }
+        .barista-export-modal button {
+          border: 0; border-radius: 999px; padding: 8px 16px; font: inherit;
+          font-weight: 600; background: var(--primary-color, #03a9f4);
+          color: var(--text-primary-color, #fff); cursor: pointer;
+        }
+      </style>
+      <div class="barista-export-modal-backdrop">
+        <div class="barista-export-modal">
+          <p>Copy ${this._escape(coffeeName || "this shot")}'s data - select all and copy from the textbox below.</p>
+          <textarea readonly rows="12"></textarea>
+          <button type="button">Close</button>
+        </div>
+      </div>`;
+    const textarea = overlay.querySelector("textarea");
+    textarea.value = text;
+    const close = () => overlay.remove();
+    overlay.querySelector("button").addEventListener("click", close);
+    overlay.querySelector(".barista-export-modal-backdrop").addEventListener("click", (event) => {
+      if (event.target === event.currentTarget) close();
+    });
+    document.body.appendChild(overlay);
+    textarea.focus();
+    textarea.select();
+  }
+
   // Brief success feedback in place of the export button's own icon, since
   // this card (unlike BaristaAssistExportCard) has no persistent status
-  // line to write into - just this one row's button.
+  // line to write into - just this one row's button. innerHTML, not
+  // textContent: the button's own icon is EXPORT_ICON_SVG markup, which
+  // has no text content to save/restore - textContent here would silently
+  // blank the button for good after the first successful copy.
   _flashExportButton(button, icon) {
     if (!button) return;
-    const original = button.textContent;
+    const original = button.innerHTML;
     button.textContent = icon;
     setTimeout(() => {
-      button.textContent = original;
+      button.innerHTML = original;
     }, 1200);
   }
 
@@ -580,7 +650,7 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
           <div class="col yield">${this._formatNumber(shot.actual_yield_g)} / ${this._formatNumber(
             shot.target_yield_g
           )}g</div>
-          <button class="export" data-export-id="${this._escape(shot.id)}" title="Export this shot">📋</button>
+          <button class="export" data-export-id="${this._escape(shot.id)}" title="Export this shot">${EXPORT_ICON_SVG}</button>
           <button class="delete" data-delete-id="${this._escape(shot.id)}" title="Delete shot">🗑</button>
         </div>
         ${expanded ? this._renderDetail(shot) : ""}

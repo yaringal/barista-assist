@@ -184,6 +184,15 @@ views:
               - type: select-options
             features_position: bottom
 
+          - type: tile
+            entity: __CREATE_BAG__
+            name: Create a new bag below
+            color: green
+            hide_state: true
+            features:
+              - type: button
+                action_name: Save new bag
+
           - type: entities
             title: Bag details
             show_header_toggle: false
@@ -198,15 +207,6 @@ views:
                 name: New bag roast level
               - entity: __NEW_BAG_STARTING_MASS__
                 name: New bag starting mass
-
-          - type: tile
-            entity: __CREATE_BAG__
-            name: Create bag
-            color: green
-            hide_state: true
-            features:
-              - type: button
-                action_name: Save new bag
 
       - type: grid
         cards:
