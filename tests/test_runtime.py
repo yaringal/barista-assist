@@ -1266,7 +1266,7 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         upper = self.runtime.grind_band_moderately_fast_max * reference
         self.assertEqual(
             self._seconds_hint("grind_band_moderately_fast_max"),
-            f"({lower:.1f}s .. {upper:.1f}s)",
+            f"({lower:.1f}s ≤ {upper:.1f}s)",
         )
 
     async def test_grind_band_seconds_hint_tracks_a_live_dashboard_edit(self):
@@ -1284,7 +1284,7 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         upper = 0.7 * reference
         self.assertEqual(
             self._seconds_hint("grind_band_moderately_fast_max"),
-            f"({lower:.1f}s .. {upper:.1f}s)",
+            f"({lower:.1f}s ≤ {upper:.1f}s)",
         )
 
     async def test_beyond_grind_band_seconds_hint_is_a_lower_bound_only(self):

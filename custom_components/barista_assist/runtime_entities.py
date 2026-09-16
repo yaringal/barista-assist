@@ -478,7 +478,7 @@ class RuntimeEntitiesMixin:
         return recipe["preinfusion_s"] + recipe["target_yield_g"] / expected_flow_g_s
 
     def _grind_band_seconds_hint(self, definition: EntityDefinition) -> str | None:
-        """"(≤ Xs)"/"(Xs .. Ys)" - the duration_ratio range one grind-band
+        """"(≤ Xs)"/"(Xs ≤ Ys)" - the duration_ratio range one grind-band
         max tile's own entity covers (this band's max, and the previous
         band's max or nothing for the first band), converted to seconds
         via _reference_expected_s(). None for any entity that isn't one of
@@ -493,7 +493,7 @@ class RuntimeEntitiesMixin:
         if index == 0:
             return f"(≤ {upper:.1f}s)"
         lower = getattr(self, fields[index - 1]) * reference
-        return f"({lower:.1f}s .. {upper:.1f}s)"
+        return f"({lower:.1f}s ≤ {upper:.1f}s)"
 
     def _grind_band_beyond_seconds_hint(self) -> str:
         """"(≥ Xs)" for grossly_restrictive, the one band with no max

@@ -241,6 +241,22 @@ views:
               - entity: __PREINFUSION__
                 name: Adaptive Pre-infusion
 
+  - title: Shots
+    path: shots
+    icon: mdi:history
+    type: sections
+    max_columns: 1
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Shot history
+            heading_style: title
+            icon: mdi:history
+
+          - type: custom:barista-assist-shot-history-card
+            title: All shots
+
   - title: System
     path: system
     icon: mdi:cog-outline
@@ -300,187 +316,87 @@ views:
 
       - type: grid
         cards:
-          - type: heading
-            heading: Grind correction
-            heading_style: title
-            icon: mdi:tune-vertical
 
-          - type: heading
-            heading: Duration ratio bands to drive grind change
-            heading_style: subtitle
+          # One entities card, like "Connection and control" above, rather
+          # than a grid of separate tile cards - a `type: grid` section's
+          # cards are each their own independent card (own background,
+          # border, shadow), so they can never visually merge into one
+          # unit the way a single card's own rows do. This trades the
+          # tile's inline +/- stepper buttons for tap-to-open-more-info
+          # editing (the same control style "Connection and control"'s own
+          # number entities, e.g. Minimum early stop margin, already use)
+          # in exchange for actually looking like one grouped settings
+          # card.
+          - type: entities
+            title: Grind correction
+            show_header_toggle: false
+            entities:
+              - type: section
+                label: Duration ratio bands to drive grind change (seconds hints for a 1:2 yield ratio)
+              # These rows read top-to-bottom as one ascending
+              # duration_ratio ladder (each band's own max: 0.6, 0.75,
+              # 0.88...); each boundary value is only ever stored/shown
+              # once, on the row above it. seconds_hint/beyond_seconds_hint
+              # are computed server-side (runtime_entities.py's
+              # _grind_band_seconds_hint/_grind_band_beyond_seconds_hint,
+              # off definitions.yaml's live defaults, not a hardcoded
+              # constant) and shown as each row's secondary_info - a tile
+              # card's `name`/`icon`/`color` can't be templated at all (a
+              # rejected HA feature request: https://github.com/
+              # home-assistant/frontend/discussions/19930), which is why
+              # an earlier version of this section tried and failed to
+              # template the hint directly into a tile's own name.
+              - entity: __GRIND_BAND_GROSSLY_FAST_MAX__
+                name: Grossly fast
+                secondary_info: seconds_hint
+              - entity: __GRIND_BAND_MODERATELY_FAST_MAX__
+                name: Moderately fast
+                secondary_info: seconds_hint
+              - entity: __GRIND_BAND_SLIGHTLY_FAST_MAX__
+                name: Slightly fast
+                secondary_info: seconds_hint
+              - entity: __GRIND_BAND_HEALTHY_MAX__
+                name: Healthy
+                secondary_info: seconds_hint
+              - entity: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__
+                name: Slightly restrictive
+                secondary_info: seconds_hint
+              - entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
+                name: Moderately restrictive
+                secondary_info: seconds_hint
+              # grossly_restrictive has no max of its own (it's the
+              # unbounded catch-all past moderately_restrictive_max - see
+              # grind_correction.py's _matched_band_index), so this is a
+              # read-only "attribute" row off moderately_restrictive_max's
+              # own entity instead of a real editable row.
+              - type: attribute
+                entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
+                attribute: beyond_seconds_hint
+                name: Severely restrictive
 
-          # These tiles read left-to-right as one ascending duration_ratio
-          # ladder (each band's own max: 0.6, 0.75, 0.88...); each boundary
-          # value is only ever stored/shown once, on the tile to its left.
-          # The unbounded -∞/∞ ends aren't stated separately anywhere - the
-          # first tile's own seconds_hint reads "(≤ Xs)" instead of a
-          # range, and the trailing "Severely restrictive" markdown card
-          # below reads "(≥ Xs)" for the same reason (grossly_restrictive
-          # has no max entity of its own).
-          #
-          # Each tile's seconds_hint attribute is the same "how many
-          # seconds is this" range this section originally tried to
-          # template directly into name - tile cards don't support
-          # templates on name/icon/color at all (an explicitly rejected HA
-          # feature request: https://github.com/home-assistant/frontend/
-          # discussions/19930), so it rendered as literal "{{ ... }}"
-          # instead of evaluating. seconds_hint is computed for real in
-          # Python instead (runtime_entities.py's _grind_band_seconds_hint,
-          # off definitions.yaml's live defaults - no hardcoded reference
-          # constant to go stale here) and shown via state_content, the
-          # same proven mechanism the "recommended" attribute already uses
-          # elsewhere on this dashboard.
-          - type: tile
-            entity: __GRIND_BAND_GROSSLY_FAST_MAX__
-            name: Grossly fast
-            color: blue
-            state_content: [state, seconds_hint]
-            features: *number_buttons
-            features_position: bottom
+              - type: section
+                label: Grind deltas
+              - entity: __GRIND_BAND_GROSSLY_FAST_DELTA__
+                name: Grossly fast — Δ
+              - entity: __GRIND_BAND_MODERATELY_FAST_DELTA__
+                name: Moderately fast — Δ
+              - entity: __GRIND_BAND_SLIGHTLY_FAST_DELTA__
+                name: Slightly fast — Δ
+              - entity: __GRIND_BAND_HEALTHY_DELTA__
+                name: Healthy — Δ (fixed)
+              - entity: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_DELTA__
+                name: Slightly restrictive — Δ
+              - entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_DELTA__
+                name: Moderately restrictive — Δ
+              - entity: __GRIND_BAND_GROSSLY_RESTRICTIVE_DELTA__
+                name: Grossly restrictive — Δ
 
-          - type: tile
-            entity: __GRIND_BAND_MODERATELY_FAST_MAX__
-            name: Moderately fast
-            color: blue
-            state_content: [state, seconds_hint]
-            features: *number_buttons
-            features_position: bottom
-
-          - type: tile
-            entity: __GRIND_BAND_SLIGHTLY_FAST_MAX__
-            name: Slightly fast
-            color: blue
-            state_content: [state, seconds_hint]
-            features: *number_buttons
-            features_position: bottom
-
-          - type: tile
-            entity: __GRIND_BAND_HEALTHY_MAX__
-            name: Healthy
-            color: green
-            state_content: [state, seconds_hint]
-            features: *number_buttons
-            features_position: bottom
-
-          - type: tile
-            entity: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__
-            name: Slightly restrictive
-            color: red
-            state_content: [state, seconds_hint]
-            features: *number_buttons
-            features_position: bottom
-
-          - type: tile
-            entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
-            name: Moderately restrictive
-            color: red
-            state_content: [state, seconds_hint]
-            features: *number_buttons
-            features_position: bottom
-
-          # grossly_restrictive has no max of its own (it's the unbounded
-          # catch-all past moderately_restrictive_max - see
-          # grind_correction.py's _matched_band_index), so there's no
-          # editable tile for it, but the ladder still needs a label for
-          # its range. Markdown card content DOES genuinely support Jinja
-          # templates (unlike tile card fields), but state_attr here reads
-          # the same Python-computed beyond_seconds_hint attribute rather
-          # than recomputing the seconds conversion in the template itself
-          # - one source of truth, not two.
-          - type: markdown
-            content: >-
-              **Severely restrictive {{ state_attr('__GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__', 'beyond_seconds_hint') }}**
-
-      - type: grid
-        cards:
-          - type: heading
-            heading: Grind deltas
-            heading_style: subtitle
-
-          - type: tile
-            entity: __GRIND_BAND_GROSSLY_FAST_DELTA__
-            name: Grossly fast — Δ
-            color: blue
-            features: *number_buttons
-            features_position: bottom
-            grid_options:
-              columns: 3
-
-          - type: tile
-            entity: __GRIND_BAND_MODERATELY_FAST_DELTA__
-            name: Moderately fast — Δ
-            color: blue
-            features: *number_buttons
-            features_position: bottom
-            grid_options:
-              columns: 3
-
-          - type: tile
-            entity: __GRIND_BAND_SLIGHTLY_FAST_DELTA__
-            name: Slightly fast — Δ
-            color: blue
-            features: *number_buttons
-            features_position: bottom
-            grid_options:
-              columns: 3
-
-          - type: tile
-            entity: __GRIND_BAND_HEALTHY_DELTA__
-            name: Healthy — Δ (fixed)
-            color: green
-            grid_options:
-              columns: 3
-
-          - type: tile
-            entity: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_DELTA__
-            name: Slightly restrictive — Δ
-            color: red
-            features: *number_buttons
-            features_position: bottom
-            grid_options:
-              columns: 3
-
-          - type: tile
-            entity: __GRIND_BAND_MODERATELY_RESTRICTIVE_DELTA__
-            name: Moderately restrictive — Δ
-            color: red
-            features: *number_buttons
-            features_position: bottom
-            grid_options:
-              columns: 3
-
-          - type: tile
-            entity: __GRIND_BAND_GROSSLY_RESTRICTIVE_DELTA__
-            name: Grossly restrictive — Δ
-            color: red
-            features: *number_buttons
-            features_position: bottom
-            grid_options:
-              columns: 3
-
-      - type: grid
-        cards:
-          - type: heading
-            heading: Puck-prep issue streak override
-            heading_style: subtitle
-
-          - type: tile
-            entity: __PUCK_PREP_ISSUE_STREAK_THRESHOLD__
-            name: Streak threshold (shots)
-            color: red
-            features: *number_buttons
-            features_position: bottom
-            grid_options:
-              columns: 3
-
-          - type: tile
-            entity: __PUCK_PREP_ISSUE_STREAK_COARSEN_DELTA__
-            name: Coarsen Δ
-            color: red
-            features: *number_buttons
-            features_position: bottom
-            grid_options:
-              columns: 3
+              - type: section
+                label: Puck-prep issue streak override
+              - entity: __PUCK_PREP_ISSUE_STREAK_THRESHOLD__
+                name: Streak threshold (shots)
+              - entity: __PUCK_PREP_ISSUE_STREAK_COARSEN_DELTA__
+                name: Coarsen Δ
 
       - type: grid
         cards:
@@ -490,19 +406,3 @@ views:
             tap_action:
               action: navigate
               navigation_path: /config/integrations/integration/barista_assist
-
-  - title: Shots
-    path: shots
-    icon: mdi:history
-    type: sections
-    max_columns: 1
-    sections:
-      - type: grid
-        cards:
-          - type: heading
-            heading: Shot history
-            heading_style: title
-            icon: mdi:history
-
-          - type: custom:barista-assist-shot-history-card
-            title: All shots
