@@ -25,7 +25,7 @@ defaults:
     machine_max_shot_s: 50
     machine_pi_s: 8.0
     adapt_pi: true
-    stop_latency_normal_s: 3.4
+    stop_latency_normal_s: 3.2
     stop_latency_elevated_s: 4.3
     # Delay before sending taste-feedback push notifications - long enough
     # to taste the drink, short enough to stay fresh in memory. Not
@@ -98,8 +98,19 @@ flow_analysis_constants:
   first_flow_threshold_g_s: 0.3
 
   # A single sample can spike past first_flow_threshold_g_s from scale
-  # quantization alone - real flow must hold above it for this long.
-  first_flow_sustain_ms: 300
+  # quantization alone - real flow must hold above it for this long. 300ms
+  # was too short: too_fast_but_flagged_invalid_adapt_pi (a real fixture,
+  # tests/fixtures/real_shots/) has a ~300ms noise wobble near the tare
+  # baseline (raw weight oscillating between -0.5g and -0.1g - nowhere near
+  # real flow) whose smoothed derivative happened to clear
+  # first_flow_threshold_g_s for exactly 300ms, wrongly tripping
+  # flow_started_before_preinfusion_end. 400ms already fixes it; 600ms
+  # (chosen for margin, not because 400 was insufficient) makes zero
+  # difference to any other real fixture's classification across the whole
+  # tested range 300-1200ms - see
+  # tests/test_flow_analysis_real_shots.py's
+  # TooFastButFlaggedInvalidAdaptPiTests.
+  first_flow_sustain_ms: 600
 
   # First detected flow earlier than this fraction of preinfusion_s is
   # implausible (pre-infusion should be a low/no-flow soak). Placeholder.
@@ -212,8 +223,27 @@ flow_analysis_constants:
 # fast shot isn't an outlier to exclude, just a point needing a bigger
 # estimate - one shared average risked dragging the estimate past where
 # early_stop_margin_min_g's floor still protects a normal shot. Seed values
-# (defaults.controller, 3.4s/4.3s) are the average observed latency on each
+# (defaults.controller, 3.2s/4.3s) are the average observed latency on each
 # side of bucket_cutoff_g_s.
+#
+# normal's seed was 3.4s until too_fast_but_flagged_invalid_adapt_pi (a real
+# fixture, tests/fixtures/real_shots/) showed a genuine 3.5g/9% undershoot
+# (37.5g target, 34.0g actual): at this shot's own flow_at_decision (2.81
+# g/s, near the top of the normal range), the 3.4s seed projected a 9.55g
+# margin, but only 6.1g of tail actually landed - an observed latency of
+# just 2.17s. Averaged across all 4 real normal-bucket shots now on file
+# (flow 0.97-2.81 g/s), that pulls the mean from 3.39s down to 3.17s
+# (rounded to 3.2s here) - see
+# tests/test_constant_drift.py's StopLatencyBucketDriftReport for the full
+# per-shot numbers. Within that same 4-shot set, observed latency actually
+# fell as flow rose (0.97 g/s -> 3.72s, 2.02 -> 3.57s, 2.37 -> 3.21s,
+# 2.81 -> 2.17s) - the opposite of the positive flow/latency relationship
+# the two-bucket split above is premised on - but 4 points (one of them
+# sitting right next to a real end-of-shot scale disturbance that makes its
+# own final-weight reading less certain) isn't enough to conclude the
+# normal bucket needs its own flow-dependent model, only enough to nudge
+# its one shared average. Revisit again as more real shots accumulate,
+# per this section's own opening comment.
 # =============================================================================
 stop_latency_calibration:
   learning_rate: 0.15

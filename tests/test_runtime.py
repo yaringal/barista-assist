@@ -197,9 +197,11 @@ class AutoStopTests(RuntimeTestCase):
         self.scale.push_reading(make_reading(weight_g=35.0, flow_g_s=1.0))
         await self.hass.tasks[-1]
 
-        # flow=1.0 g/s (normal bucket) * stop_latency_normal_s (3.4s) = 3.4g,
-        # which exceeds the 1.5g floor.
-        self.assertAlmostEqual(self.runtime.active_shot.effective_stop_margin_g, 3.4)
+        # flow=1.0 g/s (normal bucket) * stop_latency_normal_s, which
+        # exceeds the 1.5g floor.
+        self.assertAlmostEqual(
+            self.runtime.active_shot.effective_stop_margin_g, 1.0 * self.runtime.stop_latency_normal_s
+        )
 
     async def test_effective_stop_margin_is_none_before_any_stop_is_scheduled(self):
         await self.start_shot()
@@ -2368,7 +2370,7 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
         await self.start_shot(early_stop_margin_min_g=1.5)
         shot = self.runtime.active_shot
 
-        for flow_g_s in (0.0, 0.1, 0.3):  # 0.3 * stop_latency_normal_s (3.4) = 1.02g, still under the 1.5g floor
+        for flow_g_s in (0.0, 0.1, 0.3):  # 0.3 * stop_latency_normal_s stays under the 1.5g floor
             shot.samples = [ShotSample(0, 0, 0, 0.0, flow_g_s, 90)]
             self.assertAlmostEqual(self.runtime._effective_stop_margin_g(shot), 1.5)
 
@@ -2391,11 +2393,13 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
     async def test_margin_grows_once_flow_times_latency_exceeds_the_floor(self):
         await self.start_shot(early_stop_margin_min_g=1.5)
         shot = self.runtime.active_shot
-        # stop_latency_normal_s=3.4s (flow_g_s=1.0 is below the 3.0g/s bucket
-        # cutoff): 1.0 g/s * 3.4s = 3.4g > the 1.5g floor.
+        # flow_g_s=1.0 is below the 3.0g/s bucket cutoff, so stop_latency_
+        # normal_s applies: 1.0 g/s * stop_latency_normal_s > the 1.5g floor.
         shot.samples.append(ShotSample(0, 0, 0, 0.0, 1.0, 90))
 
-        self.assertAlmostEqual(self.runtime._effective_stop_margin_g(shot), 3.4)
+        self.assertAlmostEqual(
+            self.runtime._effective_stop_margin_g(shot), 1.0 * self.runtime.stop_latency_normal_s
+        )
 
     async def test_margin_is_clamped_to_the_ceiling(self):
         await self.start_shot(early_stop_margin_min_g=1.5)

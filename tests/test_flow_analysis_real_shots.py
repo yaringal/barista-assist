@@ -330,5 +330,81 @@ class ViolentGushMachinePiTests(unittest.TestCase):
         self.assertGreater(biggest_dip, 3.0)
 
 
+class ChokedAdaptPiTests(unittest.TestCase):
+    """"Too slow / machine choked, adaptPI=True (app controlled)" - grind
+    was too fine: after preinfusion, weight crept from -3.3g up in
+    fractions of a gram, reaching only 15.2g over a full 61s timeout
+    against a 37.5g target (t90 never reached). Already correctly
+    recorded as too_restrictive at capture time, matching both the
+    barista's own diagnosis and the current classifier - a clean
+    confirming case, not a regression for a past bug (see
+    ChokedMachinePiTests above for the sibling case that *was* one)."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("choked_adapt_pi")
+
+    def test_matches_the_barista_s_own_call(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "too_restrictive")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertIsNone(result.t90_ms)
+        self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
+
+
+class TooFastButFlaggedInvalidAdaptPiTests(unittest.TestCase):
+    """"Too fast - the automatic stop's projected margin overcompensated
+    and stopped well short of target (37.5g target, 34.0g actual),
+    adaptPI=True (app controlled)" - the barista's own read of the overall
+    shot: a fast pour that undershot because the live stop-margin
+    projection reacted to the high flow rate and stopped early. That
+    undershoot is a separate, real product concern (runtime_shot.py's
+    stop-margin projection, tracked in aggregate by
+    test_constant_drift.py's StopLatencyBucketDriftReport) that this
+    classifier never sees at all - analyze_shot only ever looks at the
+    recorded flow curve, not the stop decision that produced it.
+
+    Regression test for a real bug: once the one stale leading sample
+    (scale_ms=60400, a leftover BLE notification from before this shot's
+    own clock reset - see StaleScaleClockMachinePiTests above for the same
+    pattern) is trimmed, a ~300ms noise wobble near the tare baseline (raw
+    weight oscillating between -0.5g and -0.1g at ~1.5s in - nowhere near
+    real flow) used to cross first_flow_threshold_g_s for exactly
+    first_flow_sustain_ms's old 300ms value, wrongly tripping
+    flow_started_before_preinfusion_end (matching what was recorded at
+    capture time, but not the barista's own "too fast" call). Raising
+    first_flow_sustain_ms to 600ms (definitions.yaml) fixes it with zero
+    change to every other real fixture's own classification (verified
+    across the whole 300-1200ms range, not just picked to make this one
+    fixture pass) - the real pour, well after preinfusion ends, now
+    correctly drives the result instead."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("too_fast_but_flagged_invalid_adapt_pi")
+
+    def test_matches_the_barista_s_own_call(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "invalid_measurement")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.TOO_FAST)
+
+    def test_the_fixture_still_has_its_noise_wobble(self) -> None:
+        """Confirms the test above is exercising the real near-baseline
+        noise wobble this test class's docstring describes, rather than a
+        fixture that never had one in the first place."""
+        early_samples = [s for s in self.shot.samples if s.elapsed_ms < 3000]
+        self.assertLess(min(s.weight_g for s in early_samples), -0.3)
+        self.assertGreater(max(s.weight_g for s in early_samples), -0.2)
+
+
 if __name__ == "__main__":
     unittest.main()
