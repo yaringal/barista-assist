@@ -191,23 +191,25 @@ const CHART_STYLES = `
   .healthy-band { fill: var(--success-color, #2e7d32); opacity: 0.08; }
   .target-line { stroke: var(--success-color, #2e7d32); stroke-width: 1.5; stroke-dasharray: 5,4; }
   .stop-line { stroke: var(--error-color, #c62828); stroke-width: 1.5; stroke-dasharray: 2,3; }
+  .predicted-stop-line { stroke: var(--warning-color, #ef6c00); stroke-width: 1.5; stroke-dasharray: 2,3; }
   .event-labels { position: relative; height: 14px; font-size: 0.65rem; opacity: 0.75; }
   .event-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
-  .event-labels .stop-label { color: var(--error-color, #c62828); }
-  .event-labels .pi-label { color: var(--secondary-text-color, #888); }
-  .event-labels .healthy-label { color: var(--success-color, #2e7d32); }
+  .top-labels { position: absolute; top: 2px; left: 0; width: 100%; height: 14px; font-size: 0.65rem; opacity: 0.75; pointer-events: none; }
+  .top-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  .stop-label { color: var(--error-color, #c62828); }
+  .predicted-stop-label { color: var(--warning-color, #ef6c00); }
+  .pi-label { color: var(--secondary-text-color, #888); }
+  .healthy-label { color: var(--success-color, #2e7d32); }
 `;
 
-// The "healthy" time window for a shot - the same [too_fast_factor,
-// too_restrictive_factor] * expected_s range flow_analysis.py's
-// analyze_shot itself classifies duration_s against (expected_s = pi +
-// target_yield_g/expected_flow_g_s; expected_flow_g_s is post-pre-infusion/
-// extraction-only, so pi is added on top rather than folded into the rate -
-// see runtime.py's ActiveShot.expected_flow_g_s/_shot_markers). Stopping
-// anywhere inside this window, at target_yield_g, is what "healthy" means -
-// too_fast_factor/too_restrictive_factor come from markers (not
-// re-derived/hardcoded here) so this can never silently diverge from what
-// actually classified the shot.
+// The "healthy" time window for a shot - the exact [start_ms, end_ms]
+// window flow_analysis.py's analyze_shot itself classifies duration_s
+// against (flow_analysis.healthy_window_ms), computed server-side and
+// handed straight through in markers (see runtime_entities.py's
+// _build_shot_markers) rather than recomputed here from raw ingredients -
+// so this can never silently diverge from what actually classified the
+// shot, even if that formula changes. Stopping anywhere inside this
+// window, at target_yield_g, is what "healthy" means.
 //
 // Deliberately a window, not a single point or a full drawn trajectory
 // from press to target (an earlier version of this chart drew a straight
@@ -220,17 +222,11 @@ const CHART_STYLES = `
 // between them isn't a claim this chart should make.
 // Returns null until every figure is actually known.
 function healthyWindow(markers) {
-  const { preinfusion_ms, expected_flow_g_s, target_yield_g, too_fast_factor, too_restrictive_factor } = markers || {};
-  if (expected_flow_g_s == null || target_yield_g == null || too_fast_factor == null || too_restrictive_factor == null) {
+  const { healthy_start_ms, healthy_end_ms, target_yield_g } = markers || {};
+  if (healthy_start_ms == null || healthy_end_ms == null || target_yield_g == null) {
     return null;
   }
-  const pi = preinfusion_ms ?? 0;
-  const expectedMs = pi + (target_yield_g / expected_flow_g_s) * 1000;
-  return {
-    start_ms: expectedMs * too_fast_factor,
-    end_ms: expectedMs * too_restrictive_factor,
-    target_yield_g,
-  };
+  return { start_ms: healthy_start_ms, end_ms: healthy_end_ms, target_yield_g };
 }
 
 // Cosmetic-only smoothing for the flow line: real per-reading flow_g_s is
@@ -266,10 +262,18 @@ function chartGeometry(samples, markers = {}) {
   // leave room for the weight (y) axis' own tick labels.
   const padding = { top: 28, right: 28, bottom: 4, left: 30 };
   const healthy = healthyWindow(markers);
-  const extraT = healthy ? [healthy.end_ms] : [];
+  const predictedStopMs = markers?.predicted_stop_elapsed_ms ?? null;
+  const extraT = [
+    ...(healthy ? [healthy.end_ms] : []),
+    ...(predictedStopMs != null ? [predictedStopMs] : []),
+  ];
   const extraWeight = healthy ? [healthy.target_yield_g] : [];
   const maxT = Math.max(1, ...samples.map((s) => s.elapsed_ms), ...extraT);
-  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...extraWeight);
+  // 8% headroom above the tallest point (a healthy shot's own weight curve
+  // ends right at target_yield_g, which is also this axis' own max before
+  // the headroom - without it, the target line/curve peak sits flush
+  // against the very top edge with nothing above it).
+  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...extraWeight) * 1.08;
   const maxFlow = Math.max(1, ...samples.map((s) => s.flow_g_s));
   const x = (t) => padding.left + (t / maxT) * (width - padding.left - padding.right);
   const yFor = (max) => (v) =>
@@ -352,9 +356,11 @@ function renderShotChart(samples, markers = {}) {
   const stopLine = hasStopMarker
     ? `<line class="stop-line" x1="${x(stopMs).toFixed(1)}" y1="${axisTop}" x2="${x(stopMs).toFixed(1)}" y2="${axisBottom}" />`
     : "";
-  // Positioned directly under the chart (right after the svg, before the
-  // x-axis tick numbers below) - as close to the plot's own bottom edge as
-  // the tightened bottom padding allows.
+  const predictedStopMs = markers?.predicted_stop_elapsed_ms ?? null;
+  const hasPredictedStopMarker = predictedStopMs != null;
+  const predictedStopLine = hasPredictedStopMarker
+    ? `<line class="predicted-stop-line" x1="${x(predictedStopMs).toFixed(1)}" y1="${axisTop}" x2="${x(predictedStopMs).toFixed(1)}" y2="${axisBottom}" />`
+    : "";
   const piLabel =
     preinfusionMs > 0
       ? `<span class="pi-label" style="left:${(((axisLeft + x(preinfusionMs)) / 2 / width) * 100).toFixed(2)}%">Pre-infusion</span>`
@@ -363,15 +369,28 @@ function renderShotChart(samples, markers = {}) {
     ? `<span class="healthy-label" style="left:${(((x(healthy.start_ms) + x(healthy.end_ms)) / 2 / width) * 100).toFixed(2)}%">Healthy</span>`
     : "";
   const stopLabel = hasStopMarker
-    ? `<span class="stop-label" style="left:${((x(stopMs) / width) * 100).toFixed(2)}%">Stop Prediction</span>`
+    ? `<span class="stop-label" style="left:${((x(stopMs) / width) * 100).toFixed(2)}%">Stop Sent</span>`
     : "";
-  const eventLabels =
-    piLabel || healthyLabel || stopLabel
-      ? `<div class="event-labels">${piLabel}${healthyLabel}${stopLabel}</div>`
+  const predictedStopLabel = hasPredictedStopMarker
+    ? `<span class="predicted-stop-label" style="left:${((x(predictedStopMs) / width) * 100).toFixed(2)}%">Stop Prediction</span>`
+    : "";
+  // Stop Sent is positioned directly under the chart (right after the svg,
+  // before the x-axis tick numbers below) - as close to the plot's own
+  // bottom edge as the tightened bottom padding allows.
+  const eventLabels = stopLabel ? `<div class="event-labels">${stopLabel}</div>` : "";
+  // Pre-infusion/Healthy/Stop Prediction are overlaid tight against the
+  // top of the graph instead (like y-axis-labels) - Stop Prediction is
+  // always close in time to Stop Sent (the whole point is showing the
+  // machine's own small physical stop latency between them), so sharing
+  // Stop Sent's row down there would make the two text labels overlap.
+  const topLabels =
+    piLabel || healthyLabel || predictedStopLabel
+      ? `<div class="top-labels">${piLabel}${healthyLabel}${predictedStopLabel}</div>`
       : "";
 
   return `
     <div class="chart-wrap">
+      ${topLabels}
       <svg viewBox="0 0 ${width} ${height}" class="chart" preserveAspectRatio="none">
         ${piBand}
         ${healthyBand}
@@ -380,6 +399,7 @@ function renderShotChart(samples, markers = {}) {
         ${xTickMarks}
         ${yTickMarks}
         ${stopLine}
+        ${predictedStopLine}
         <path d="${pathFor(samples, (s) => yWeight(s.weight_g))}" class="weight-line" fill="none" />
         <path d="${pathFor(smoothedFlow, (s) => yFlow(s.flow_g_s))}" class="flow-line" fill="none" />
         ${targetLine}
@@ -528,13 +548,20 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
     this._render();
     if (this._expandedId && !this._samplesCache.has(shotId)) {
       try {
+        const shot = (this._shots || []).find((s) => s.id === shotId);
         const result = await this._hass.callWS({
           type: "barista_assist/shot_samples",
           shot_id: shotId,
+          ...(shot?.stop_command_elapsed_ms != null
+            ? { stop_command_elapsed_ms: shot.stop_command_elapsed_ms }
+            : {}),
         });
-        this._samplesCache.set(shotId, result.samples);
+        this._samplesCache.set(shotId, {
+          samples: result.samples,
+          predicted_stop_elapsed_ms: result.predicted_stop_elapsed_ms ?? null,
+        });
       } catch (_error) {
-        this._samplesCache.set(shotId, []);
+        this._samplesCache.set(shotId, { samples: [], predicted_stop_elapsed_ms: null });
       }
       this._render();
     }
@@ -671,16 +698,18 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
       stop_command_elapsed_ms: shot.stop_command_elapsed_ms ?? null,
       expected_flow_g_s: shot.expected_flow_g_s ?? null,
       target_yield_g: shot.target_yield_g ?? null,
-      too_fast_factor: shot.too_fast_factor ?? null,
-      too_restrictive_factor: shot.too_restrictive_factor ?? null,
+      healthy_start_ms: shot.healthy_start_ms ?? null,
+      healthy_end_ms: shot.healthy_end_ms ?? null,
     };
   }
 
   _renderDetail(shot) {
-    const samples = this._samplesCache.get(shot.id);
-    if (samples === undefined) {
+    const cached = this._samplesCache.get(shot.id);
+    if (cached === undefined) {
       return `<div class="detail loading">Loading samples…</div>`;
     }
+    const { samples, predicted_stop_elapsed_ms } = cached;
+    const markers = { ...this._shotMarkers(shot), predicted_stop_elapsed_ms };
     return `
       <div class="detail">
         <div class="detail-grid">
@@ -704,7 +733,7 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
             FLAVOR_TAG_LABELS[shot.flavor_mouthfeel_tag] || "—"
           )}</div>
         </div>
-        ${renderShotChart(samples, this._shotMarkers(shot))}
+        ${renderShotChart(samples, markers)}
       </div>`;
   }
 
@@ -783,7 +812,7 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
         .col.date { flex: 1.4; }
         .col.coffee { flex: 1.2; }
         .col.classification { flex: 1.3; }
-        .col.yield { flex: 0.9; text-align: right; }
+        .col.yield { flex: 0 0 auto; min-width: 100px; text-align: right; }
         .col.spacer { width: 68px; }
         .tag-healthy { color: var(--success-color, #2e7d32); }
         .tag-too_fast, .tag-too_restrictive { color: var(--warning-color, #ef6c00); }
@@ -836,10 +865,11 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
     });
     if (this._expandedId) {
       const shot = (this._shots || []).find((s) => s.id === this._expandedId);
+      const cached = this._samplesCache.get(this._expandedId);
       attachChartTooltip(
         this.shadowRoot,
-        this._samplesCache.get(this._expandedId),
-        shot ? this._shotMarkers(shot) : {}
+        cached?.samples,
+        shot ? { ...this._shotMarkers(shot), predicted_stop_elapsed_ms: cached?.predicted_stop_elapsed_ms ?? null } : {}
       );
     }
   }

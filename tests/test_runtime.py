@@ -555,15 +555,41 @@ class ShotMarkersTests(RuntimeTestCase):
             self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"],
         )
         self.assertEqual(markers["target_yield_g"], 36.0)
-        # too_fast_factor/too_restrictive_factor are the same boundary
-        # multipliers analyze_shot itself classifies against (derived from
-        # the live duration_ratio_bands, not a separately-hardcoded copy) -
+        # healthy_start_ms/healthy_end_ms are the exact window
+        # analyze_shot itself classifies duration_s against (derived from
+        # the live duration_ratio_bands, not recomputed by the frontend) -
         # the chart's healthy-window shading must use these exact values.
-        expected_too_fast, expected_too_restrictive = flow_analysis_module.healthy_duration_ratio_bounds(
-            self.runtime._live_duration_ratio_bands()
+        expected_start, expected_end = flow_analysis_module.healthy_window_ms(
+            2000, 36.0, markers["expected_flow_g_s"], self.runtime._live_duration_ratio_bands()
         )
-        self.assertEqual(markers["too_fast_factor"], expected_too_fast)
-        self.assertEqual(markers["too_restrictive_factor"], expected_too_restrictive)
+        self.assertEqual(markers["healthy_start_ms"], expected_start)
+        self.assertEqual(markers["healthy_end_ms"], expected_end)
+        # predicted_stop_elapsed_ms mirrors stop_command_elapsed_ms's own
+        # "not known yet" state - the shot hasn't stopped, so there's
+        # nothing to predict from (see test_predicted_stop_elapsed_ms_
+        # reflects_the_real_stop_decision below for the known case).
+        self.assertIsNone(markers["predicted_stop_elapsed_ms"])
+
+    async def test_predicted_stop_elapsed_ms_reflects_the_real_stop_decision(self):
+        """predicted_stop_elapsed_ms (see runtime_shot.py's
+        _predicted_stop_elapsed_ms) is stop_command_elapsed_ms plus
+        whichever latency bucket the flow at that instant actually falls
+        into - here a slow-flowing (1.0 g/s, "normal" bucket) shot, so
+        stop_latency_normal_s - computed on demand, not stored."""
+        await self.start_shot()
+        await self.wait_for_extracting()
+        await asyncio.sleep(0.05)
+        self.scale.push_reading(make_reading(weight_g=35.0, flow_g_s=1.0))
+        await self.hass.tasks[-1]  # the async_stop_at_target() task just scheduled
+
+        markers = self.runtime._shot_markers()
+
+        stop_ms = markers["stop_command_elapsed_ms"]
+        self.assertIsNotNone(stop_ms)
+        self.assertEqual(
+            markers["predicted_stop_elapsed_ms"],
+            stop_ms + round(self.runtime.stop_latency_normal_s * 1000),
+        )
 
     async def test_reflects_the_last_finished_shot(self):
         await self.start_shot(preinfusion_s=1.0)
@@ -576,11 +602,11 @@ class ShotMarkersTests(RuntimeTestCase):
         self.assertEqual(markers["preinfusion_ms"], 1000)
         self.assertIsNotNone(markers["expected_flow_g_s"])
         self.assertEqual(markers["target_yield_g"], 36.0)
-        expected_too_fast, expected_too_restrictive = flow_analysis_module.healthy_duration_ratio_bounds(
-            self.runtime._live_duration_ratio_bands()
+        expected_start, expected_end = flow_analysis_module.healthy_window_ms(
+            1000, 36.0, markers["expected_flow_g_s"], self.runtime._live_duration_ratio_bands()
         )
-        self.assertEqual(markers["too_fast_factor"], expected_too_fast)
-        self.assertEqual(markers["too_restrictive_factor"], expected_too_restrictive)
+        self.assertEqual(markers["healthy_start_ms"], expected_start)
+        self.assertEqual(markers["healthy_end_ms"], expected_end)
 
     async def test_is_empty_with_no_shot_ever(self):
         self.assertEqual(self.runtime._shot_markers(), {})
@@ -2305,23 +2331,24 @@ class ShotHistoryTests(RuntimeTestCase):
 
         self.assertEqual([shot["id"] for shot in shots], [shot_id])
 
-    async def test_list_shots_includes_the_live_duration_ratio_bounds(self):
+    async def test_list_shots_includes_its_own_healthy_window(self):
         """The shot-history view's own per-shot chart draws the same
         healthy-window shading/target line the Live Shot card does (see
-        runtime_entities.py's _shot_markers) - it needs too_fast_factor/
-        too_restrictive_factor for that, which aren't stored per shot (see
-        async_list_shots' own docstring), so every listed shot is enriched
-        with the current live bounds instead."""
-        await self.start_shot()
+        runtime_entities.py's _build_shot_markers) - healthy_start_ms/
+        healthy_end_ms aren't stored per shot (see async_list_shots' own
+        docstring), so every listed shot is enriched with them, computed
+        from the current live duration_ratio_bands plus that shot's own
+        preinfusion_s/target_yield_g/expected_flow_g_s."""
+        await self.start_shot(preinfusion_s=1.0, target_yield_g=36.0)
         await self.runtime._async_finalize("complete")
-        expected_too_fast, expected_too_restrictive = flow_analysis_module.healthy_duration_ratio_bounds(
-            self.runtime._live_duration_ratio_bands()
-        )
 
         shots = await self.runtime.async_list_shots()
 
-        self.assertEqual(shots[0]["too_fast_factor"], expected_too_fast)
-        self.assertEqual(shots[0]["too_restrictive_factor"], expected_too_restrictive)
+        expected_start, expected_end = flow_analysis_module.healthy_window_ms(
+            1000, 36.0, shots[0]["expected_flow_g_s"], self.runtime._live_duration_ratio_bands()
+        )
+        self.assertEqual(shots[0]["healthy_start_ms"], expected_start)
+        self.assertEqual(shots[0]["healthy_end_ms"], expected_end)
 
     async def test_export_shots_text_can_filter_to_one_shot(self):
         """The shot-history card's per-row export button - a pass-through to
@@ -2348,10 +2375,35 @@ class ShotHistoryTests(RuntimeTestCase):
         self.scale.push_reading(make_reading(weight_g=36.0))
         await self.runtime._async_finalize("complete")
 
-        samples = await self.runtime.async_shot_samples(shot_id)
+        result = await self.runtime.async_shot_samples(shot_id)
 
-        self.assertTrue(samples)
-        self.assertEqual(samples[-1]["weight_g"], 36.0)
+        self.assertTrue(result["samples"])
+        self.assertEqual(result["samples"][-1]["weight_g"], 36.0)
+        # No stop_command_elapsed_ms passed in - nothing to predict from.
+        self.assertIsNone(result["predicted_stop_elapsed_ms"])
+
+    async def test_shot_samples_computes_predicted_stop_elapsed_ms_when_asked(self):
+        """The shot-history view's per-shot detail chart passes the shot's
+        own stop_command_elapsed_ms (already on its row from list_shots) so
+        this can compute its own "Stop Prediction" marker on demand - see
+        _predicted_stop_elapsed_ms and this method's own docstring for why
+        that isn't precomputed for every shot in the list instead."""
+        await self.start_shot()
+        await self.wait_for_extracting()
+        await asyncio.sleep(0.05)
+        self.scale.push_reading(make_reading(weight_g=35.0, flow_g_s=1.0))
+        await self.hass.tasks[-1]  # the async_stop_at_target() task just scheduled
+        stop_ms = self.runtime.active_shot.stop_command_elapsed_ms
+        self.assertIsNotNone(stop_ms)
+        await asyncio.sleep(self.runtime._settle_seconds() + 0.1)  # settle then finalize
+        shot_id = self.runtime.last_shot["id"]
+
+        result = await self.runtime.async_shot_samples(shot_id, stop_command_elapsed_ms=stop_ms)
+
+        self.assertEqual(
+            result["predicted_stop_elapsed_ms"],
+            stop_ms + round(self.runtime.stop_latency_normal_s * 1000),
+        )
 
     async def test_delete_shot_refuses_while_it_is_still_brewing(self):
         shot_id = await self.start_shot()

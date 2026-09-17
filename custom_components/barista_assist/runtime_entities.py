@@ -16,7 +16,8 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .definitions import EntityDefinition
 from .flavor_correction import resolve_flavor_state
-from .flow_analysis import healthy_duration_ratio_bounds
+from .flow_analysis import healthy_window_ms
+from .storage import ShotSample
 from .runtime_shared import (
     _FLAVOR_AXES,
     _FLAVOR_TAG_LABELS,
@@ -542,58 +543,76 @@ class RuntimeEntitiesMixin:
 
     def _shot_markers(self) -> dict[str, float | int | None]:
         """Metadata the Live Shot/Shot History charts overlay on top of
-        _shot_plot_points' raw [elapsed_ms, weight_g, flow_g_s] points: the
-        pre-infusion/extraction boundary, the stop-press instant once it's
-        actually happened, and this shot's own expected flow rate (roast-
-        level-keyed, not derived from this bag's own history - see
-        docs/DESIGN.md's Phase 3b - fixed once per shot at
-        brew time - see async_brew, ActiveShot.
-        expected_flow_g_s) for the frontend's healthy-window shading and
-        target-yield line, derived there from target_yield_g.
-        expected_flow_g_s is post-pre-infusion/extraction-only
-        (flow_analysis.py's own module docstring/FlowAnalysisConfig.
-        expected_flow_g_s) - the frontend adds preinfusion_ms on top of
-        target_yield_g/expected_flow_g_s rather than folding it in,
-        matching analyze_shot's own expected_s formula exactly (see
-        barista-assist-dashboard.js's healthyWindow). too_fast_factor/
-        too_restrictive_factor are read off _live_duration_ratio_bands()
-        (healthy_duration_ratio_bounds - the same shared, live,
-        dashboard-tuned bands runtime_shot.py's _async_finalize classifies
-        against, not the raw YAML defaults) rather than re-derived from a
-        separate boundary of its own, so the shaded window can never
-        silently diverge from what actually classified the shot, and
-        editing duration_ratio_band_slightly_fast_max/duration_ratio_band_healthy_max from
-        the dashboard moves this shading too. Same live-vs-frozen dual
-        source as _shot_plot_points. self.last_shot (the "no active shot"
-        fallback below) is itself scoped to the currently selected bag
-        (storage.latest_shot_bag), not global across every bag/slot -
-        switching slots switches which shot's markers this shows. None
-        values mean "not known yet" (e.g. stop_command_elapsed_ms before
-        the shot has actually stopped) - the frontend must not treat that
-        as zero."""
-        too_fast_factor, too_restrictive_factor = healthy_duration_ratio_bounds(
-            self._live_duration_ratio_bands()
-        )
+        _shot_plot_points' raw [elapsed_ms, weight_g, flow_g_s] points - see
+        _build_shot_markers for what each field means. self.last_shot (the
+        "no active shot" fallback below) is itself scoped to the currently
+        selected bag (storage.latest_shot_bag), not global across every
+        bag/slot - switching slots switches which shot's markers this
+        shows. Same live-vs-frozen dual source as _shot_plot_points."""
         shot = self.active_shot
         if shot is not None and shot.press_monotonic is not None:
-            return {
-                "preinfusion_ms": int(shot.preinfusion_s * 1000),
-                "stop_command_elapsed_ms": shot.stop_command_elapsed_ms,
-                "expected_flow_g_s": shot.expected_flow_g_s,
-                "target_yield_g": shot.target_yield_g,
-                "too_fast_factor": too_fast_factor,
-                "too_restrictive_factor": too_restrictive_factor,
-            }
+            return self._build_shot_markers(
+                preinfusion_s=shot.preinfusion_s,
+                target_yield_g=shot.target_yield_g,
+                expected_flow_g_s=shot.expected_flow_g_s,
+                stop_command_elapsed_ms=shot.stop_command_elapsed_ms,
+                samples=shot.samples,
+            )
         if self.last_shot:
-            return {
-                "preinfusion_ms": int(self.last_shot["preinfusion_s"] * 1000),
-                "stop_command_elapsed_ms": self.last_shot.get("stop_command_elapsed_ms"),
-                "expected_flow_g_s": self.last_shot.get("expected_flow_g_s"),
-                "target_yield_g": self.last_shot["target_yield_g"],
-                "too_fast_factor": too_fast_factor,
-                "too_restrictive_factor": too_restrictive_factor,
-            }
+            return self._build_shot_markers(
+                preinfusion_s=self.last_shot["preinfusion_s"],
+                target_yield_g=self.last_shot["target_yield_g"],
+                expected_flow_g_s=self.last_shot.get("expected_flow_g_s"),
+                stop_command_elapsed_ms=self.last_shot.get("stop_command_elapsed_ms"),
+                samples=self._last_shot_samples,
+            )
         return {}
+
+    def _build_shot_markers(
+        self,
+        *,
+        preinfusion_s: float,
+        target_yield_g: float | None,
+        expected_flow_g_s: float | None,
+        stop_command_elapsed_ms: int | None,
+        samples: list[ShotSample],
+    ) -> dict[str, float | int | None]:
+        """The actual _shot_markers dict for one shot (active or last) -
+        factored out so both branches build it identically. expected_flow_g_s
+        (roast-level-keyed, not derived from this bag's own history - see
+        docs/DESIGN.md's Phase 3b - fixed once per shot at brew time, see
+        async_brew/ActiveShot.expected_flow_g_s) is post-pre-infusion/
+        extraction-only (flow_analysis.py's own module docstring/
+        FlowAnalysisConfig.expected_flow_g_s). healthy_start_ms/
+        healthy_end_ms (flow_analysis.healthy_window_ms) are the exact
+        [start, end] window analyze_shot's own too_fast/too_restrictive
+        classification draws its line at, computed here rather than in the
+        frontend so the healthy-window shading (barista-assist-
+        dashboard.js's healthyWindow) can never silently diverge from what
+        actually classified the shot if that formula ever changes.
+        predicted_stop_elapsed_ms (runtime_shot.py's
+        _predicted_stop_elapsed_ms) is when that same decision expected the
+        shot to actually finish pouring, drawn as a second, distinct
+        vertical line from stop_command_elapsed_ms itself, since the two
+        differ by the machine's own physical stop latency. None values
+        mean "not known yet" (e.g. stop_command_elapsed_ms before the shot
+        has actually stopped) - the frontend must not treat that as zero."""
+        preinfusion_ms = int(preinfusion_s * 1000)
+        healthy_window = healthy_window_ms(
+            preinfusion_ms, target_yield_g, expected_flow_g_s, self._live_duration_ratio_bands()
+        )
+        healthy_start_ms, healthy_end_ms = healthy_window if healthy_window else (None, None)
+        return {
+            "preinfusion_ms": preinfusion_ms,
+            "stop_command_elapsed_ms": stop_command_elapsed_ms,
+            "predicted_stop_elapsed_ms": self._predicted_stop_elapsed_ms(
+                samples, stop_command_elapsed_ms
+            ),
+            "expected_flow_g_s": expected_flow_g_s,
+            "target_yield_g": target_yield_g,
+            "healthy_start_ms": healthy_start_ms,
+            "healthy_end_ms": healthy_end_ms,
+        }
 
     async def async_set_entity_value(
         self, definition: EntityDefinition, value: Any

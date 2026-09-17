@@ -506,6 +506,44 @@ def healthy_duration_ratio_bounds(duration_ratio_bands: tuple[dict[str, Any], ..
     return too_fast_factor, too_restrictive_factor
 
 
+def expected_shot_seconds(
+    preinfusion_s: float, target_yield_g: float, expected_flow_g_s: float
+) -> float:
+    """analyze_shot's own "how long should this shot take" reference -
+    preinfusion_s plus target_yield_g/expected_flow_g_s (see analyze_shot's
+    own expected_s comment for why this deliberately scales with
+    target_yield_g, and adds preinfusion_s on top rather than folding it
+    into the rate). Factored out so healthy_window_ms below - which backs
+    the Live Shot/Shot History charts' healthy-window shading (see
+    runtime_entities.py's _shot_markers) - shares this exact formula with
+    analyze_shot's own too_fast/too_restrictive classification, rather than
+    a second copy in the frontend that could silently drift out of sync if
+    this formula ever changes (e.g. the ramp-up modeling analyze_shot's own
+    "Open caveat" comment anticipates). 0.0 when expected_flow_g_s isn't a
+    usable positive rate."""
+    return preinfusion_s + target_yield_g / expected_flow_g_s if expected_flow_g_s > 0 else 0.0
+
+
+def healthy_window_ms(
+    preinfusion_ms: float,
+    target_yield_g: float | None,
+    expected_flow_g_s: float | None,
+    duration_ratio_bands: tuple[dict[str, Any], ...],
+) -> tuple[float, float] | None:
+    """(start_ms, end_ms) of the time window analyze_shot's own too_fast/
+    too_restrictive classification draws its line at - expected_shot_
+    seconds * (too_fast_factor, too_restrictive_factor), in ms. Backs the
+    Live Shot/Shot History charts' healthy-window shading directly (see
+    runtime_entities.py's _shot_markers) so the frontend never recomputes
+    this formula itself. None when target_yield_g/expected_flow_g_s aren't
+    known yet."""
+    if not target_yield_g or not expected_flow_g_s:
+        return None
+    expected_s = expected_shot_seconds(preinfusion_ms / 1000, target_yield_g, expected_flow_g_s)
+    too_fast_factor, too_restrictive_factor = healthy_duration_ratio_bounds(duration_ratio_bands)
+    return expected_s * too_fast_factor * 1000, expected_s * too_restrictive_factor * 1000
+
+
 # --- Early-exit construction, used throughout analyze_shot below -----------
 
 
@@ -683,9 +721,7 @@ def analyze_shot(
     # formula doesn't budget that ramp-up as separate dead time on top of
     # preinfusion_s - needs real data to fit the ramp-up shape before
     # changing it.
-    expected_s = (
-        preinfusion_s + target_yield_g / expected_flow_g_s if expected_flow_g_s > 0 else 0.0
-    )
+    expected_s = expected_shot_seconds(preinfusion_s, target_yield_g, expected_flow_g_s)
     duration_ratio = duration_s / expected_s if expected_s > 0 else None
 
     absolute_score = _absolute_mechanical_suspicion(mid_accel, late_accel, config)

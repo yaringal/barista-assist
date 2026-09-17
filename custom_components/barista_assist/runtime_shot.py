@@ -20,7 +20,7 @@ from .flow_analysis import (
     ShotClassification,
     analyze_shot,
     blended_expected_flow_g_s,
-    healthy_duration_ratio_bounds,
+    healthy_window_ms,
 )
 from .grind_correction import recommend_grind_delta
 from .runtime_shared import ActiveShot, ShotPhase, _recipe_snapshot
@@ -46,6 +46,61 @@ class RuntimeShotMixin:
                 break
             recent.append(sample.flow_g_s)  # always >= 1 entry: the last sample itself
         return sum(recent) / len(recent)
+
+    def _smoothed_flow_now(self, samples: list[ShotSample]) -> float:
+        """_smoothed_flow_g_s over definitions.yaml's own
+        flow_analysis_constants.smoothing_window_ms, clamped to non-negative
+        (a smoothed average can dip slightly below zero right at the very
+        start of a pour) - the one "current flow rate" both
+        _effective_stop_margin_g and _predicted_stop_elapsed_ms project
+        against."""
+        return max(
+            0.0,
+            self._smoothed_flow_g_s(
+                samples, self.definitions.flow_analysis_constants["smoothing_window_ms"]
+            ),
+        )
+
+    def _stop_latency_for_flow(self, flow_now: float) -> float:
+        """Whichever learned latency bucket flow_now falls into (see
+        stop_latency_calibration's own comment in definitions.yaml for why
+        two buckets instead of one shared value) - shared by
+        _effective_stop_margin_g below (which multiplies it into a weight
+        margin) and _predicted_stop_elapsed_ms (which uses it as-is, in
+        seconds, for the chart's "Stop Prediction" marker) - the single
+        place this decision is made, so the two can never quietly drift
+        apart."""
+        return (
+            self.stop_latency_elevated_s
+            if flow_now >= self.definitions.stop_latency_calibration["bucket_cutoff_g_s"]
+            else self.stop_latency_normal_s
+        )
+
+    def _predicted_stop_elapsed_ms(
+        self, samples: list[ShotSample], stop_command_elapsed_ms: int | None
+    ) -> int | None:
+        """When a shot was expected to actually finish pouring (the scale
+        settling to its final weight), as distinct from
+        stop_command_elapsed_ms itself (when the stop command was sent) -
+        the two differ by the machine's own physical stop latency. Backs
+        the Live Shot/Shot History charts' "Stop Prediction" marker (see
+        runtime_entities.py's _shot_markers and this module's
+        async_shot_samples) - computed on demand here, not stored anywhere,
+        from the flow rate at the moment the stop command was sent (this
+        shot's own recorded samples, smoothed the same way
+        _effective_stop_margin_g's own flow_now is) looked up against the
+        *current* live latency buckets via _stop_latency_for_flow - the
+        same "current live values, not whatever applied historically"
+        choice as too_fast_factor/too_restrictive_factor (see
+        _live_duration_ratio_bands). None when stop_command_elapsed_ms
+        itself isn't known yet, or there's no sample at or before it."""
+        if stop_command_elapsed_ms is None:
+            return None
+        samples_up_to_stop = [s for s in samples if s.elapsed_ms <= stop_command_elapsed_ms]
+        if not samples_up_to_stop:
+            return None
+        latency_s = self._stop_latency_for_flow(self._smoothed_flow_now(samples_up_to_stop))
+        return stop_command_elapsed_ms + round(latency_s * 1000)
 
     def _effective_stop_margin_g(self, shot: ActiveShot) -> float:
         """Live flow-projected stop margin - early_stop_margin_min_g's floor,
@@ -80,17 +135,8 @@ class RuntimeShotMixin:
         per-installation estimate that's *learned* from real completed shots
         (see _update_learned_stop_latency) rather than a fixed guess.
         """
-        flow_now = max(
-            0.0,
-            self._smoothed_flow_g_s(
-                shot.samples, self.definitions.flow_analysis_constants["smoothing_window_ms"]
-            ),
-        )
-        latency_s = (
-            self.stop_latency_elevated_s
-            if flow_now >= self.definitions.stop_latency_calibration["bucket_cutoff_g_s"]
-            else self.stop_latency_normal_s
-        )
+        flow_now = self._smoothed_flow_now(shot.samples)
+        latency_s = self._stop_latency_for_flow(flow_now)
         projected_margin_g = flow_now * latency_s
         floor = shot.early_stop_margin_min_g
         ceiling = self.early_stop_margin_max_g
@@ -649,28 +695,55 @@ class RuntimeShotMixin:
 
     async def async_list_shots(self) -> list[dict[str, Any]]:
         """Every stored shot, most recent first, for the shot-history view -
-        each enriched with the current live too_fast_factor/
-        too_restrictive_factor (see _live_duration_ratio_bands) so its own
-        detail chart can draw the same healthy-window shading/target line
-        the Live Shot card already does (see runtime_entities.py's
-        _shot_markers). Deliberately the *current* live bounds for every
-        shot, not whatever bounds happened to apply when each one actually
-        ran - those aren't stored per shot, and _shot_markers itself already
-        uses the current live bounds even for the last completed shot, so
-        this keeps a shot's history-view chart consistent with how it'd
-        look there."""
+        each enriched with its own healthy_start_ms/healthy_end_ms (see
+        flow_analysis.healthy_window_ms) so its detail chart can draw the
+        same healthy-window shading/target line the Live Shot card already
+        does (see runtime_entities.py's _shot_markers/_build_shot_markers),
+        without the frontend recomputing that window's formula itself.
+        Uses the current live duration_ratio_bands (_live_duration_ratio_bands)
+        for every shot, not whatever bounds happened to apply when each one
+        actually ran - those aren't stored per shot, and _shot_markers
+        itself already uses the current live bounds even for the last
+        completed shot, so this keeps a shot's history-view chart
+        consistent with how it'd look there. A shot's own "Stop Prediction"
+        marker isn't enriched here - it needs that shot's own samples,
+        which async_shot_samples fetches lazily, only once its row is
+        actually expanded; computing it eagerly here for every stored shot
+        would mean an extra per-shot samples query for shots nobody ever
+        looks at."""
         shots = await self.hass.async_add_executor_job(lambda: self.db.recent_shots(limit=None))
-        too_fast_factor, too_restrictive_factor = healthy_duration_ratio_bounds(
-            self._live_duration_ratio_bands()
-        )
+        duration_ratio_bands = self._live_duration_ratio_bands()
         for shot in shots:
-            shot["too_fast_factor"] = too_fast_factor
-            shot["too_restrictive_factor"] = too_restrictive_factor
+            healthy_window = healthy_window_ms(
+                int(shot["preinfusion_s"] * 1000),
+                shot["target_yield_g"],
+                shot.get("expected_flow_g_s"),
+                duration_ratio_bands,
+            )
+            shot["healthy_start_ms"], shot["healthy_end_ms"] = (
+                healthy_window if healthy_window else (None, None)
+            )
         return shots
 
-    async def async_shot_samples(self, shot_id: str) -> list[dict[str, Any]]:
-        """One shot's raw scale time series, for the shot-history view's graph."""
-        return await self.hass.async_add_executor_job(self.db.shot_samples, shot_id)
+    async def async_shot_samples(
+        self, shot_id: str, *, stop_command_elapsed_ms: int | None = None
+    ) -> dict[str, Any]:
+        """One shot's raw scale time series, for the shot-history view's
+        graph - plus that same shot's own predicted_stop_elapsed_ms (see
+        _predicted_stop_elapsed_ms), derived from this same fetch rather
+        than a second query or anything stored. stop_command_elapsed_ms is
+        passed in by the caller (already on the shot row from
+        async_list_shots) rather than looked up again here; None (the
+        default, when the caller doesn't have or need it) is passed
+        straight through - _predicted_stop_elapsed_ms already returns None
+        for that case."""
+        samples = await self.hass.async_add_executor_job(self.db.full_shot_samples, shot_id)
+        return {
+            "samples": [asdict(sample) for sample in samples],
+            "predicted_stop_elapsed_ms": self._predicted_stop_elapsed_ms(
+                samples, stop_command_elapsed_ms
+            ),
+        }
 
     async def async_delete_shot(self, shot_id: str) -> bool:
         """Delete one stored shot. Refuses to delete the shot currently

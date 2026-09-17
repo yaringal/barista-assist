@@ -146,22 +146,31 @@ async def ws_list_shots(
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "barista_assist/shot_samples", vol.Required("shot_id"): str}
+    {
+        vol.Required("type"): "barista_assist/shot_samples",
+        vol.Required("shot_id"): str,
+        vol.Optional("stop_command_elapsed_ms"): int,
+    }
 )
 @websocket_api.async_response
 async def ws_shot_samples(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Return one shot's raw scale time series, for the shot-history graph."""
+    """Return one shot's raw scale time series, for the shot-history graph -
+    plus its own predicted_stop_elapsed_ms (see runtime_shot.py's
+    async_shot_samples) when the caller passes stop_command_elapsed_ms
+    (already on the shot row from list_shots)."""
     runtime = _get_runtime(hass, connection, msg["id"])
     if runtime is None:
         return
     try:
-        samples = await runtime.async_shot_samples(msg["shot_id"])
+        result = await runtime.async_shot_samples(
+            msg["shot_id"], stop_command_elapsed_ms=msg.get("stop_command_elapsed_ms")
+        )
     except Exception as err:
         connection.send_error(msg["id"], "samples_failed", str(err))
         return
-    connection.send_result(msg["id"], {"samples": samples})
+    connection.send_result(msg["id"], result)
 
 
 @websocket_api.websocket_command(
