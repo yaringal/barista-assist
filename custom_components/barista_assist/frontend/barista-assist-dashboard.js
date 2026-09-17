@@ -141,9 +141,11 @@ function escapeHtml(value) {
 // Shared by the Shots view's per-shot detail chart and the Live Shot card -
 // both plot [elapsed_ms, weight_g, flow_g_s] points against elapsed seconds
 // since the shot's own start, not real wall-clock time (see
-// BaristaRuntime._shot_plot_points's docstring for why that matters).
-function niceStepSeconds(maxSeconds) {
-  const raw = Math.max(1, maxSeconds) / 5; // aim for ~5 tick marks
+// BaristaRuntime._shot_plot_points's docstring for why that matters). Also
+// used for the weight (y) axis' own tick spacing - the "~5 human-friendly
+// ticks" goal is the same for either axis.
+function niceStep(maxValue, targetTicks = 5) {
+  const raw = Math.max(1, maxValue) / targetTicks;
   const magnitude = 10 ** Math.floor(Math.log10(raw));
   const residual = raw / magnitude;
   let step;
@@ -163,6 +165,8 @@ const CHART_STYLES = `
   .cursor-line { stroke: var(--secondary-text-color, #888); stroke-width: 1; stroke-dasharray: 3,3; display: none; }
   .axis-labels { position: relative; height: 16px; font-size: 0.7rem; opacity: 0.6; }
   .axis-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  .y-axis-labels { position: absolute; top: 0; left: 0; width: 100%; aspect-ratio: 3 / 1; pointer-events: none; }
+  .y-axis-labels span { position: absolute; left: 2px; transform: translateY(-50%); font-size: 0.65rem; opacity: 0.6; white-space: nowrap; }
   .chart-tooltip {
     display: none;
     position: absolute;
@@ -256,15 +260,20 @@ function smoothedFlowSeries(samples, windowMs = 600) {
 function chartGeometry(samples, markers = {}) {
   const width = 600;
   const height = 200;
-  const padding = 28;
+  // Asymmetric on purpose: bottom is kept small (just enough for the
+  // x-axis' own tick marks) so the plot's bottom edge sits close to the
+  // region labels/tick numbers below it; left is wider than the rest to
+  // leave room for the weight (y) axis' own tick labels.
+  const padding = { top: 28, right: 28, bottom: 4, left: 30 };
   const healthy = healthyWindow(markers);
   const extraT = healthy ? [healthy.end_ms] : [];
   const extraWeight = healthy ? [healthy.target_yield_g] : [];
   const maxT = Math.max(1, ...samples.map((s) => s.elapsed_ms), ...extraT);
   const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...extraWeight);
   const maxFlow = Math.max(1, ...samples.map((s) => s.flow_g_s));
-  const x = (t) => padding + (t / maxT) * (width - 2 * padding);
-  const yFor = (max) => (v) => height - padding - (Math.max(0, v) / max) * (height - 2 * padding);
+  const x = (t) => padding.left + (t / maxT) * (width - padding.left - padding.right);
+  const yFor = (max) => (v) =>
+    height - padding.bottom - (Math.max(0, v) / max) * (height - padding.top - padding.bottom);
   return { width, height, padding, maxT, maxWeight, maxFlow, x, yWeight: yFor(maxWeight), yFlow: yFor(maxFlow) };
 }
 
@@ -289,44 +298,72 @@ function renderShotChart(samples, markers = {}) {
   const smoothedFlow = smoothedFlowSeries(samples);
   const healthy = healthyWindow(markers);
 
-  const step = niceStepSeconds(maxT / 1000);
-  const ticks = [];
-  for (let t = 0; t <= maxT / 1000 + 0.001; t += step) ticks.push(t);
-  const axisLabels = ticks
+  const axisTop = padding.top;
+  const axisBottom = height - padding.bottom;
+  const axisLeft = padding.left;
+  const axisRight = width - padding.right;
+
+  const timeStep = niceStep(maxT / 1000);
+  const timeTicks = [];
+  for (let t = 0; t <= maxT / 1000 + 0.001; t += timeStep) timeTicks.push(t);
+  const axisLabels = timeTicks
     .map(
       (t) => `<span style="left:${((x(t * 1000) / width) * 100).toFixed(2)}%">${Math.round(t)}s</span>`
+    )
+    .join("");
+  // Short strokes right on the axis line itself (part of the SVG, so
+  // inherently flush against it) - the numeric labels below are a separate
+  // HTML row, positioned under these.
+  const xTickMarks = timeTicks
+    .map(
+      (t) =>
+        `<line x1="${x(t * 1000).toFixed(1)}" y1="${axisBottom}" x2="${x(t * 1000).toFixed(1)}" y2="${(axisBottom + 4).toFixed(1)}" class="axis" />`
+    )
+    .join("");
+
+  const weightStep = niceStep(maxWeight);
+  const weightTicks = [];
+  for (let w = 0; w <= maxWeight + 0.001; w += weightStep) weightTicks.push(w);
+  const yAxisLabels = weightTicks
+    .map((w) => `<span style="top:${((yWeight(w) / height) * 100).toFixed(2)}%">${Number(w.toFixed(2))}g</span>`)
+    .join("");
+  const yTickMarks = weightTicks
+    .map(
+      (w) =>
+        `<line x1="${(axisLeft - 4).toFixed(1)}" y1="${yWeight(w).toFixed(1)}" x2="${axisLeft}" y2="${yWeight(w).toFixed(1)}" class="axis" />`
     )
     .join("");
 
   const preinfusionMs = markers?.preinfusion_ms;
   const piBand =
     preinfusionMs > 0
-      ? `<rect x="${padding}" y="${padding}" width="${(x(preinfusionMs) - padding).toFixed(1)}" height="${height - 2 * padding}" class="pi-band" />`
+      ? `<rect x="${axisLeft}" y="${axisTop}" width="${(x(preinfusionMs) - axisLeft).toFixed(1)}" height="${(axisBottom - axisTop).toFixed(1)}" class="pi-band" />`
       : "";
   const healthyBand = healthy
-    ? `<rect x="${x(healthy.start_ms).toFixed(1)}" y="${padding}" width="${(x(healthy.end_ms) - x(healthy.start_ms)).toFixed(1)}" height="${height - 2 * padding}" class="healthy-band" />`
+    ? `<rect x="${x(healthy.start_ms).toFixed(1)}" y="${axisTop}" width="${(x(healthy.end_ms) - x(healthy.start_ms)).toFixed(1)}" height="${(axisBottom - axisTop).toFixed(1)}" class="healthy-band" />`
     : "";
+  // Spans the whole plot width (not just the healthy window) - the target
+  // weight applies for the entire shot, not only during that window.
   const targetLine = healthy
-    ? `<line x1="${x(healthy.start_ms).toFixed(1)}" y1="${yWeight(healthy.target_yield_g).toFixed(1)}" x2="${x(healthy.end_ms).toFixed(1)}" y2="${yWeight(healthy.target_yield_g).toFixed(1)}" class="target-line" />`
+    ? `<line x1="${axisLeft}" y1="${yWeight(healthy.target_yield_g).toFixed(1)}" x2="${axisRight}" y2="${yWeight(healthy.target_yield_g).toFixed(1)}" class="target-line" />`
     : "";
   const stopMs = markers?.stop_command_elapsed_ms;
   const hasStopMarker = stopMs != null;
   const stopLine = hasStopMarker
-    ? `<line class="stop-line" x1="${x(stopMs).toFixed(1)}" y1="${padding}" x2="${x(stopMs).toFixed(1)}" y2="${height - padding}" />`
+    ? `<line class="stop-line" x1="${x(stopMs).toFixed(1)}" y1="${axisTop}" x2="${x(stopMs).toFixed(1)}" y2="${axisBottom}" />`
     : "";
-  // Positioned directly under the chart, above the x-axis tick labels
-  // (axis-labels below) - closer to the axis line they annotate than the
-  // tick numbers are, since they're naming a region/instant on the chart
-  // itself rather than a generic time scale.
+  // Positioned directly under the chart (right after the svg, before the
+  // x-axis tick numbers below) - as close to the plot's own bottom edge as
+  // the tightened bottom padding allows.
   const piLabel =
     preinfusionMs > 0
-      ? `<span class="pi-label" style="left:${(((padding + x(preinfusionMs)) / 2 / width) * 100).toFixed(2)}%">Pre-infusion</span>`
+      ? `<span class="pi-label" style="left:${(((axisLeft + x(preinfusionMs)) / 2 / width) * 100).toFixed(2)}%">Pre-infusion</span>`
       : "";
   const healthyLabel = healthy
     ? `<span class="healthy-label" style="left:${(((x(healthy.start_ms) + x(healthy.end_ms)) / 2 / width) * 100).toFixed(2)}%">Healthy</span>`
     : "";
   const stopLabel = hasStopMarker
-    ? `<span class="stop-label" style="left:${((x(stopMs) / width) * 100).toFixed(2)}%">Stop</span>`
+    ? `<span class="stop-label" style="left:${((x(stopMs) / width) * 100).toFixed(2)}%">Stop Prediction</span>`
     : "";
   const eventLabels =
     piLabel || healthyLabel || stopLabel
@@ -338,16 +375,19 @@ function renderShotChart(samples, markers = {}) {
       <svg viewBox="0 0 ${width} ${height}" class="chart" preserveAspectRatio="none">
         ${piBand}
         ${healthyBand}
-        <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" class="axis" />
-        <line x1="${padding}" y1="${padding}" x2="${padding}" y2="${height - padding}" class="axis" />
+        <line x1="${axisLeft}" y1="${axisBottom}" x2="${axisRight}" y2="${axisBottom}" class="axis" />
+        <line x1="${axisLeft}" y1="${axisTop}" x2="${axisLeft}" y2="${axisBottom}" class="axis" />
+        ${xTickMarks}
+        ${yTickMarks}
         ${stopLine}
         <path d="${pathFor(samples, (s) => yWeight(s.weight_g))}" class="weight-line" fill="none" />
         <path d="${pathFor(smoothedFlow, (s) => yFlow(s.flow_g_s))}" class="flow-line" fill="none" />
         ${targetLine}
-        <line class="cursor-line" x1="0" y1="${padding}" x2="0" y2="${height - padding}" />
+        <line class="cursor-line" x1="0" y1="${axisTop}" x2="0" y2="${axisBottom}" />
       </svg>
-      ${eventLabels}
+      <div class="y-axis-labels">${yAxisLabels}</div>
       <div class="axis-labels">${axisLabels}</div>
+      ${eventLabels}
       <div class="chart-tooltip"></div>
     </div>
     <div class="legend">
