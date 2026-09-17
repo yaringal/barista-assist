@@ -1,17 +1,22 @@
-# Barista Assist v0.3.3
+# Barista Assist v0.3.4
 
-A "too fast"/"too restrictive" cleanup: the duration-ratio bands that classify a shot's health are now a single shared source of truth for both classification and grind correction, instead of two copies that could quietly drift apart. Shot charts also get a clearer visual: a shaded healthy-completion window with a dashed target line, and region labels right under the chart.
+A shot-chart polish release: a new "Stop Prediction" marker, y-axis ticks, a fuller-width target line, tighter layout, and no more clipped/truncated text. Under the hood, two formulas that used to be duplicated between the backend and the dashboard's own JavaScript are now computed once, server-side.
+
+## Added
+
+- Shot charts now show a "Stop Prediction" marker - when the pour was actually expected to finish, accounting for the machine's own physical stop latency - alongside the existing "Stop Sent" marker (when the stop command was issued). Computed on the fly from the shot's own data; nothing new is stored.
+- Shot charts now have y-axis (weight) tick marks and labels, matching the existing time-axis ticks.
 
 ## Changed
 
-- The 6 duration-ratio band boundary settings (previously named `grind_band_*_max`) now drive both shot health classification and grind correction together, and have been renamed to `duration_ratio_band_*_max` to reflect that. The grind-correction delta settings (`grind_band_*_delta`) are unchanged.
-- The System view's grind-correction card is now split into "Shot health categories" (the shared band boundaries) and "Grind correction" (grind deltas + puck-prep overrides).
-- Shot charts now shade the healthy completion window in green with a dashed target-yield line, and label the pre-infusion/healthy/stop regions directly under the chart.
+- The target-yield dashed line now spans the whole chart, not just the healthy window.
+- Chart layout is tighter overall, with headroom so the curve/target line never sits flush against the top edge, and region labels no longer overlap each other.
+- The shot-history list's yield column no longer truncates on narrower screens.
 
 ## Upgrade
 
-Update via HACS and restart Home Assistant as usual. The 6 renamed entities (`duration_ratio_band_*_max`) will appear as new entities; the old `grind_band_*_max` entities become unavailable and can be removed from the entity registry. Any custom dashboard overrides you'd set on the old entities are not carried forward - reapply them on the new ones if needed. The 7 `grind_band_*_delta` entities are untouched.
+No manual steps required. Update via HACS and restart Home Assistant as usual - no entities were renamed or removed in this release.
 
 ## Testing
 
-- Full suite: 318 tests, all passing.
+- Full suite: 321 tests, all passing (up from 318).

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.4
+
+### Added
+
+- **Shot charts now show a "Stop Prediction" marker** (a dashed orange line + label) alongside the existing "Stop Sent" marker (renamed from plain "Stop") - Stop Sent is when the automatic-stop command was actually issued; Stop Prediction is when that same decision expected the pour to actually finish, accounting for the machine's own physical stop latency. Computed on demand from the shot's own recorded samples plus the current live stop-latency settings (`runtime_shot.py`'s `_predicted_stop_elapsed_ms`) - nothing new is stored per shot.
+- **Shot charts now have y-axis (weight) tick marks and labels**, matching the existing x-axis (time) treatment.
+
+### Changed
+
+- **The target-yield dashed line now spans the whole chart width**, not just the healthy window - the target weight applies for the entire shot, not only during that window.
+- **Chart layout polish**: the plot's own bottom edge now sits close to the region labels/tick numbers below it (tightened padding); the chart's y-range now has a little headroom so a healthy shot's own curve or target line doesn't sit flush against the very top edge; the Pre-infusion/Healthy/Stop Prediction labels now sit tight against the *top* of the chart instead of overlapping "Stop Sent" underneath it.
+- **The shot-history summary row's yield column no longer truncates** (it could show e.g. "35.0 / 3..." on narrower screens) - it now sizes to its own content instead of shrinking with the other columns.
+- **The chart's "healthy window" and the machine's stop-latency bucket decision are now each computed once, server-side, and simply drawn by the frontend** (`flow_analysis.py`'s new `expected_shot_seconds`/`healthy_window_ms`, shared with `analyze_shot`'s own classification; `runtime_shot.py`'s `_stop_latency_for_flow`/`_predicted_stop_elapsed_ms`) - previously both formulas were duplicated in the dashboard's own JavaScript, which could have silently drifted out of sync with the backend if either changed.
+
+### Testing
+
+- Full suite: 321 tests, all passing (up from 318).
+
 ## 0.3.3
 
 ### Changed
