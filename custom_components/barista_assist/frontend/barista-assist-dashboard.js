@@ -181,41 +181,50 @@ const CHART_STYLES = `
   .legend-weight::before, .legend-flow::before { content: "—"; margin-right: 4px; font-weight: 700; }
   .legend-weight::before { color: #2196f3; }
   .legend-flow::before { color: #00bcd4; }
-  .legend-expected::before { content: "●"; margin-right: 4px; font-weight: 700; color: var(--secondary-text-color, #888); }
+  .legend-target::before { content: "- -"; margin-right: 4px; font-weight: 700; color: var(--success-color, #2e7d32); }
   .empty { opacity: 0.7; padding: 8px 0; }
   .pi-band { fill: var(--secondary-text-color, #888); opacity: 0.08; }
-  .expected-marker { fill: var(--secondary-text-color, #888); stroke: var(--card-background-color, #fff); stroke-width: 1; }
+  .healthy-band { fill: var(--success-color, #2e7d32); opacity: 0.08; }
+  .target-line { stroke: var(--success-color, #2e7d32); stroke-width: 1.5; stroke-dasharray: 5,4; }
   .stop-line { stroke: var(--error-color, #c62828); stroke-width: 1.5; stroke-dasharray: 2,3; }
   .event-labels { position: relative; height: 14px; font-size: 0.65rem; opacity: 0.75; }
   .event-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
   .event-labels .stop-label { color: var(--error-color, #c62828); }
 `;
 
-// The single "expected completion" reference point for a shot - where/when
-// it should reach target_yield_g at markers.expected_flow_g_s
-// (flow_analysis.blended_expected_flow_g_s, fixed per-shot at brew time -
-// see runtime.py's ActiveShot.expected_flow_g_s/_shot_markers).
-// expected_flow_g_s is post-pre-infusion/extraction-only, so pre-infusion
-// is added on top (pi + expectedDurationMs below) rather than folded into
-// the rate - matching flow_analysis.py's own analyze_shot expected_s
-// formula exactly, so this point is the same point duration_ratio=1.0
-// means for classification.
+// The "healthy" time window for a shot - the same [too_fast_factor,
+// too_restrictive_factor] * expected_s range flow_analysis.py's
+// analyze_shot itself classifies duration_s against (expected_s = pi +
+// target_yield_g/expected_flow_g_s; expected_flow_g_s is post-pre-infusion/
+// extraction-only, so pi is added on top rather than folded into the rate -
+// see runtime.py's ActiveShot.expected_flow_g_s/_shot_markers). Stopping
+// anywhere inside this window, at target_yield_g, is what "healthy" means -
+// too_fast_factor/too_restrictive_factor come from markers (not
+// re-derived/hardcoded here) so this can never silently diverge from what
+// actually classified the shot.
 //
-// Deliberately just a marker, not a full drawn trajectory from press to
-// here (an earlier version of this chart drew a straight line): real flow
-// isn't constant across a pour (there's a ramp-up period this project
-// doesn't yet have enough real shot data to model - see flow_analysis.py's
-// own analyze_shot "Open caveat" comment), so a full straight line implies
-// a shape that was never actually true. This one point is the part of the
-// model that IS backed by the same math classification itself uses; the
-// path in between it isn't a claim this chart should make.
-// Returns null until both figures are actually known.
-function expectedCompletionPoint(markers) {
-  const { preinfusion_ms, expected_flow_g_s, target_yield_g } = markers || {};
-  if (expected_flow_g_s == null || target_yield_g == null) return null;
+// Deliberately a window, not a single point or a full drawn trajectory
+// from press to target (an earlier version of this chart drew a straight
+// line to one "expected completion" point): real flow isn't constant
+// across a pour (there's a ramp-up period this project doesn't yet have
+// enough real shot data to model - see flow_analysis.py's own analyze_shot
+// "Open caveat" comment), so a specific predicted instant implies a
+// precision that isn't real. The window's own edges, and target_yield_g
+// itself, ARE backed by the same math classification uses; the path in
+// between them isn't a claim this chart should make.
+// Returns null until every figure is actually known.
+function healthyWindow(markers) {
+  const { preinfusion_ms, expected_flow_g_s, target_yield_g, too_fast_factor, too_restrictive_factor } = markers || {};
+  if (expected_flow_g_s == null || target_yield_g == null || too_fast_factor == null || too_restrictive_factor == null) {
+    return null;
+  }
   const pi = preinfusion_ms ?? 0;
-  const expectedDurationMs = (target_yield_g / expected_flow_g_s) * 1000;
-  return { elapsed_ms: pi + expectedDurationMs, weight_g: target_yield_g };
+  const expectedMs = pi + (target_yield_g / expected_flow_g_s) * 1000;
+  return {
+    start_ms: expectedMs * too_fast_factor,
+    end_ms: expectedMs * too_restrictive_factor,
+    target_yield_g,
+  };
 }
 
 // Cosmetic-only smoothing for the flow line: real per-reading flow_g_s is
@@ -238,17 +247,17 @@ function smoothedFlowSeries(samples, windowMs = 600) {
 
 // Shared geometry between renderShotChart's static markup and
 // attachChartTooltip's hit-testing, so the two can never drift out of sync.
-// markers (see runtime.py's _shot_markers) factors the expected-completion
-// marker's own point into maxT/maxWeight too, so the chart auto-scales to
-// show it even when the real shot hasn't caught up to (or has overshot) it
-// yet.
+// markers (see runtime.py's _shot_markers) factors the healthy window's own
+// far edge and target_yield_g into maxT/maxWeight too, so the chart
+// auto-scales to show the whole window even when the real shot hasn't
+// caught up to (or has overshot) it yet.
 function chartGeometry(samples, markers = {}) {
   const width = 600;
   const height = 200;
   const padding = 28;
-  const expectedPoint = expectedCompletionPoint(markers);
-  const extraT = expectedPoint ? [expectedPoint.elapsed_ms] : [];
-  const extraWeight = expectedPoint ? [expectedPoint.weight_g] : [];
+  const healthy = healthyWindow(markers);
+  const extraT = healthy ? [healthy.end_ms] : [];
+  const extraWeight = healthy ? [healthy.target_yield_g] : [];
   const maxT = Math.max(1, ...samples.map((s) => s.elapsed_ms), ...extraT);
   const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...extraWeight);
   const maxFlow = Math.max(1, ...samples.map((s) => s.flow_g_s));
@@ -276,7 +285,7 @@ function renderShotChart(samples, markers = {}) {
       .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.elapsed_ms).toFixed(1)},${yAccessor(p).toFixed(1)}`)
       .join(" ");
   const smoothedFlow = smoothedFlowSeries(samples);
-  const expectedPoint = expectedCompletionPoint(markers);
+  const healthy = healthyWindow(markers);
 
   const step = niceStepSeconds(maxT / 1000);
   const ticks = [];
@@ -292,8 +301,11 @@ function renderShotChart(samples, markers = {}) {
     preinfusionMs > 0
       ? `<rect x="${padding}" y="${padding}" width="${(x(preinfusionMs) - padding).toFixed(1)}" height="${height - 2 * padding}" class="pi-band" />`
       : "";
-  const expectedMarker = expectedPoint
-    ? `<circle cx="${x(expectedPoint.elapsed_ms).toFixed(1)}" cy="${yWeight(expectedPoint.weight_g).toFixed(1)}" r="4" class="expected-marker" />`
+  const healthyBand = healthy
+    ? `<rect x="${x(healthy.start_ms).toFixed(1)}" y="${padding}" width="${(x(healthy.end_ms) - x(healthy.start_ms)).toFixed(1)}" height="${height - 2 * padding}" class="healthy-band" />`
+    : "";
+  const targetLine = healthy
+    ? `<line x1="${x(healthy.start_ms).toFixed(1)}" y1="${yWeight(healthy.target_yield_g).toFixed(1)}" x2="${x(healthy.end_ms).toFixed(1)}" y2="${yWeight(healthy.target_yield_g).toFixed(1)}" class="target-line" />`
     : "";
   const stopMs = markers?.stop_command_elapsed_ms;
   const hasStopMarker = stopMs != null;
@@ -308,12 +320,13 @@ function renderShotChart(samples, markers = {}) {
     <div class="chart-wrap">
       <svg viewBox="0 0 ${width} ${height}" class="chart" preserveAspectRatio="none">
         ${piBand}
+        ${healthyBand}
         <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" class="axis" />
         <line x1="${padding}" y1="${padding}" x2="${padding}" y2="${height - padding}" class="axis" />
         ${stopLine}
         <path d="${pathFor(samples, (s) => yWeight(s.weight_g))}" class="weight-line" fill="none" />
         <path d="${pathFor(smoothedFlow, (s) => yFlow(s.flow_g_s))}" class="flow-line" fill="none" />
-        ${expectedMarker}
+        ${targetLine}
         <line class="cursor-line" x1="0" y1="${padding}" x2="0" y2="${height - padding}" />
       </svg>
       <div class="axis-labels">${axisLabels}</div>
@@ -323,7 +336,7 @@ function renderShotChart(samples, markers = {}) {
     <div class="legend">
       <span class="legend-weight">Weight (max ${maxWeight.toFixed(1)}g)</span>
       <span class="legend-flow">Flow (max ${maxFlow.toFixed(1)} g/s)</span>
-      ${expectedPoint ? `<span class="legend-expected">Expected</span>` : ""}
+      ${healthy ? `<span class="legend-target">Target yield</span>` : ""}
     </div>`;
 }
 

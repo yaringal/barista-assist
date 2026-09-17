@@ -554,6 +554,18 @@ class ShotMarkersTests(RuntimeTestCase):
             self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"],
         )
         self.assertEqual(markers["target_yield_g"], 36.0)
+        # too_fast_factor/too_restrictive_factor are the same boundary
+        # multipliers analyze_shot itself classifies against - the chart's
+        # healthy-window shading must use these exact values, not its own
+        # separately-hardcoded copy.
+        self.assertEqual(
+            markers["too_fast_factor"],
+            self.runtime.definitions.flow_analysis_constants["too_fast_factor"],
+        )
+        self.assertEqual(
+            markers["too_restrictive_factor"],
+            self.runtime.definitions.flow_analysis_constants["too_restrictive_factor"],
+        )
 
     async def test_reflects_the_last_finished_shot(self):
         await self.start_shot(preinfusion_s=1.0)
@@ -566,6 +578,14 @@ class ShotMarkersTests(RuntimeTestCase):
         self.assertEqual(markers["preinfusion_ms"], 1000)
         self.assertIsNotNone(markers["expected_flow_g_s"])
         self.assertEqual(markers["target_yield_g"], 36.0)
+        self.assertEqual(
+            markers["too_fast_factor"],
+            self.runtime.definitions.flow_analysis_constants["too_fast_factor"],
+        )
+        self.assertEqual(
+            markers["too_restrictive_factor"],
+            self.runtime.definitions.flow_analysis_constants["too_restrictive_factor"],
+        )
 
     async def test_is_empty_with_no_shot_ever(self):
         self.assertEqual(self.runtime._shot_markers(), {})

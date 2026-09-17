@@ -527,21 +527,29 @@ class RuntimeEntitiesMixin:
         level-keyed, not derived from this bag's own history - see
         docs/DESIGN.md's Phase 3b - fixed once per shot at
         brew time - see async_brew, ActiveShot.
-        expected_flow_g_s) for the frontend's flat-then-ramp idealized
-        curve, derived there from target_yield_g. expected_flow_g_s is
-        post-pre-infusion/extraction-only (flow_analysis.py's own
-        module docstring/FlowAnalysisConfig.expected_flow_g_s) - the
-        frontend adds preinfusion_ms on top of target_yield_g/
-        expected_flow_g_s rather than folding it in, matching
-        analyze_shot's own expected_s formula exactly (see
-        barista-assist-dashboard.js's idealizedWeightPoints). Same
-        live-vs-frozen dual source as _shot_plot_points. self.last_shot
-        (the "no active shot" fallback below) is itself scoped to the
-        currently selected bag (storage.latest_shot_bag), not global across
-        every bag/slot - switching slots switches which shot's markers
-        this shows. None values mean "not known yet" (e.g.
-        stop_command_elapsed_ms before the shot has actually stopped) -
-        the frontend must not treat that as zero."""
+        expected_flow_g_s) for the frontend's healthy-window shading and
+        target-yield line, derived there from target_yield_g.
+        expected_flow_g_s is post-pre-infusion/extraction-only
+        (flow_analysis.py's own module docstring/FlowAnalysisConfig.
+        expected_flow_g_s) - the frontend adds preinfusion_ms on top of
+        target_yield_g/expected_flow_g_s rather than folding it in,
+        matching analyze_shot's own expected_s formula exactly (see
+        barista-assist-dashboard.js's healthyWindow). too_fast_factor/
+        too_restrictive_factor (flow_analysis_constants) are the same
+        multipliers analyze_shot itself uses against expected_s to draw
+        the line between too_fast/healthy/too_restrictive - the frontend
+        reuses them rather than re-deriving its own boundary, so the
+        shaded window can never silently diverge from what actually
+        classified the shot. Same live-vs-frozen dual source as
+        _shot_plot_points. self.last_shot (the "no active shot" fallback
+        below) is itself scoped to the currently selected bag
+        (storage.latest_shot_bag), not global across every bag/slot -
+        switching slots switches which shot's markers this shows. None
+        values mean "not known yet" (e.g. stop_command_elapsed_ms before
+        the shot has actually stopped) - the frontend must not treat that
+        as zero."""
+        too_fast_factor = self.definitions.flow_analysis_constants["too_fast_factor"]
+        too_restrictive_factor = self.definitions.flow_analysis_constants["too_restrictive_factor"]
         shot = self.active_shot
         if shot is not None and shot.press_monotonic is not None:
             return {
@@ -549,6 +557,8 @@ class RuntimeEntitiesMixin:
                 "stop_command_elapsed_ms": shot.stop_command_elapsed_ms,
                 "expected_flow_g_s": shot.expected_flow_g_s,
                 "target_yield_g": shot.target_yield_g,
+                "too_fast_factor": too_fast_factor,
+                "too_restrictive_factor": too_restrictive_factor,
             }
         if self.last_shot:
             return {
@@ -556,6 +566,8 @@ class RuntimeEntitiesMixin:
                 "stop_command_elapsed_ms": self.last_shot.get("stop_command_elapsed_ms"),
                 "expected_flow_g_s": self.last_shot.get("expected_flow_g_s"),
                 "target_yield_g": self.last_shot["target_yield_g"],
+                "too_fast_factor": too_fast_factor,
+                "too_restrictive_factor": too_restrictive_factor,
             }
         return {}
 
