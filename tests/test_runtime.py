@@ -2305,6 +2305,24 @@ class ShotHistoryTests(RuntimeTestCase):
 
         self.assertEqual([shot["id"] for shot in shots], [shot_id])
 
+    async def test_list_shots_includes_the_live_duration_ratio_bounds(self):
+        """The shot-history view's own per-shot chart draws the same
+        healthy-window shading/target line the Live Shot card does (see
+        runtime_entities.py's _shot_markers) - it needs too_fast_factor/
+        too_restrictive_factor for that, which aren't stored per shot (see
+        async_list_shots' own docstring), so every listed shot is enriched
+        with the current live bounds instead."""
+        await self.start_shot()
+        await self.runtime._async_finalize("complete")
+        expected_too_fast, expected_too_restrictive = flow_analysis_module.healthy_duration_ratio_bounds(
+            self.runtime._live_duration_ratio_bands()
+        )
+
+        shots = await self.runtime.async_list_shots()
+
+        self.assertEqual(shots[0]["too_fast_factor"], expected_too_fast)
+        self.assertEqual(shots[0]["too_restrictive_factor"], expected_too_restrictive)
+
     async def test_export_shots_text_can_filter_to_one_shot(self):
         """The shot-history card's per-row export button - a pass-through to
         storage.export_shots_text(shot_id=...)."""

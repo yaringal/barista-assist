@@ -20,6 +20,7 @@ from .flow_analysis import (
     ShotClassification,
     analyze_shot,
     blended_expected_flow_g_s,
+    healthy_duration_ratio_bounds,
 )
 from .grind_correction import recommend_grind_delta
 from .runtime_shared import ActiveShot, ShotPhase, _recipe_snapshot
@@ -647,8 +648,25 @@ class RuntimeShotMixin:
         return await self.hass.async_add_executor_job(self.db.export_shots_text, shot_id)
 
     async def async_list_shots(self) -> list[dict[str, Any]]:
-        """Every stored shot, most recent first, for the shot-history view."""
-        return await self.hass.async_add_executor_job(lambda: self.db.recent_shots(limit=None))
+        """Every stored shot, most recent first, for the shot-history view -
+        each enriched with the current live too_fast_factor/
+        too_restrictive_factor (see _live_duration_ratio_bands) so its own
+        detail chart can draw the same healthy-window shading/target line
+        the Live Shot card already does (see runtime_entities.py's
+        _shot_markers). Deliberately the *current* live bounds for every
+        shot, not whatever bounds happened to apply when each one actually
+        ran - those aren't stored per shot, and _shot_markers itself already
+        uses the current live bounds even for the last completed shot, so
+        this keeps a shot's history-view chart consistent with how it'd
+        look there."""
+        shots = await self.hass.async_add_executor_job(lambda: self.db.recent_shots(limit=None))
+        too_fast_factor, too_restrictive_factor = healthy_duration_ratio_bounds(
+            self._live_duration_ratio_bands()
+        )
+        for shot in shots:
+            shot["too_fast_factor"] = too_fast_factor
+            shot["too_restrictive_factor"] = too_restrictive_factor
+        return shots
 
     async def async_shot_samples(self, shot_id: str) -> list[dict[str, Any]]:
         """One shot's raw scale time series, for the shot-history view's graph."""

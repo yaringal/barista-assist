@@ -671,6 +671,8 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
       stop_command_elapsed_ms: shot.stop_command_elapsed_ms ?? null,
       expected_flow_g_s: shot.expected_flow_g_s ?? null,
       target_yield_g: shot.target_yield_g ?? null,
+      too_fast_factor: shot.too_fast_factor ?? null,
+      too_restrictive_factor: shot.too_restrictive_factor ?? null,
     };
   }
 
