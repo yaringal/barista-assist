@@ -147,22 +147,31 @@ _MIN_STEP_FIELDS = {
     "dose_g": "min_step_dose_g",
     "temperature_offset_c": "min_step_temperature_offset_c",
 }
-# expert_rules.grind_correction.bands' own "name" -> the dashboard-editable
-# BaristaRuntime attribute that overrides that band's duration_ratio_max/
+# flow_analysis_constants.duration_ratio_bands' own "name" -> the
+# dashboard-editable BaristaRuntime attribute that overrides that band's
+# duration_ratio_max (see runtime_entities.py's _grind_correction_config
+# and async_set_entity_value's "grind_band_*" handling). This is the
+# shared, stage-agnostic ladder flow_analysis.py's own classification also
+# reads (see duration_ratio_bands' own comment in definitions.yaml) - so
+# editing one of these two entities changes Stage 1 classification too,
+# not just grind-correction banding. grossly_restrictive has no max entry
+# - its duration_ratio_max stays the fixed catch-all None.
+_DURATION_RATIO_BAND_MAX_FIELDS = {
+    "grossly_fast": "duration_ratio_band_grossly_fast_max",
+    "moderately_fast": "duration_ratio_band_moderately_fast_max",
+    "slightly_fast": "duration_ratio_band_slightly_fast_max",
+    "healthy": "duration_ratio_band_healthy_max",
+    "slightly_restrictive": "duration_ratio_band_slightly_restrictive_max",
+    "moderately_restrictive": "duration_ratio_band_moderately_restrictive_max",
+}
+# expert_rules.grind_correction.grind_deltas' own "name" -> the
+# dashboard-editable BaristaRuntime attribute that overrides that band's
 # grind_delta (see runtime_entities.py's _grind_correction_config and
-# async_set_entity_value's "grind_band_*" handling). grossly_restrictive has
-# no max entry - its duration_ratio_max stays the fixed catch-all None - and
-# healthy has no delta entry - its grind_delta stays fixed at 0.0, the value
+# async_set_entity_value's "grind_band_*" handling) - grind-correction's
+# own policy only, unlike _DURATION_RATIO_BAND_MAX_FIELDS above. healthy has no
+# delta entry - its grind_delta stays fixed at 0.0, the value
 # grind_correction.recommend_grind_delta's overshoot damping uses to find
 # "no correction needed" (healthy_index).
-_GRIND_BAND_MAX_FIELDS = {
-    "grossly_fast": "grind_band_grossly_fast_max",
-    "moderately_fast": "grind_band_moderately_fast_max",
-    "slightly_fast": "grind_band_slightly_fast_max",
-    "healthy": "grind_band_healthy_max",
-    "slightly_restrictive": "grind_band_slightly_restrictive_max",
-    "moderately_restrictive": "grind_band_moderately_restrictive_max",
-}
 _GRIND_BAND_DELTA_FIELDS = {
     "grossly_fast": "grind_band_grossly_fast_delta",
     "moderately_fast": "grind_band_moderately_fast_delta",
@@ -171,7 +180,7 @@ _GRIND_BAND_DELTA_FIELDS = {
     "moderately_restrictive": "grind_band_moderately_restrictive_delta",
     "grossly_restrictive": "grind_band_grossly_restrictive_delta",
 }
-_GRIND_BAND_CONTROLLER_FIELDS = tuple(_GRIND_BAND_MAX_FIELDS.values()) + tuple(
+_GRIND_BAND_CONTROLLER_FIELDS = tuple(_DURATION_RATIO_BAND_MAX_FIELDS.values()) + tuple(
     _GRIND_BAND_DELTA_FIELDS.values()
 )
 # expert_rules.grind_correction's own puck_prep_issue_streak_threshold/

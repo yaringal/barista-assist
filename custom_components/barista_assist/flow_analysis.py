@@ -74,6 +74,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import statistics
+from typing import Any
 
 from .storage import ShotSample
 
@@ -100,8 +101,15 @@ class FlowAnalysisConfig:
     suspicion_threshold: float
     first_flow_sustain_ms: int
     expected_flow_g_s: float  # Extraction-phase-only rate (pre-infusion excluded)
-    too_fast_factor: float
-    too_restrictive_factor: float
+    # Shared, stage-agnostic duration_ratio severity ladder ([{"name":
+    # str, "duration_ratio_max": float | None}, ...], ascending, last entry's
+    # max is None/unbounded) - see its own comment in definitions.yaml.
+    # analyze_shot derives too_fast/too_restrictive from the "healthy"
+    # entry's own edges (healthy_duration_ratio_bounds below);
+    # grind_correction.py uses the full ladder to size a correction. Single
+    # source, so the two can never disagree about where "healthy" starts
+    # and ends.
+    duration_ratio_bands: tuple[dict[str, Any], ...]
     prior_weight_shots: float
     absolute_accel_limit_g_s2: float
     early_flow_fraction_of_preinfusion: float
@@ -482,6 +490,22 @@ def _baseline_deviation_suspicion(
     return min(1.0, rise_above_baseline / (reference * config.baseline_deviation_scale))
 
 
+def healthy_duration_ratio_bounds(duration_ratio_bands: tuple[dict[str, Any], ...]) -> tuple[float, float]:
+    """(too_fast_factor, too_restrictive_factor)-equivalent bounds, read off
+    the shared duration_ratio_bands ladder's own "healthy" entry rather than
+    two separately-hardcoded constants: the band right before "healthy" ends
+    where a shot stops being too_fast, and "healthy" itself ends where a
+    shot starts being too_restrictive. Single source with
+    grind_correction.py's own band lookup - see duration_ratio_bands' own
+    comment in definitions.yaml for why."""
+    healthy_index = next(
+        index for index, band in enumerate(duration_ratio_bands) if band["name"] == "healthy"
+    )
+    too_fast_factor = float(duration_ratio_bands[healthy_index - 1]["duration_ratio_max"])
+    too_restrictive_factor = float(duration_ratio_bands[healthy_index]["duration_ratio_max"])
+    return too_fast_factor, too_restrictive_factor
+
+
 # --- Early-exit construction, used throughout analyze_shot below -----------
 
 
@@ -682,13 +706,14 @@ def analyze_shot(
     # recipe landed here - runtime.py is where a repeated streak overrides
     # the resulting grind recommendation (docs/DESIGN.md §12/Phase 4), not
     # here; the classification itself never changes based on streak length.
+    too_fast_factor, too_restrictive_factor = healthy_duration_ratio_bounds(config.duration_ratio_bands)
     if t90_ms is None:
         classification = ShotClassification.TOO_RESTRICTIVE
     elif channeling_suspicion >= config.suspicion_threshold:
         classification = ShotClassification.PUCK_PREP_ISSUE
-    elif duration_s < expected_s * config.too_fast_factor:
+    elif duration_s < expected_s * too_fast_factor:
         classification = ShotClassification.TOO_FAST
-    elif duration_s > expected_s * config.too_restrictive_factor:
+    elif duration_s > expected_s * too_restrictive_factor:
         classification = ShotClassification.TOO_RESTRICTIVE
     else:
         classification = ShotClassification.HEALTHY

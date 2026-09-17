@@ -47,7 +47,7 @@ from .runtime_shared import (
     _FLAVOR_AXES,
     _GRIND_BAND_CONTROLLER_FIELDS,
     _GRIND_BAND_DELTA_FIELDS,
-    _GRIND_BAND_MAX_FIELDS,
+    _DURATION_RATIO_BAND_MAX_FIELDS,
     _PUCK_PREP_STREAK_CONTROLLER_FIELDS,
     _recipe_snapshot,
 )
@@ -58,12 +58,12 @@ _LOGGER = logging.getLogger(__name__)
 _STORE_VERSION = 1
 
 
-def _grind_band_by_name(bands: list[dict[str, Any]], name: str) -> dict[str, Any]:
-    """expert_rules.grind_correction.bands' entry for one band `name` - used
-    to seed each grind_band_* controller attribute from its YAML default
-    (see __init__/async_initialize/_GRIND_BAND_MAX_FIELDS/
-    _GRIND_BAND_DELTA_FIELDS)."""
-    return next(band for band in bands if band["name"] == name)
+def _grind_band_by_name(duration_ratio_bands: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    """flow_analysis_constants.duration_ratio_bands' entry for one band
+    `name` - used to seed each grind_band_*_max controller attribute from
+    its YAML default (see __init__/async_initialize/_DURATION_RATIO_BAND_MAX_FIELDS).
+    """
+    return next(band for band in duration_ratio_bands if band["name"] == name)
 
 
 class BaristaRuntime(
@@ -106,12 +106,12 @@ class BaristaRuntime(
         self.min_step_target_yield_g = float(flavor_min_step["target_yield_g"])
         self.min_step_dose_g = float(flavor_min_step["dose_g"])
         self.min_step_temperature_offset_c = float(flavor_min_step["temperature_offset_c"])
-        grind_bands = self.definitions.expert_rules["grind_correction"]["bands"]
-        for band_name, attr in _GRIND_BAND_MAX_FIELDS.items():
-            setattr(self, attr, float(_grind_band_by_name(grind_bands, band_name)["duration_ratio_max"]))
-        for band_name, attr in _GRIND_BAND_DELTA_FIELDS.items():
-            setattr(self, attr, float(_grind_band_by_name(grind_bands, band_name)["grind_delta"]))
+        duration_ratio_bands = self.definitions.flow_analysis_constants["duration_ratio_bands"]
+        for band_name, attr in _DURATION_RATIO_BAND_MAX_FIELDS.items():
+            setattr(self, attr, float(_grind_band_by_name(duration_ratio_bands, band_name)["duration_ratio_max"]))
         grind_correction = self.definitions.expert_rules["grind_correction"]
+        for band_name, attr in _GRIND_BAND_DELTA_FIELDS.items():
+            setattr(self, attr, float(grind_correction["grind_deltas"][band_name]))
         for attr in _PUCK_PREP_STREAK_CONTROLLER_FIELDS:
             setattr(self, attr, float(grind_correction[attr]))
         self.draft = BagDraft(

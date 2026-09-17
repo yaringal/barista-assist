@@ -305,15 +305,20 @@ number:
     unit: "°C"
     mode: box
 
-  # --- Grind correction bands (expert_rules.grind_correction.bands) -------
-  # *_max fields are each band's upper edge; *_delta is its DF54
-  # correction. grossly_restrictive has no max (catch-all last band) and
-  # healthy's delta stays fixed at 0.0 - neither is dashboard-editable.
-  grind_band_grossly_fast_max:
+  # --- Grind correction bands ----------------------------------------------
+  # *_max fields are each band's upper edge - flow_analysis_constants.
+  # duration_ratio_bands, the shared, stage-agnostic ladder Stage 1's own
+  # classification also reads (editing one of these six moves both
+  # together, not just grind-correction's own banding). *_delta is each
+  # band's DF54 correction - expert_rules.grind_correction.grind_deltas,
+  # grind-correction's own policy only. grossly_restrictive has no max
+  # (catch-all last band) and healthy's delta stays fixed at 0.0 - neither
+  # is dashboard-editable.
+  duration_ratio_band_grossly_fast_max:
     source: controller
-    field: grind_band_grossly_fast_max
-    translation_key: grind_band_grossly_fast_max
-    token: __GRIND_BAND_GROSSLY_FAST_MAX__
+    field: duration_ratio_band_grossly_fast_max
+    translation_key: duration_ratio_band_grossly_fast_max
+    token: __DURATION_RATIO_BAND_GROSSLY_FAST_MAX__
     min: 0.3
     max: 2.0
     step: 0.01
@@ -330,14 +335,14 @@ number:
     token: __GRIND_BAND_GROSSLY_FAST_DELTA__
     min: -5.0
     max: 5.0
-    step: 0.1
+    step: 0.5
     mode: box
 
-  grind_band_moderately_fast_max:
+  duration_ratio_band_moderately_fast_max:
     source: controller
-    field: grind_band_moderately_fast_max
-    translation_key: grind_band_moderately_fast_max
-    token: __GRIND_BAND_MODERATELY_FAST_MAX__
+    field: duration_ratio_band_moderately_fast_max
+    translation_key: duration_ratio_band_moderately_fast_max
+    token: __DURATION_RATIO_BAND_MODERATELY_FAST_MAX__
     min: 0.3
     max: 2.0
     step: 0.01
@@ -351,14 +356,14 @@ number:
     token: __GRIND_BAND_MODERATELY_FAST_DELTA__
     min: -5.0
     max: 5.0
-    step: 0.1
+    step: 0.5
     mode: box
 
-  grind_band_slightly_fast_max:
+  duration_ratio_band_slightly_fast_max:
     source: controller
-    field: grind_band_slightly_fast_max
-    translation_key: grind_band_slightly_fast_max
-    token: __GRIND_BAND_SLIGHTLY_FAST_MAX__
+    field: duration_ratio_band_slightly_fast_max
+    translation_key: duration_ratio_band_slightly_fast_max
+    token: __DURATION_RATIO_BAND_SLIGHTLY_FAST_MAX__
     min: 0.3
     max: 2.0
     step: 0.01
@@ -372,25 +377,25 @@ number:
     token: __GRIND_BAND_SLIGHTLY_FAST_DELTA__
     min: -5.0
     max: 5.0
-    step: 0.1
+    step: 0.5
     mode: box
 
-  grind_band_healthy_max:
+  duration_ratio_band_healthy_max:
     source: controller
-    field: grind_band_healthy_max
-    translation_key: grind_band_healthy_max
-    token: __GRIND_BAND_HEALTHY_MAX__
+    field: duration_ratio_band_healthy_max
+    translation_key: duration_ratio_band_healthy_max
+    token: __DURATION_RATIO_BAND_HEALTHY_MAX__
     min: 0.3
     max: 2.0
     step: 0.01
     mode: box
     attributes: [seconds_upper]
 
-  grind_band_slightly_restrictive_max:
+  duration_ratio_band_slightly_restrictive_max:
     source: controller
-    field: grind_band_slightly_restrictive_max
-    translation_key: grind_band_slightly_restrictive_max
-    token: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_MAX__
+    field: duration_ratio_band_slightly_restrictive_max
+    translation_key: duration_ratio_band_slightly_restrictive_max
+    token: __DURATION_RATIO_BAND_SLIGHTLY_RESTRICTIVE_MAX__
     min: 0.3
     max: 2.0
     step: 0.01
@@ -404,14 +409,14 @@ number:
     token: __GRIND_BAND_SLIGHTLY_RESTRICTIVE_DELTA__
     min: -5.0
     max: 5.0
-    step: 0.1
+    step: 0.5
     mode: box
 
-  grind_band_moderately_restrictive_max:
+  duration_ratio_band_moderately_restrictive_max:
     source: controller
-    field: grind_band_moderately_restrictive_max
-    translation_key: grind_band_moderately_restrictive_max
-    token: __GRIND_BAND_MODERATELY_RESTRICTIVE_MAX__
+    field: duration_ratio_band_moderately_restrictive_max
+    translation_key: duration_ratio_band_moderately_restrictive_max
+    token: __DURATION_RATIO_BAND_MODERATELY_RESTRICTIVE_MAX__
     min: 0.3
     max: 2.0
     step: 0.01
@@ -425,7 +430,7 @@ number:
     token: __GRIND_BAND_MODERATELY_RESTRICTIVE_DELTA__
     min: -5.0
     max: 5.0
-    step: 0.1
+    step: 0.5
     mode: box
 
   grind_band_grossly_restrictive_delta:
@@ -435,7 +440,7 @@ number:
     token: __GRIND_BAND_GROSSLY_RESTRICTIVE_DELTA__
     min: -5.0
     max: 5.0
-    step: 0.1
+    step: 0.5
     mode: box
 
   # --- Puck-prep issue streak override (expert_rules.grind_correction) ---

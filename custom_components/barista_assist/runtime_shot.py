@@ -559,7 +559,18 @@ class RuntimeShotMixin:
         previous_grind_correction_shot = await self.hass.async_add_executor_job(
             self.db.previous_grind_correction_shot, shot.bag.id, shot.id
         )
-        flow_analysis_config = FlowAnalysisConfig(**self.definitions.flow_analysis_constants)
+        # duration_ratio_bands is overridden with the live, dashboard-tuned
+        # values (see _live_duration_ratio_bands) rather than taken as-is
+        # from flow_analysis_constants, so a user editing grind_band_*_max
+        # moves this shot's own too_fast/too_restrictive classification the
+        # same way it moves grind-correction's own banding below - the two
+        # were never meant to be independently tunable copies.
+        flow_analysis_config = FlowAnalysisConfig(
+            **{
+                **self.definitions.flow_analysis_constants,
+                "duration_ratio_bands": self._live_duration_ratio_bands(),
+            }
+        )
         analysis = analyze_shot(
             shot.samples,
             target_yield_g=shot.target_yield_g,
@@ -593,6 +604,7 @@ class RuntimeShotMixin:
             analysis.classification,
             analysis.duration_ratio,
             self._grind_correction_config(),
+            flow_analysis_config.duration_ratio_bands,
             current_recipe=current_recipe,
             previous_shot=previous_grind_correction_shot,
         )

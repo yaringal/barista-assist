@@ -198,8 +198,39 @@ flow_analysis_constants:
   # guess, not a real derivation. Due for replacement once real instrumented
   # shot history exists. Full derivation: docs/data/DIAL_IN_RULES.md Part 4.
   expected_flow_g_s: 1.7
-  too_fast_factor: 0.88
-  too_restrictive_factor: 1.10
+
+  # Shared, stage-agnostic duration_ratio severity ladder - named tiers of
+  # how far a shot's actual duration deviated from expected_s. Two things
+  # read this same list: flow_analysis.py's analyze_shot derives its
+  # too_fast/healthy/too_restrictive verdict from the "healthy" entry's own
+  # edges alone (_healthy_duration_ratio_bounds; "healthy"'s own max, and
+  # the entry right before it, are exactly the 0.88/1.10 cutoffs the
+  # expected_flow_g_s derivation above was fit against) - grind_correction.py
+  # (expert_rules.grind_correction.grind_deltas) uses the full ladder to
+  # size a correction. This used to be two copies of the same idea (a flat
+  # too_fast_factor/too_restrictive_factor pair here, and a duplicated
+  # duration_ratio_max on grind_correction's own "slightly_fast"/"healthy"
+  # bands) that happened to agree only because nothing forced them to -
+  # single-sourcing it here means editing a boundary (or its
+  # dashboard-editable grind_band_*_max counterpart) now genuinely changes
+  # both Stage 1 classification and grind-correction banding together,
+  # not just one silently-diverging copy of it. duration_ratio_max: null
+  # on the last entry is the unbounded catch-all (grossly_restrictive).
+  duration_ratio_bands:
+    - name: grossly_fast  # anything under 0.60 is grossly_fast
+      duration_ratio_max: 0.60
+    - name: moderately_fast  # 0.6 < moderately_fast < 0.75
+      duration_ratio_max: 0.75
+    - name: slightly_fast  # 0.75 < slightly_fast < 0.88
+      duration_ratio_max: 0.88
+    - name: healthy  # 0.88 < healthy < 1.10
+      duration_ratio_max: 1.10
+    - name: slightly_restrictive  # 1.10 < slightly_restrictive < 1.30
+      duration_ratio_max: 1.30
+    - name: moderately_restrictive  # 1.30 < moderately_restrictive < 1.60
+      duration_ratio_max: 1.60
+    - name: grossly_restrictive  # anything above 1.60 is grossly_restrictive
+      duration_ratio_max: null
 
 # =============================================================================
 # stop_latency_calibration - runtime_shot.py's online-learning calibration
@@ -295,41 +326,28 @@ expert_rules:
     hold_constant: [dose_g, target_yield_g, temperature_offset_c, preinfusion_s]
 
     # duration_ratio = actual/expected shot duration. Below 1.0 = fast;
-    # above = slow/restrictive. Bands ascend by duration_ratio_max; a shot
-    # picks the first band whose max it's <= (grossly_restrictive, no max,
-    # catches the rest). healthy's edges (0.88/1.10) are video-derived
-    # above; the finer tiers beyond that are placeholder anchors - no video
-    # gives numeric ratios for "moderately" vs "grossly" off, only
+    # above = slow/restrictive. The band boundaries themselves
+    # (flow_analysis_constants.duration_ratio_bands, shared with Stage 1's
+    # own classification - see that key's own comment) aren't redefined
+    # here; this is just each named tier's own DF54 correction.
+    # grossly_fast/moderately_fast/slightly_fast/slightly_restrictive/
+    # moderately_restrictive's finer tiers are placeholder anchors - no
+    # video gives numeric ratios for "moderately" vs "grossly" off, only
     # qualitative language. Revisit once real shot history exists.
     #
-    # Every duration_ratio_max (except grossly_restrictive's fixed max) and
-    # every grind_delta (except healthy's fixed 0.0 - recommend_grind_
+    # Every grind_delta (except healthy's fixed 0.0 - recommend_grind_
     # delta's own healthy_index lookup) is a dashboard-editable number
-    # entity (entities.yaml's grind_band_*) - these are just the seeded
-    # defaults; BaristaRuntime._grind_correction_config overrides with
-    # whatever's persisted.
-    bands:
-      - name: grossly_fast
-        duration_ratio_max: 0.6
-        grind_delta: -2.0
-      - name: moderately_fast
-        duration_ratio_max: 0.75
-        grind_delta: -1.0
-      - name: slightly_fast
-        duration_ratio_max: 0.88
-        grind_delta: -0.5
-      - name: healthy
-        duration_ratio_max: 1.10
-        grind_delta: 0.0
-      - name: slightly_restrictive
-        duration_ratio_max: 1.30
-        grind_delta: 0.5
-      - name: moderately_restrictive
-        duration_ratio_max: 1.60
-        grind_delta: 1.0
-      - name: grossly_restrictive
-        duration_ratio_max: null
-        grind_delta: 2.0
+    # entity (entities.yaml's grind_band_*_delta) - these are just the
+    # seeded defaults; BaristaRuntime._grind_correction_config overrides
+    # with whatever's persisted.
+    grind_deltas:
+      grossly_fast: -2.0
+      moderately_fast: -1.0
+      slightly_fast: -0.5
+      healthy: 0.0
+      slightly_restrictive: 0.5
+      moderately_restrictive: 1.0
+      grossly_restrictive: 2.0
 
     # ~5-10g, grinder-dependent (Grind Size ep, rule 4): a shot pulled right
     # after a grind change mixes old/new grounds until purged, so it isn't

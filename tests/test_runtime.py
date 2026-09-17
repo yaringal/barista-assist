@@ -45,6 +45,7 @@ from runtime_fakes import (  # noqa: E402
 
 runtime_module = ha_stubs.import_runtime_module()
 runtime_peripherals_module = ha_stubs.import_barista_module("runtime_peripherals")
+flow_analysis_module = ha_stubs.import_barista_module("flow_analysis")
 BaristaRuntime = runtime_module.BaristaRuntime
 ShotPhase = runtime_module.ShotPhase
 HomeAssistantError = runtime_module.HomeAssistantError
@@ -555,17 +556,14 @@ class ShotMarkersTests(RuntimeTestCase):
         )
         self.assertEqual(markers["target_yield_g"], 36.0)
         # too_fast_factor/too_restrictive_factor are the same boundary
-        # multipliers analyze_shot itself classifies against - the chart's
-        # healthy-window shading must use these exact values, not its own
-        # separately-hardcoded copy.
-        self.assertEqual(
-            markers["too_fast_factor"],
-            self.runtime.definitions.flow_analysis_constants["too_fast_factor"],
+        # multipliers analyze_shot itself classifies against (derived from
+        # the live duration_ratio_bands, not a separately-hardcoded copy) -
+        # the chart's healthy-window shading must use these exact values.
+        expected_too_fast, expected_too_restrictive = flow_analysis_module.healthy_duration_ratio_bounds(
+            self.runtime._live_duration_ratio_bands()
         )
-        self.assertEqual(
-            markers["too_restrictive_factor"],
-            self.runtime.definitions.flow_analysis_constants["too_restrictive_factor"],
-        )
+        self.assertEqual(markers["too_fast_factor"], expected_too_fast)
+        self.assertEqual(markers["too_restrictive_factor"], expected_too_restrictive)
 
     async def test_reflects_the_last_finished_shot(self):
         await self.start_shot(preinfusion_s=1.0)
@@ -578,14 +576,11 @@ class ShotMarkersTests(RuntimeTestCase):
         self.assertEqual(markers["preinfusion_ms"], 1000)
         self.assertIsNotNone(markers["expected_flow_g_s"])
         self.assertEqual(markers["target_yield_g"], 36.0)
-        self.assertEqual(
-            markers["too_fast_factor"],
-            self.runtime.definitions.flow_analysis_constants["too_fast_factor"],
+        expected_too_fast, expected_too_restrictive = flow_analysis_module.healthy_duration_ratio_bounds(
+            self.runtime._live_duration_ratio_bands()
         )
-        self.assertEqual(
-            markers["too_restrictive_factor"],
-            self.runtime.definitions.flow_analysis_constants["too_restrictive_factor"],
-        )
+        self.assertEqual(markers["too_fast_factor"], expected_too_fast)
+        self.assertEqual(markers["too_restrictive_factor"], expected_too_restrictive)
 
     async def test_is_empty_with_no_shot_ever(self):
         self.assertEqual(self.runtime._shot_markers(), {})
@@ -1226,7 +1221,7 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
     async def test_grind_band_entity_overrides_the_yaml_default_delta(self):
         """grind_band_grossly_fast_delta (a dashboard-editable number
         entity, the same pattern as min_step_target_yield) overrides
-        expert_rules.grind_correction.bands' grossly_fast grind_delta for
+        expert_rules.grind_correction.grind_deltas' grossly_fast entry for
         recommend_grind_delta, via BaristaRuntime._grind_correction_config -
         not just seeded from it and then ignored."""
         grossly_fast_delta = next(
@@ -1277,8 +1272,8 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         "lower ≤ name ≤ upper" chains from (a band's lower bound is simply
         the previous band's own seconds_upper)."""
         reference = self._grind_band_reference_expected_s()
-        expected = self.runtime.grind_band_moderately_fast_max * reference
-        self.assertEqual(self._seconds_upper("grind_band_moderately_fast_max"), expected)
+        expected = self.runtime.duration_ratio_band_moderately_fast_max * reference
+        self.assertEqual(self._seconds_upper("duration_ratio_band_moderately_fast_max"), expected)
 
     async def test_grind_band_seconds_upper_tracks_a_live_dashboard_edit(self):
         """seconds_upper is computed live off the current grind_band_*_max
@@ -1287,16 +1282,16 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         moderately_fast_max = next(
             d
             for d in self.runtime.definitions.platform("number")
-            if d.key == "grind_band_moderately_fast_max"
+            if d.key == "duration_ratio_band_moderately_fast_max"
         )
         await self.runtime.async_set_entity_value(moderately_fast_max, 0.7)
         reference = self._grind_band_reference_expected_s()
         self.assertEqual(
-            self._seconds_upper("grind_band_moderately_fast_max"), 0.7 * reference
+            self._seconds_upper("duration_ratio_band_moderately_fast_max"), 0.7 * reference
         )
 
     async def test_seconds_upper_is_none_for_a_non_grind_band_entity(self):
-        """_grind_band_seconds_upper only covers _GRIND_BAND_MAX_FIELDS'
+        """_grind_band_seconds_upper only covers _DURATION_RATIO_BAND_MAX_FIELDS'
         six entities - anything else (e.g. a grind-band delta, which isn't
         a max at all) gets no such attribute."""
         self.assertIsNone(self._seconds_upper("grind_band_grossly_fast_delta"))

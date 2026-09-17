@@ -53,11 +53,14 @@ class DefinitionTests(unittest.TestCase):
         without breaking this test."""
         constants = self.defs.flow_analysis_constants
         self.assertGreater(constants["expected_flow_g_s"], 0)
-        # too_fast_factor/too_restrictive_factor bound "healthy" from below/
-        # above 1.0 (duration_ratio == expected/actual) - the ordering is a
-        # real requirement, not just today's chosen magnitudes.
-        self.assertLess(constants["too_fast_factor"], 1.0)
-        self.assertGreater(constants["too_restrictive_factor"], 1.0)
+        # duration_ratio_bands' "healthy" entry and the one right before it
+        # bound "healthy" from below/above 1.0 (duration_ratio ==
+        # expected/actual) - the ordering is a real requirement, not just
+        # today's chosen magnitudes.
+        bands = constants["duration_ratio_bands"]
+        healthy_index = next(i for i, band in enumerate(bands) if band["name"] == "healthy")
+        self.assertLess(bands[healthy_index - 1]["duration_ratio_max"], 1.0)
+        self.assertGreater(bands[healthy_index]["duration_ratio_max"], 1.0)
         self.assertGreater(constants["min_samples"], 0)
         self.assertGreater(constants["smoothing_window_ms"], 0)
 
@@ -79,12 +82,18 @@ class DefinitionTests(unittest.TestCase):
             set(grind_correction["excludes_classification"]),
             {"puck_prep_issue", "invalid_measurement"},
         )
-        self.assertTrue(grind_correction["bands"])
+        # The band boundaries themselves are shared with flow_analysis.py
+        # (flow_analysis_constants.duration_ratio_bands, not redefined
+        # here) - grind_correction only maps each of those same band names
+        # to its own DF54 delta.
+        bands = self.defs.flow_analysis_constants["duration_ratio_bands"]
+        self.assertTrue(bands)
         # Ascending, per grind_correction.py's own assumption that the first
         # matching band (lowest duration_ratio_max) wins.
-        maximums = [band["duration_ratio_max"] for band in grind_correction["bands"][:-1]]
+        maximums = [band["duration_ratio_max"] for band in bands[:-1]]
         self.assertEqual(maximums, sorted(maximums))
-        self.assertIsNone(grind_correction["bands"][-1]["duration_ratio_max"])
+        self.assertIsNone(bands[-1]["duration_ratio_max"])
+        self.assertEqual(set(grind_correction["grind_deltas"]), {band["name"] for band in bands})
 
     def test_flavor_feedback_delay_is_loaded(self):
         """A one-off UX knob a human retunes directly in YAML (see its own

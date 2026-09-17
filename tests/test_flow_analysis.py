@@ -157,8 +157,14 @@ class FlowAnalysisTests(unittest.TestCase):
         self.assertEqual(under_real_config.classification, ShotClassification.HEALTHY)
 
         # a shot at exactly the expected rate is now "too fast" under this
-        # tighter factor
-        tighter_config = dataclasses.replace(CONFIG, too_fast_factor=0.99)
+        # tighter factor - too_fast_factor is derived from the band right
+        # before "healthy" (slightly_fast), not a flat field anymore, so
+        # that's the one entry this replaces.
+        tighter_bands = tuple(
+            {**band, "duration_ratio_max": 0.99} if band["name"] == "slightly_fast" else band
+            for band in CONFIG.duration_ratio_bands
+        )
+        tighter_config = dataclasses.replace(CONFIG, duration_ratio_bands=tighter_bands)
         under_explicit_config = analyze_shot(
             samples,
             target_yield_g=TARGET_YIELD_G,
@@ -509,7 +515,7 @@ class FlowAnalysisTests(unittest.TestCase):
         # 0.3 g/s^2 acceleration doesn't scale with that constant, so
         # simply keeping switch_s proportional to expected_flow_g_s isn't
         # enough on its own. Needs re-tuning again if expected_flow_g_s or
-        # too_fast_factor/too_restrictive_factor move enough to shift the
+        # duration_ratio_bands' "healthy" edges move enough to shift the
         # healthy band off this point.
         switch_s = 17.0
         base_rate = (2 / 3 * TARGET_YIELD_G) / switch_s  # reach the late-third boundary right at the switch

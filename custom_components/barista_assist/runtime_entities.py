@@ -16,12 +16,13 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .definitions import EntityDefinition
 from .flavor_correction import resolve_flavor_state
+from .flow_analysis import healthy_duration_ratio_bounds
 from .runtime_shared import (
     _FLAVOR_AXES,
     _FLAVOR_TAG_LABELS,
     _GRIND_BAND_CONTROLLER_FIELDS,
     _GRIND_BAND_DELTA_FIELDS,
-    _GRIND_BAND_MAX_FIELDS,
+    _DURATION_RATIO_BAND_MAX_FIELDS,
     _MIN_STEP_FIELDS,
     _PUCK_PREP_STREAK_CONTROLLER_FIELDS,
 )
@@ -113,30 +114,50 @@ class RuntimeEntitiesMixin:
             "minimum_meaningful_step": {**config["minimum_meaningful_step"], **overrides},
         }
 
-    def _grind_correction_config(self) -> dict[str, Any]:
-        """expert_rules.grind_correction, with each band's duration_ratio_max/
-        grind_delta overridden by this installation's dashboard-editable
-        grind_band_* attributes (see _GRIND_BAND_MAX_FIELDS/
-        _GRIND_BAND_DELTA_FIELDS) - the live, possibly user-tuned values, not
-        just the YAML defaults. grossly_restrictive's duration_ratio_max
-        (there is no such override - it's always the catch-all last band)
-        and healthy's grind_delta (always 0.0 - grind_correction.
-        recommend_grind_delta's overshoot damping locates "no correction
-        needed" by that exact value) are left untouched. Returns a copy;
-        never mutates self.definitions.expert_rules in place."""
-        config = self.definitions.expert_rules["grind_correction"]
+    def _live_duration_ratio_bands(self) -> list[dict[str, Any]]:
+        """flow_analysis_constants.duration_ratio_bands, with each band's
+        duration_ratio_max overridden by this installation's
+        dashboard-editable grind_band_*_max attributes (see
+        _DURATION_RATIO_BAND_MAX_FIELDS) - the live, possibly user-tuned values, not
+        just the YAML defaults. Shared, stage-agnostic list: runtime_shot.py's
+        _async_finalize builds flow_analysis.FlowAnalysisConfig with this
+        (not the raw YAML list) so Stage 1's own too_fast/too_restrictive
+        classification reflects the same live edits, and
+        _grind_correction_config's caller passes this same list to
+        grind_correction.recommend_grind_delta for Stage 2's band lookup -
+        editing one of these entities is meant to move both together, not
+        just grind-correction's own magnitude (see duration_ratio_bands'
+        own comment in definitions.yaml). grossly_restrictive has no
+        override - it's always the catch-all last band, duration_ratio_max
+        stays None. Returns a new list of copied dicts; never mutates
+        self.definitions.flow_analysis_constants in place."""
         bands = []
-        for band in config["bands"]:
+        for band in self.definitions.flow_analysis_constants["duration_ratio_bands"]:
             name = band["name"]
             overridden = dict(band)
-            max_attr = _GRIND_BAND_MAX_FIELDS.get(name)
+            max_attr = _DURATION_RATIO_BAND_MAX_FIELDS.get(name)
             if max_attr is not None:
                 overridden["duration_ratio_max"] = getattr(self, max_attr)
-            delta_attr = _GRIND_BAND_DELTA_FIELDS.get(name)
-            if delta_attr is not None:
-                overridden["grind_delta"] = getattr(self, delta_attr)
             bands.append(overridden)
-        return {**config, "bands": bands}
+        return bands
+
+    def _grind_correction_config(self) -> dict[str, Any]:
+        """expert_rules.grind_correction, with grind_deltas overridden by
+        this installation's dashboard-editable grind_band_*_delta
+        attributes (see _GRIND_BAND_DELTA_FIELDS) - the live, possibly
+        user-tuned values, not just the YAML defaults. healthy's grind_delta
+        (always 0.0 - grind_correction.recommend_grind_delta's overshoot
+        damping locates "no correction needed" by that exact value) is left
+        untouched. The band boundaries themselves no longer live here at
+        all - see _live_duration_ratio_bands, the shared list
+        recommend_grind_delta now takes as its own separate argument.
+        Returns a copy; never mutates self.definitions.expert_rules in
+        place."""
+        config = self.definitions.expert_rules["grind_correction"]
+        grind_deltas = dict(config["grind_deltas"])
+        for name, delta_attr in _GRIND_BAND_DELTA_FIELDS.items():
+            grind_deltas[name] = getattr(self, delta_attr)
+        return {**config, "grind_deltas": grind_deltas}
 
     def _flavor_axis_state(
         self, axis: str
@@ -476,17 +497,17 @@ class RuntimeEntitiesMixin:
     def _grind_band_seconds_upper(self, definition: EntityDefinition) -> float | None:
         """This grind-band max entity's own boundary, in seconds
         (_reference_expected_s() times its live duration_ratio value).
-        None for any entity that isn't one of _GRIND_BAND_MAX_FIELDS' six.
+        None for any entity that isn't one of _DURATION_RATIO_BAND_MAX_FIELDS' six.
 
         Deliberately just this one number, not a pre-formatted "(X ≤ Y)"
         string: dashboard.yaml's markdown card (the only consumer - see its
         own comment) builds each line's "lower ≤ name ≤ upper" chain itself
         by reading two consecutive bands' own seconds_upper (band N's lower
         bound is band N-1's own upper bound, and grossly_restrictive's own
-        lower bound is grind_band_moderately_restrictive_max's), which
+        lower bound is duration_ratio_band_moderately_restrictive_max's), which
         needs the raw numbers, not a string already bundling two of them
         together."""
-        fields = list(_GRIND_BAND_MAX_FIELDS.values())
+        fields = list(_DURATION_RATIO_BAND_MAX_FIELDS.values())
         field = str(definition.field)
         if field not in fields:
             return None
@@ -535,21 +556,24 @@ class RuntimeEntitiesMixin:
         target_yield_g/expected_flow_g_s rather than folding it in,
         matching analyze_shot's own expected_s formula exactly (see
         barista-assist-dashboard.js's healthyWindow). too_fast_factor/
-        too_restrictive_factor (flow_analysis_constants) are the same
-        multipliers analyze_shot itself uses against expected_s to draw
-        the line between too_fast/healthy/too_restrictive - the frontend
-        reuses them rather than re-deriving its own boundary, so the
-        shaded window can never silently diverge from what actually
-        classified the shot. Same live-vs-frozen dual source as
-        _shot_plot_points. self.last_shot (the "no active shot" fallback
-        below) is itself scoped to the currently selected bag
+        too_restrictive_factor are read off _live_duration_ratio_bands()
+        (healthy_duration_ratio_bounds - the same shared, live,
+        dashboard-tuned bands runtime_shot.py's _async_finalize classifies
+        against, not the raw YAML defaults) rather than re-derived from a
+        separate boundary of its own, so the shaded window can never
+        silently diverge from what actually classified the shot, and
+        editing duration_ratio_band_slightly_fast_max/duration_ratio_band_healthy_max from
+        the dashboard moves this shading too. Same live-vs-frozen dual
+        source as _shot_plot_points. self.last_shot (the "no active shot"
+        fallback below) is itself scoped to the currently selected bag
         (storage.latest_shot_bag), not global across every bag/slot -
         switching slots switches which shot's markers this shows. None
         values mean "not known yet" (e.g. stop_command_elapsed_ms before
         the shot has actually stopped) - the frontend must not treat that
         as zero."""
-        too_fast_factor = self.definitions.flow_analysis_constants["too_fast_factor"]
-        too_restrictive_factor = self.definitions.flow_analysis_constants["too_restrictive_factor"]
+        too_fast_factor, too_restrictive_factor = healthy_duration_ratio_bounds(
+            self._live_duration_ratio_bands()
+        )
         shot = self.active_shot
         if shot is not None and shot.press_monotonic is not None:
             return {
