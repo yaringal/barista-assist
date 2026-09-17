@@ -190,6 +190,8 @@ const CHART_STYLES = `
   .event-labels { position: relative; height: 14px; font-size: 0.65rem; opacity: 0.75; }
   .event-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
   .event-labels .stop-label { color: var(--error-color, #c62828); }
+  .event-labels .pi-label { color: var(--secondary-text-color, #888); }
+  .event-labels .healthy-label { color: var(--success-color, #2e7d32); }
 `;
 
 // The "healthy" time window for a shot - the same [too_fast_factor,
@@ -312,9 +314,24 @@ function renderShotChart(samples, markers = {}) {
   const stopLine = hasStopMarker
     ? `<line class="stop-line" x1="${x(stopMs).toFixed(1)}" y1="${padding}" x2="${x(stopMs).toFixed(1)}" y2="${height - padding}" />`
     : "";
-  const eventLabels = hasStopMarker
-    ? `<div class="event-labels"><span class="stop-label" style="left:${((x(stopMs) / width) * 100).toFixed(2)}%">Stop</span></div>`
+  // Positioned directly under the chart, above the x-axis tick labels
+  // (axis-labels below) - closer to the axis line they annotate than the
+  // tick numbers are, since they're naming a region/instant on the chart
+  // itself rather than a generic time scale.
+  const piLabel =
+    preinfusionMs > 0
+      ? `<span class="pi-label" style="left:${(((padding + x(preinfusionMs)) / 2 / width) * 100).toFixed(2)}%">Pre-infusion</span>`
+      : "";
+  const healthyLabel = healthy
+    ? `<span class="healthy-label" style="left:${(((x(healthy.start_ms) + x(healthy.end_ms)) / 2 / width) * 100).toFixed(2)}%">Healthy</span>`
     : "";
+  const stopLabel = hasStopMarker
+    ? `<span class="stop-label" style="left:${((x(stopMs) / width) * 100).toFixed(2)}%">Stop</span>`
+    : "";
+  const eventLabels =
+    piLabel || healthyLabel || stopLabel
+      ? `<div class="event-labels">${piLabel}${healthyLabel}${stopLabel}</div>`
+      : "";
 
   return `
     <div class="chart-wrap">
@@ -329,8 +346,8 @@ function renderShotChart(samples, markers = {}) {
         ${targetLine}
         <line class="cursor-line" x1="0" y1="${padding}" x2="0" y2="${height - padding}" />
       </svg>
-      <div class="axis-labels">${axisLabels}</div>
       ${eventLabels}
+      <div class="axis-labels">${axisLabels}</div>
       <div class="chart-tooltip"></div>
     </div>
     <div class="legend">
