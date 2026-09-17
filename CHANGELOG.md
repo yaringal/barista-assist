@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3
+
+### Changed
+
+- **`too_fast_factor`/`too_restrictive_factor` (Stage 1 classification) and `grind_correction.bands` (Stage 2 grind correction) used to hardcode the same `0.88`/`1.10` duration-ratio boundaries in two separate places, with no link between them.** Split into a single shared, stage-agnostic `flow_analysis_constants.duration_ratio_bands` ladder (7 named bands, `grossly_fast` through `grossly_restrictive`) that both `flow_analysis.analyze_shot` and `grind_correction.recommend_grind_delta` now read from, plus a separate `expert_rules.grind_correction.grind_deltas` mapping that holds grind-correction's own per-band delta policy (its only remaining independent piece of tuning data). The dashboard-editable band-boundary entities now genuinely drive both stages at once instead of two independently-editable copies that could silently diverge.
+- **The System view's grind-correction section is now two separate cards**: "Shot health categories" (the 6 shared duration-ratio band boundaries, now used by classification and grind correction alike) and "Grind correction" (the 7 grind-delta entities plus the puck-prep streak overrides) - reflecting that the band boundaries are no longer grind-correction-specific.
+- **The 6 boundary entities were renamed to drop "grind" from their names**, since they're no longer grind-correction-specific: `grind_band_grossly_fast_max` → `duration_ratio_band_grossly_fast_max` (and equivalently for `moderately_fast`/`slightly_fast`/`healthy`/`slightly_restrictive`/`moderately_restrictive`). The 7 grind-delta entities (`grind_band_*_delta`) are unchanged - they remain grind-correction's own policy. This is a straight rename, not a migration: the old entities become unavailable and any dashboard-tuned override values under the old names are not carried forward (see Upgrade below).
+- **Shot charts now shade the "healthy" completion window in green (matching how pre-infusion is already shaded in grey) and draw a dashed target-yield line across it**, instead of a single-point "expected completion" marker. The window's edges are the same `too_fast_factor`/`too_restrictive_factor` bounds classification itself uses (never re-derived or hardcoded in the chart), so it can't silently drift out of sync with what actually classified the shot.
+- **Charts now label the pre-infusion, healthy, and stop regions directly under the chart** (grey/green/red text respectively, matching each region's own shading), positioned just below the plot itself, above the x-axis tick numbers.
+
+### Testing
+
+- Full suite: 318 tests, all passing.
+
 ## 0.3.2
 
 ### Fixed
