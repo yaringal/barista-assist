@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.5
+
+### Fixed
+
+- **Fixed another fresh-install/update failure, the same shape as 0.2.5's `bleak-retry-connector` fix**: `manifest.json` hard-pinned `bleak-retry-connector==4.6.3`, which now conflicts with a newer Home Assistant's own `bluetooth` component constraint (`bleak-retry-connector==4.7.1` as of HA 2026.9). HA's requirements installer failed with `RequirementsNotFound`, and the integration wouldn't load at all. Rather than bumping the pin again (which would only defer the same failure to HA's next bump), the explicit requirement is dropped entirely: Barista Assist already depends on `bluetooth_adapters`, which itself depends on `bluetooth`, so `bleak-retry-connector` is already guaranteed to be installed at whatever version HA core pins - the library's actual API surface this integration uses (`establish_connection`, `BleakClientWithServiceCache`) hasn't had a breaking change between 4.6.3 and 4.7.1.
+
+### Testing
+
+- Full suite: 321 tests, all passing (no test coverage for `manifest.json` itself - this can only really be verified by a live HA install).
+
 ## 0.3.4
 
 ### Added
