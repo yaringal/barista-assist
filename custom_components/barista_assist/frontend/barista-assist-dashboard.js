@@ -374,19 +374,22 @@ function renderShotChart(samples, markers = {}) {
   const predictedStopLabel = hasPredictedStopMarker
     ? `<span class="predicted-stop-label" style="left:${((x(predictedStopMs) / width) * 100).toFixed(2)}%">Stop Prediction</span>`
     : "";
-  // Stop Sent is positioned directly under the chart (right after the svg,
-  // before the x-axis tick numbers below) - as close to the plot's own
-  // bottom edge as the tightened bottom padding allows.
-  const eventLabels = stopLabel ? `<div class="event-labels">${stopLabel}</div>` : "";
-  // Pre-infusion/Healthy/Stop Prediction are overlaid tight against the
-  // top of the graph instead (like y-axis-labels) - Stop Prediction is
-  // always close in time to Stop Sent (the whole point is showing the
-  // machine's own small physical stop latency between them), so sharing
-  // Stop Sent's row down there would make the two text labels overlap.
-  const topLabels =
-    piLabel || healthyLabel || predictedStopLabel
-      ? `<div class="top-labels">${piLabel}${healthyLabel}${predictedStopLabel}</div>`
+  // Pre-infusion/Healthy/Stop Sent are positioned directly under the chart
+  // (right after the svg, before the x-axis tick numbers below) - as close
+  // to the plot's own bottom edge as the tightened bottom padding allows.
+  const eventLabels =
+    piLabel || healthyLabel || stopLabel
+      ? `<div class="event-labels">${piLabel}${healthyLabel}${stopLabel}</div>`
       : "";
+  // Stop Prediction is overlaid tight against the top of the graph instead
+  // (like y-axis-labels) - it's always close in time to Stop Sent (the
+  // whole point is showing the machine's own small physical stop latency
+  // between them), so sharing Stop Sent's row down there would make the
+  // two text labels overlap. Healthy stays down in the bottom row (not up
+  // here too) since a healthy shot's own stop naturally lands inside the
+  // healthy window, putting Healthy and Stop Prediction at nearly the same
+  // x-position - keeping them on separate rows avoids that overlap too.
+  const topLabels = predictedStopLabel ? `<div class="top-labels">${predictedStopLabel}</div>` : "";
 
   return `
     <div class="chart-wrap">
