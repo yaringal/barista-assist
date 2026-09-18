@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.6
+
+### Added
+
+- **A new "Send test notification" button (System view → Settings)** sends a real test push through your configured notification service on demand, so you can verify it actually works without waiting for a real healthy shot to trigger the automatic taste-feedback notification naturally. Unlike that automatic path (a silent no-op when nothing's configured, which is right for an unattended background task), this button raises a clear error if no service is configured.
+
+### Fixed
+
+- **Fixed another "integration failed to load" error, reported right after an update**: `entity.py` read `manifest.json` itself (via `const.py`'s `integration_version()`) to set each entity's `sw_version`, using a plain `Path.read_text()` - blocking disk I/O that Home Assistant flagged happening directly on the event loop the first time any entity was constructed. Rather than just moving that same read into an executor, it's removed entirely: Home Assistant already parses and caches every integration's own `manifest.json` (`homeassistant.loader.async_get_integration`), so `__init__.py` now reads the version from there instead of re-reading the file itself.
+- **A shot chart's own "Weight (max ...g)" legend could show a higher number than the shot's actual recorded weight** (reported as the graph showing "38.9g" for a shot that clearly didn't reach that). Caused by 0.3.4's chart-headroom fix, which computed the axis's padded scaling value and displayed that same padded number in the legend instead of the real recorded max. The legend (and y-axis ticks) now always show the real max; the padding is applied only to the invisible scaling behind it.
+- **A shot chart's plotted curve could silently omit the shot's own true final (and highest) recorded weight**, for shots long enough to need downsampling (over ~300 samples) - the downsampling only kept that point when it happened to land on a step boundary, true for most shot lengths only by coincidence. The true final sample is now always included.
+- **Pre-infusion/Healthy chart labels moved back to their own row directly under the chart** (only "Stop Prediction" stays overlaid at the top) - having Healthy up there too meant it regularly overlapped Stop Prediction, since a healthy shot's own stop naturally lands inside the healthy window.
+
+### Testing
+
+- Added a real shot fixture (`healthy_astringent_adapt_pi`) from a live report of a shot that classified healthy but tasted astringent - documents that "healthy" (correct timing) and "tasted good" are genuinely different questions this integration answers with two separate systems, not one.
+- Full suite: 326 tests, all passing (up from 321).
+
 ## 0.3.5
 
 ### Fixed

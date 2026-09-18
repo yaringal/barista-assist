@@ -1,15 +1,22 @@
-# Barista Assist v0.3.5
+# Barista Assist v0.3.6
 
-A critical fix: the integration failed to load at all after updating to a recent Home Assistant version.
+Another load-failure fix, two chart accuracy bugs, and a new way to test your notification setup on demand.
+
+## Added
+
+- A "Send test notification" button (System view → Settings) sends a real test push through your configured notification service right away, so you can check it works without waiting for a real healthy shot.
 
 ## Fixed
 
-- Home Assistant now ships a newer `bleak-retry-connector` (4.7.1) than the exact version Barista Assist's `manifest.json` pinned (4.6.3), so Home Assistant's requirements installer refused to load the integration at all ("Requirements for barista_assist not found"). The pin has been removed entirely - Barista Assist already depends on Home Assistant's own Bluetooth stack, which guarantees a compatible version is installed, so pinning our own copy was both redundant and the actual cause of the conflict. This is the same failure shape as a previous release's fix (see CHANGELOG), which only bumped the pin rather than removing it - so it recurred the next time Home Assistant moved its own version.
+- Fixed another "integration failed to load" error some of you hit after updating - a leftover blocking file read on startup. Now uses Home Assistant's own already-loaded integration data instead of reading the integration's own files again.
+- A shot chart's "Weight (max ...g)" legend could show a higher number than the shot actually reached. The legend now always shows the real recorded max.
+- A shot chart's plotted curve could quietly leave off the shot's own final (and highest) weight reading, for longer shots. It's now always included.
+- The Pre-infusion/Healthy chart labels moved back under the chart (only Stop Prediction stays at the top), since Healthy was regularly overlapping Stop Prediction.
 
 ## Upgrade
 
-Update via HACS and restart Home Assistant as usual. If you're currently stuck on a version that won't load, this update should resolve it once installed.
+No manual steps required. Update via HACS and restart Home Assistant as usual - no entities were renamed or removed in this release.
 
 ## Testing
 
-- Full suite: 321 tests, all passing. This specific fix has no automated test coverage (it can only really be verified by a live Home Assistant install), so please report back if you still see a load failure after updating.
+- Full suite: 326 tests, all passing (up from 321).
