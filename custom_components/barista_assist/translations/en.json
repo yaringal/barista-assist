@@ -251,6 +251,9 @@
       },
       "create_bag": {
         "name": "Create or replace selected bag"
+      },
+      "test_notification": {
+        "name": "Send test notification"
       }
     }
   },

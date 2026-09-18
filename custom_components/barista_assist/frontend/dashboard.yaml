@@ -450,3 +450,11 @@ views:
             tap_action:
               action: navigate
               navigation_path: /config/integrations/integration/barista_assist
+          - type: button
+            name: Send test notification
+            icon: mdi:bell-ring-outline
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: __TEST_NOTIFICATION__

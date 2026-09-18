@@ -232,6 +232,34 @@ class RuntimePeripheralsMixin:
         await self.scale.async_tare()
 
     # -- taste-feedback push notifications --
+    async def async_send_test_notification(self) -> None:
+        """Manual diagnostic for the Settings view's "Send test
+        notification" button - sends one real notify.<service> call (the
+        same CONF_NOTIFY_SERVICE option the automatic flavor-feedback path
+        below uses) so a user can verify their configured service actually
+        works without waiting for a real healthy shot to trigger that path
+        naturally. Unlike _schedule_flavor_feedback_notifications (which
+        silently no-ops when nothing's configured - appropriate for a
+        background task with no one watching for it right then), this
+        raises, so a button press with nothing configured surfaces a clear
+        error in the UI instead of doing nothing with no explanation."""
+        service = self.entry.options.get(CONF_NOTIFY_SERVICE)
+        if not service:
+            raise HomeAssistantError(
+                "No notification service configured - set one in this integration's options first"
+            )
+        _LOGGER.debug("Sending test notification via notify.%s", service)
+        await self.hass.services.async_call(
+            "notify",
+            service,
+            {
+                "message": (
+                    "Barista Assist test notification - if you can see this, "
+                    "your notify service is working."
+                )
+            },
+        )
+
     def _schedule_flavor_feedback_notifications(self, shot_id: str, bag_id: str) -> None:
         """Schedule the taste-feedback push notifications for a just-
         completed shot, flavor_feedback_delay_s from now (definitions.yaml's

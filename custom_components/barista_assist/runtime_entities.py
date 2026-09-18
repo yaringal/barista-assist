@@ -536,9 +536,21 @@ class RuntimeEntitiesMixin:
         if not samples:
             return []
         step = max(1, math.ceil(len(samples) / _SHOT_PLOT_MAX_POINTS))
+        downsampled = samples[::step]
+        # samples[::step] always keeps index 0, but only keeps the true
+        # final sample when (len(samples) - 1) is itself a multiple of
+        # step - true for most shot lengths only by coincidence. Weight is
+        # monotonically non-decreasing through a shot, so the dropped final
+        # sample is also its highest-recorded weight - the same value
+        # last_yield/"Total weight" (actual_yield_g) reports - so without
+        # this, the plotted curve's own visible endpoint could silently
+        # read lower than what the rest of the dashboard shows for the
+        # same shot.
+        if downsampled[-1] is not samples[-1]:
+            downsampled.append(samples[-1])
         return [
             [sample.elapsed_ms, sample.weight_g, round(sample.flow_g_s, 2)]
-            for sample in samples[::step]
+            for sample in downsampled
         ]
 
     def _shot_markers(self) -> dict[str, float | int | None]:
@@ -699,6 +711,7 @@ class RuntimeEntitiesMixin:
             "abort": self.async_abort,
             "tare": self.async_tare,
             "create_bag": self.async_create_bag_from_draft,
+            "test_notification": self.async_send_test_notification,
         }
         try:
             handler = actions[action]

@@ -572,3 +572,14 @@ button:
     action: create_bag
     translation_key: create_bag
     token: __CREATE_BAG__
+
+  test_notification:
+    # Diagnostic only - lets a user verify their configured notify_service
+    # actually works (e.g. after setting it up, or after it's stopped
+    # firing) without waiting for a real healthy shot to naturally
+    # trigger the flavor-feedback notification. No requires_* gating -
+    # always available, since "nothing configured yet" is exactly one of
+    # the states this button exists to let a user discover for themselves.
+    action: test_notification
+    translation_key: test_notification
+    token: __TEST_NOTIFICATION__

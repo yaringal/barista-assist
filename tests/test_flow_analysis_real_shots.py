@@ -406,5 +406,44 @@ class TooFastButFlaggedInvalidAdaptPiTests(unittest.TestCase):
         self.assertGreater(max(s.weight_g for s in early_samples), -0.2)
 
 
+class HealthyAstringentAdaptPiTests(unittest.TestCase):
+    """A shot classified healthy (duration_ratio=0.94, well inside the
+    healthy band, channeling_suspicion=0.17 well under the threshold) that
+    the barista's own taste call was "astringent" - flavor_mouthfeel_tag=
+    dry_astringent is a fixture annotation reflecting that recollection,
+    not raw export data (see real_shot_fixtures.py). analyze_shot has no
+    way to see this - it only ever looks at the recorded flow curve, never
+    flavor - so this fixture isn't a classifier regression test so much as
+    a record that "healthy" (correct timing) and "tasted good" are
+    genuinely different questions this integration answers with two
+    separate systems (Stage 1 timing classification here vs. the
+    flavor-correction/feedback-notification system in runtime_peripherals.py),
+    not one. Filed from a live bug report: "I had a healthy shot today but
+    no notification triggered" - the shot itself did classify healthy (so
+    a notification should have been scheduled), the actual gap turned out
+    to be elsewhere (see this session's own investigation)."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("healthy_astringent_adapt_pi")
+
+    def test_matches_the_barista_s_own_call(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "healthy")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
+
+    def test_the_fixture_carries_the_astringent_taste_annotation(self) -> None:
+        """Confirms the fixture loader actually parses the hand-added
+        flavor_mouthfeel_tag annotation, rather than silently falling back
+        to None the way most fixtures (predating flavor-tag capture) do."""
+        self.assertEqual(self.shot.flavor_mouthfeel_tag, "dry_astringent")
+
+
 if __name__ == "__main__":
     unittest.main()

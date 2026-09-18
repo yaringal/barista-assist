@@ -491,6 +491,28 @@ class ShotPlotPointsTests(RuntimeTestCase):
         self.assertEqual(last[2], 1.5)
         self.assertGreaterEqual(last[0], 0)  # elapsed_ms since press, not epoch time
 
+    async def test_downsampling_never_drops_the_true_final_sample(self):
+        """A shot longer than _SHOT_PLOT_MAX_POINTS (300) samples gets
+        downsampled via samples[::step], which only happens to keep the
+        true final sample when (len(samples) - 1) is itself a multiple of
+        step - true for most lengths only by coincidence. Here len=400,
+        step=2, and index 399 is odd, so the real bug (silently dropping
+        it) would otherwise show. Weight is monotonically non-decreasing
+        through a shot, so the dropped sample is also the shot's highest
+        recorded weight - the same value last_yield/"Total weight"
+        (actual_yield_g) reports - regression test for a real user report
+        of the chart's own apparent max reading lower than that tile."""
+        await self.start_shot(preinfusion_s=1.0)
+        await self.wait_for_extracting()
+        self.runtime.active_shot.samples = [
+            ShotSample(i, i * 100, i * 100, float(i) / 10, 1.0, 90) for i in range(400)
+        ]
+
+        points = self.runtime._shot_plot_points()
+
+        last_sample = self.runtime.active_shot.samples[-1]
+        self.assertEqual(points[-1], [last_sample.elapsed_ms, last_sample.weight_g, last_sample.flow_g_s])
+
     async def test_freezes_at_the_last_shot_after_finalizing(self):
         await self.start_shot(preinfusion_s=1.0)
         await self.wait_for_extracting()
@@ -1457,6 +1479,30 @@ class FlavorFeedbackTests(RuntimeTestCase):
 
     async def test_send_flavor_feedback_notifications_is_a_noop_without_a_service(self):
         await self.runtime._async_send_flavor_feedback_notifications("shot-123", "bag-456")
+        self.assertEqual(self.hass.services.calls, [])
+
+    async def test_send_test_notification_sends_via_the_configured_service(self):
+        """The Settings view's "Send test notification" button - a manual
+        diagnostic reusing the same CONF_NOTIFY_SERVICE option, so a user
+        can verify it actually works without waiting for a real healthy
+        shot to trigger the automatic flavor-feedback path above."""
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+
+        await self.runtime.async_send_test_notification()
+
+        self.assertEqual(len(self.hass.services.calls), 1)
+        domain, service, data = self.hass.services.calls[0]
+        self.assertEqual(domain, "notify")
+        self.assertEqual(service, "mock_notify")
+        self.assertIn("message", data)
+
+    async def test_send_test_notification_raises_without_a_configured_service(self):
+        """Unlike the automatic flavor-feedback path (a silent no-op is
+        right for a background task nobody's watching), a button press
+        with nothing configured must surface a clear error instead of
+        silently doing nothing."""
+        with self.assertRaises(HomeAssistantError):
+            await self.runtime.async_send_test_notification()
         self.assertEqual(self.hass.services.calls, [])
 
     async def test_notification_action_event_records_the_tag(self):

@@ -269,16 +269,30 @@ function chartGeometry(samples, markers = {}) {
   ];
   const extraWeight = healthy ? [healthy.target_yield_g] : [];
   const maxT = Math.max(1, ...samples.map((s) => s.elapsed_ms), ...extraT);
-  // 8% headroom above the tallest point (a healthy shot's own weight curve
-  // ends right at target_yield_g, which is also this axis' own max before
-  // the headroom - without it, the target line/curve peak sits flush
-  // against the very top edge with nothing above it).
-  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...extraWeight) * 1.08;
+  // maxWeight is the real recorded max - shown as-is in the legend/used for
+  // y-axis tick generation, so those never report a fabricated number.
+  // scaleMaxWeight adds 8% headroom on top, for the *geometry* only (a
+  // healthy shot's own weight curve ends right at target_yield_g, which is
+  // also this axis' own max before the headroom - without it, the target
+  // line/curve peak sits flush against the very top edge with nothing
+  // above it).
+  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...extraWeight);
+  const scaleMaxWeight = maxWeight * 1.08;
   const maxFlow = Math.max(1, ...samples.map((s) => s.flow_g_s));
   const x = (t) => padding.left + (t / maxT) * (width - padding.left - padding.right);
   const yFor = (max) => (v) =>
     height - padding.bottom - (Math.max(0, v) / max) * (height - padding.top - padding.bottom);
-  return { width, height, padding, maxT, maxWeight, maxFlow, x, yWeight: yFor(maxWeight), yFlow: yFor(maxFlow) };
+  return {
+    width,
+    height,
+    padding,
+    maxT,
+    maxWeight,
+    maxFlow,
+    x,
+    yWeight: yFor(scaleMaxWeight),
+    yFlow: yFor(maxFlow),
+  };
 }
 
 // samples: [{elapsed_ms, weight_g, flow_g_s}, ...]. markers: see
