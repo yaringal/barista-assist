@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from functools import lru_cache
-from pathlib import Path
 from typing import Final
 
 DOMAIN: Final = "barista_assist"
@@ -27,13 +24,6 @@ BOOKOO_COMMAND_UUID: Final = "0000ff12-0000-1000-8000-00805f9b34fb"
 BOOKOO_WEIGHT_UUID: Final = "0000ff11-0000-1000-8000-00805f9b34fb"
 
 SIGNAL_UPDATE: Final = f"{DOMAIN}_update"
-
-
-@lru_cache(maxsize=1)
-def integration_version() -> str:
-    """Read the installed package version from manifest.json."""
-    manifest = Path(__file__).with_name("manifest.json")
-    return str(json.loads(manifest.read_text(encoding="utf-8"))["version"])
 
 
 # Written into the Home Assistant config directory as a YAML-mode Lovelace

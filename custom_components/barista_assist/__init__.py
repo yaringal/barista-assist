@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.loader import async_get_integration
 
 from . import services, websocket
 from .const import DOMAIN, STATIC_URL_PATH
@@ -107,6 +108,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # and the platform setups below call it directly on the event loop.
     await hass.async_add_executor_job(load_definitions)
     runtime = BaristaRuntime(hass, entry)
+    # async_get_integration reads HA's own already-parsed, already-cached
+    # manifest data (hass.data, populated when HA itself discovered and
+    # loaded this integration) rather than this integration re-reading its
+    # own manifest.json - previously runtime.py's own integration_version()
+    # did that with a plain Path.read_text(), which is blocking disk I/O;
+    # its very first call happened to land inside BaristaAssistEntity.
+    # __init__ (via entity.py) during the platform setups below, directly
+    # on the event loop, which HA itself flags as a real thread-safety
+    # violation, not just a style nit. Must happen before those platform
+    # setups run, since that's what constructs every entity.
+    integration = await async_get_integration(hass, DOMAIN)
+    runtime.integration_version = str(integration.version) if integration.version else None
     entry.runtime_data = runtime
     hass.data[DOMAIN]["runtime"] = runtime
     try:

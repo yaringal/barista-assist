@@ -7,7 +7,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 
-from .const import DOMAIN, NAME, SIGNAL_UPDATE, integration_version
+from .const import DOMAIN, NAME, SIGNAL_UPDATE
 from .definitions import EntityDefinition
 
 
@@ -21,13 +21,12 @@ class BaristaAssistEntity(Entity):
         self.runtime = runtime
         self.definition = definition
         self._attr_unique_id = f"{runtime.entry.entry_id}_{definition.key}"
-        version = integration_version()
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, runtime.entry.entry_id)},
             name=NAME,
             manufacturer="Barista Assist",
             model="Smart espresso workflow",
-            sw_version=version,
+            sw_version=runtime.integration_version,
         )
 
     @property

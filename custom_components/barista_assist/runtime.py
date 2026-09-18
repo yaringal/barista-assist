@@ -74,6 +74,15 @@ class BaristaRuntime(
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
+        # Set by __init__.py's async_setup_entry, before any entity is
+        # constructed (BaristaAssistEntity.__init__ reads it for its own
+        # device_info) - via homeassistant.loader.async_get_integration,
+        # not a manual manifest.json read of our own: HA already parses
+        # and caches every integration's manifest during its own startup,
+        # so this is normally just a cache hit, and never risks a blocking
+        # file read landing on the event loop the way our own read_text
+        # once did (see this attribute's own history in CHANGELOG.md).
+        self.integration_version: str | None = None
         self.definitions = load_definitions()
         self.db = BaristaDatabase(
             Path(hass.config.path(".storage", f"barista_assist_{entry.entry_id}.sqlite3"))
