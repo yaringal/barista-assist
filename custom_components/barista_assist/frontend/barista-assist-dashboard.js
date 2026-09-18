@@ -269,15 +269,17 @@ function chartGeometry(samples, markers = {}) {
   ];
   const extraWeight = healthy ? [healthy.target_yield_g] : [];
   const maxT = Math.max(1, ...samples.map((s) => s.elapsed_ms), ...extraT);
-  // maxWeight is the real recorded max - shown as-is in the legend/used for
-  // y-axis tick generation, so those never report a fabricated number.
-  // scaleMaxWeight adds 8% headroom on top, for the *geometry* only (a
-  // healthy shot's own weight curve ends right at target_yield_g, which is
-  // also this axis' own max before the headroom - without it, the target
-  // line/curve peak sits flush against the very top edge with nothing
-  // above it).
-  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g), ...extraWeight);
-  const scaleMaxWeight = maxWeight * 1.08;
+  // maxWeight is the real recorded max from actual samples only - shown
+  // as-is in the legend/used for y-axis tick generation, so those never
+  // report target_yield_g (or anything else the shot didn't actually
+  // reach) as if it were the real recorded weight. scaleMaxWeight is what
+  // the *geometry* needs instead: maxWeight extended to cover
+  // target_yield_g if that's taller (so the target line/healthy shading
+  // stay visible even on a shot that never actually got there), plus 8%
+  // headroom on top so the tallest thing shown - real or target - never
+  // sits flush against the very top edge with nothing above it.
+  const maxWeight = Math.max(1, ...samples.map((s) => s.weight_g));
+  const scaleMaxWeight = Math.max(maxWeight, ...extraWeight) * 1.08;
   const maxFlow = Math.max(1, ...samples.map((s) => s.flow_g_s));
   const x = (t) => padding.left + (t / maxT) * (width - padding.left - padding.right);
   const yFor = (max) => (v) =>
