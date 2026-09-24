@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.7
+
+### Fixed
+
+- **A real shot could be misclassified `invalid_measurement`/`disturbance_left_too_few_samples` even though it was a perfectly normal, mechanically fine shot** - two real examples: a single leading sample reading 69.5g (a leftover pre-tare/portafilter weight) immediately followed by the real ~0.1g baseline, and a *run* of two leading samples reading 145.2g. Leading-garbage trimming (`_first_plausible_index`) only ever rejected implausibly *negative* leading readings, never implausibly high ones - so the garbage-inflated reading became the shot's own "peak," and the very next (real, near-zero) sample looked like a mid-shot disturbance relative to it, truncating the shot down to almost nothing. It now also rejects a high leading reading (or run of identical ones) that drops back down before any real pour begins, while still leaving alone a genuinely high leading reading that keeps rising (e.g. a BLE reconnect mid-pour) - that's a real pour already in progress, not stale garbage.
+- **A shot chart's "Weight (max ...g)" legend could still show a higher number than the shot actually reached**, even after 0.3.6's fix for the same symptom - `target_yield_g` (the shot's *goal*) was still being mixed into the same value used for the legend, needed so the target line stays visible on a shot that never reaches it. The legend/y-axis ticks now come from real recorded samples only; the target value is used purely for the invisible scaling behind it.
+
+### Testing
+
+- Added two more real shot fixtures (`too_restrictive_flagged_invalid_adapt_pi`, `double_leading_garbage_adapt_pi`) from live reports, both previously misclassified by the bug above - the first now correctly reads `too_restrictive`, matching the barista's own "mechanically good but too slow" call.
+- Checked the new fixtures against this project's own standing drift-detection reports (which compare real shot data against every hand-tuned constant) - no other constant needs adjusting based on them.
+- Full suite: 331 tests, all passing (up from 326).
+
 ## 0.3.6
 
 ### Added

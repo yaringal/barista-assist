@@ -1,17 +1,11 @@
-# Barista Assist v0.3.6
+# Barista Assist v0.3.7
 
-Another load-failure fix, two chart accuracy bugs, and a new way to test your notification setup on demand.
-
-## Added
-
-- A "Send test notification" button (System view → Settings) sends a real test push through your configured notification service right away, so you can check it works without waiting for a real healthy shot.
+A real classification bug fix, plus the last of the chart's "max weight" legend inaccuracies.
 
 ## Fixed
 
-- Fixed another "integration failed to load" error some of you hit after updating - a leftover blocking file read on startup. Now uses Home Assistant's own already-loaded integration data instead of reading the integration's own files again.
-- A shot chart's "Weight (max ...g)" legend could show a higher number than the shot actually reached. The legend now always shows the real recorded max.
-- A shot chart's plotted curve could quietly leave off the shot's own final (and highest) weight reading, for longer shots. It's now always included.
-- The Pre-infusion/Healthy chart labels moved back under the chart (only Stop Prediction stays at the top), since Healthy was regularly overlapping Stop Prediction.
+- A real, mechanically normal shot could be wrongly marked invalid ("too few samples") because of a stale leading scale reading (like a leftover portafilter weight) that wasn't being cleaned up before analysis. Two real shots that hit this now classify correctly.
+- The shot chart's "Weight (max ...g)" legend could still show a higher number than the shot actually reached, in some cases even after last release's fix for this. It now always shows the real recorded max.
 
 ## Upgrade
 
@@ -19,4 +13,5 @@ No manual steps required. Update via HACS and restart Home Assistant as usual - 
 
 ## Testing
 
-- Full suite: 326 tests, all passing (up from 321).
+- Added two more real shot fixtures from live reports of the classification bug above.
+- Full suite: 331 tests, all passing (up from 326).
