@@ -223,12 +223,24 @@ class ShotAnalysis:
 
 
 def _first_plausible_index(raw_weights: list[float], config: FlowAnalysisConfig) -> int:
-    """First index whose weight isn't implausibly negative (more than
-    config.leading_garbage_threshold_g below zero) - i.e. how many leading
-    samples to skip as pre-tare/pre-connect scale noise. Only ever rejects
-    on the negative side: a legitimately high leading positive reading
-    (e.g. real samples that only start once a pour is already underway) is
-    left alone.
+    """First index that isn't leading pre-tare/pre-connect scale garbage -
+    either implausibly negative (more than config.leading_garbage_threshold_g
+    below zero), or an implausibly high stale reading that drops back down
+    by more than that same threshold before any real pour begins (a
+    leftover cup/portafilter weight the scale hadn't tared away yet, or a
+    stale cached reading from before this shot's own connection - two real
+    examples: a single leading 69.5g sample immediately followed by 0.1g,
+    and two leading 145.2g samples immediately followed by 0.0g). A run of
+    repeated leading readings at the same stale value (as in the second
+    example) is skipped past as a whole - each one only looks ahead to the
+    first genuinely different value, not just the very next sample, so a
+    plateau of identical garbage doesn't mask itself.
+
+    Deliberately does *not* reject every high leading positive reading,
+    only ones that drop back down again right after: real samples that
+    happen to start once a pour is already underway (e.g. a BLE
+    reconnect mid-shot) would keep rising from there, not drop - that
+    case is left alone.
 
     Unlike _first_disturbance_index (a genuine mid-shot problem, judged
     relative to the shot's own running peak), this looks for implausible
@@ -239,8 +251,14 @@ def _first_plausible_index(raw_weights: list[float], config: FlowAnalysisConfig)
     Returns len(raw_weights) if every sample is implausible.
     """
     for i, weight in enumerate(raw_weights):
-        if weight >= -config.leading_garbage_threshold_g:
-            return i
+        if weight < -config.leading_garbage_threshold_g:
+            continue
+        j = i + 1
+        while j < len(raw_weights) and raw_weights[j] == weight:
+            j += 1
+        if j < len(raw_weights) and weight - raw_weights[j] > config.leading_garbage_threshold_g:
+            continue
+        return i
     return len(raw_weights)
 
 

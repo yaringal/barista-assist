@@ -336,15 +336,34 @@ class FlowAnalysisTests(unittest.TestCase):
     def test_first_plausible_index_skips_only_implausibly_negative_leading_readings(self) -> None:
         """Direct unit test for _first_plausible_index: ordinary near-zero
         noise (including small negative dips) is never skipped, and neither
-        is a legitimately high leading *positive* reading (e.g. real samples
-        that only start once a pour is already underway) - only readings
-        clearly beyond real scale noise on the negative side are."""
+        is a legitimately high leading *positive* reading that keeps rising
+        (e.g. real samples that only start once a pour is already
+        underway) - only readings clearly beyond real scale noise, on
+        either side, are."""
         config = CONFIG
         self.assertEqual(flow_analysis._first_plausible_index([0.0, 0.1, -0.1, 0.2], config), 0)
         self.assertEqual(flow_analysis._first_plausible_index([-48.0, 0.0, 0.1], config), 1)
-        self.assertEqual(flow_analysis._first_plausible_index([-48.0, 30.0, 0.0], config), 1)
         self.assertEqual(flow_analysis._first_plausible_index([30.0, 99.0], config), 0)
         self.assertEqual(flow_analysis._first_plausible_index([-48.0, -30.0], config), 2)  # all implausible
+
+    def test_first_plausible_index_also_skips_a_high_leading_reading_that_drops_back_down(self) -> None:
+        """A high leading reading that immediately drops back down (rather
+        than continuing to rise, as a real in-progress pour would) is a
+        stale reading too - two real examples: a single leading 69.5g
+        sample followed by 0.1g, and a *run* of two leading 145.2g samples
+        (a repeated stale-cache value) followed by 0.0g. Each garbage
+        sample only has to compare against the first genuinely different
+        value ahead of it, so a plateau of repeated identical garbage
+        doesn't mask itself - regression test for a real bug: these two
+        real shots were misclassified invalid_measurement/
+        disturbance_left_too_few_samples because the leading garbage
+        wasn't trimmed at all, and the very next (real, near-zero) sample
+        then looked like a mid-shot disturbance relative to the
+        garbage-inflated "peak"."""
+        config = CONFIG
+        self.assertEqual(flow_analysis._first_plausible_index([-48.0, 30.0, 0.0], config), 2)
+        self.assertEqual(flow_analysis._first_plausible_index([69.5, 0.1, 0.1, 0.0], config), 1)
+        self.assertEqual(flow_analysis._first_plausible_index([145.2, 145.2, 0.0, 0.0], config), 2)
 
     def test_reaching_target_far_faster_than_expected_is_too_fast(self) -> None:
         expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s

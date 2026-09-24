@@ -445,5 +445,76 @@ class HealthyAstringentAdaptPiTests(unittest.TestCase):
         self.assertEqual(self.shot.flavor_mouthfeel_tag, "dry_astringent")
 
 
+class TooRestrictiveFlaggedInvalidAdaptPiTests(unittest.TestCase):
+    """"Mechanically good, but too slow" (the barista's own overall call) -
+    recorded at capture time as invalid_measurement/
+    disturbance_left_too_few_samples instead, because of a real bug: a
+    single stale leading sample (seq=0, weight_g=69.5, immediately
+    followed by the real ~0.1g baseline) wasn't trimmed as leading
+    garbage at all (the old _first_plausible_index only ever rejected
+    implausibly *negative* leading readings, never implausibly high
+    ones), so the very next, real sample looked like a mid-shot
+    "disturbance" relative to that garbage-inflated 69.5g "peak",
+    truncating the shot down to a single sample. See flow_analysis.py's
+    _first_plausible_index and test_flow_analysis.py's own direct unit
+    test for the fix."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("too_restrictive_flagged_invalid_adapt_pi")
+
+    def test_matches_the_barista_s_own_call(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "invalid_measurement")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
+        self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
+
+    def test_the_fixture_still_has_its_stale_leading_sample(self) -> None:
+        """Confirms the test above is exercising the real leading-garbage
+        case this test class's docstring describes, rather than a fixture
+        that never had one in the first place."""
+        self.assertGreater(self.shot.samples[0].weight_g, 50.0)
+        self.assertLess(self.shot.samples[1].weight_g, 1.0)
+
+
+class DoubleLeadingGarbageAdaptPiTests(unittest.TestCase):
+    """Same underlying bug as TooRestrictiveFlaggedInvalidAdaptPiTests
+    above, but with a *run* of two identical stale leading readings
+    (seq=0,1, both weight_g=145.2) instead of one - each garbage sample
+    only compares against the first genuinely *different* value ahead of
+    it, so a plateau of repeated identical garbage doesn't mask itself.
+    Recorded at capture time as invalid_measurement/
+    disturbance_left_too_few_samples for the same reason as that other
+    fixture."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("double_leading_garbage_adapt_pi")
+
+    def test_is_no_longer_wrongly_invalid(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "invalid_measurement")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
+
+    def test_the_fixture_still_has_its_stale_leading_run(self) -> None:
+        """Confirms the test above is exercising the real double-leading-
+        garbage case this test class's docstring describes, rather than a
+        fixture that never had one in the first place."""
+        self.assertGreater(self.shot.samples[0].weight_g, 100.0)
+        self.assertEqual(self.shot.samples[0].weight_g, self.shot.samples[1].weight_g)
+        self.assertLess(self.shot.samples[2].weight_g, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
