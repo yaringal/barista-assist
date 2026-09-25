@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.8
+
+### Fixed
+
+- **A shot could classify `too_fast` even though it visibly finished inside the shot chart's own shaded "healthy" time window** - reported live: "the code is broken if the UI shows healthy but the logic disagrees." Classification was driven by t90 (time to reach 90% of the target yield), not the actual completion time the chart itself visualizes - a shot with a slower late-stage taper could cross 90% just barely before the `too_fast` cutoff while its real 100%-of-target crossing landed safely inside the healthy window. `duration_ratio` now prefers a shot's real 100%-of-target crossing when it reaches one, falling back to an extrapolation from t90 only when a shot never reaches its target (undershoots, or shots genuinely too fast/restrictive to get there).
+- Re-validated the existing `too_fast`/`too_restrictive` boundaries directly against James Hoffmann's own published dial-in verdicts (`docs/data/DIAL_IN_RULES.md`) under this corrected measurement before changing anything - no boundary change was needed, since those numbers were already calibrated against his stated total shot times, not t90 (a gap this project had already flagged as a known caveat, but never gone back to actually fix until this report).
+
+### Testing
+
+- One real shot fixture flips from `too_fast` to `healthy` under the fix - the exact shot that prompted this report, a barista-confirmed "healthy... balanced" shot. Three others flip from `healthy` to `too_restrictive`, a more accurate (if less flattering) read on shots that were undershoots with a slow tail.
+- Each real shot fixture file now notes that its recorded `classification=` reflects whatever logic was live at export time, not ground truth - preventing future confusion between "what the code said back then" and an actual human or Hoffmann-sourced verdict.
+- Full suite: 335 tests, all passing (up from 331).
+
 ## 0.3.7
 
 ### Fixed
