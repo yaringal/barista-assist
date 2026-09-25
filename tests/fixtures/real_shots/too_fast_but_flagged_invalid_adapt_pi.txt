@@ -2,6 +2,11 @@
 # stopped well short of target (37.5g target, 34.0g actual), adaptPI=True
 # (app controlled). Recorded as invalid_measurement
 # (flow_started_before_preinfusion_end) rather than too_fast.
+# NOTE (2026-09-25): classification= below reflects the flow-classification
+# logic that was live at export time, not ground truth - see
+# real_shot_fixtures.py's recorded_classification property and
+# docs/data/DIAL_IN_RULES.md Part 6 for why (e.g. the classifier's
+# duration_ratio measurement itself changed after this shot was recorded).
 [SHOT]
 shot_id=ec57eca16bad4920b1b5614b3f76ec5f
 bag_id=27023e947ea94b95b74ea7d3c1d9b2f4

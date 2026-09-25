@@ -35,16 +35,29 @@ CONFIG = flow_analysis.FlowAnalysisConfig(**definitions.load_definitions().flow_
 
 class GoodShotAdaptPiTests(unittest.TestCase):
     """"Good shot, adaptPI=True (app controlled)" - a held pre-infusion
-    shot (preinfusion_s=7.0) the barista judged healthy: flow starts just
-    after preinfusion ends, ramps up, and settles into a plausible pour
+    shot (preinfusion_s=7.0) the barista judged healthy overall: flow starts
+    just after preinfusion ends, ramps up, and settles into a plausible pour
     despite an early flow spike/dip (a fast initial channel-like burst from
     ~9.5-11.5s that eases off and never recurs) - real pucks are not perfectly
-    uniform, and this one still finished at 35.59g against a 36g target."""
+    uniform, and this one still finished at 35.59g against a 36g target.
+
+    The shot never reaches 100% of target (undershoot), so duration_ratio is
+    computed by extrapolating past t90 using the late-stage flow rate - this
+    lands it just outside the healthy window (duration_ratio=1.105 vs the
+    too_restrictive_factor=1.10 cutoff), so the TIMING classifier calls it
+    too_restrictive even though the barista's own overall verdict was
+    healthy. This is the same timing-vs-taste distinction already documented
+    on too_fast_but_healthy_by_taste_adapt_pi and healthy_astringent_adapt_pi:
+    duration_ratio is a mechanical proxy for likely extraction quality, not a
+    verdict on how the shot actually was. See docs/data/DIAL_IN_RULES.md for
+    the Hoffmann ground-truth table confirming too_restrictive_factor=1.10
+    itself is correctly calibrated (not something to move to accommodate this
+    shot)."""
 
     def setUp(self) -> None:
         self.shot = load_real_shot("good_shot_adapt_pi")
 
-    def test_matches_the_barista_s_own_call(self) -> None:
+    def test_is_classified_too_restrictive_by_timing_despite_the_healthy_verdict(self) -> None:
         self.assertEqual(self.shot.recorded_classification, "healthy")
         result = analyze_shot(
             self.shot.samples,
@@ -53,7 +66,7 @@ class GoodShotAdaptPiTests(unittest.TestCase):
             baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
-        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
         self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
 
     def test_flow_is_detected_right_after_preinfusion_ends(self) -> None:
@@ -407,26 +420,37 @@ class TooFastButFlaggedInvalidAdaptPiTests(unittest.TestCase):
 
 
 class HealthyAstringentAdaptPiTests(unittest.TestCase):
-    """A shot classified healthy (duration_ratio=0.94, well inside the
-    healthy band, channeling_suspicion=0.17 well under the threshold) that
-    the barista's own taste call was "astringent" - flavor_mouthfeel_tag=
-    dry_astringent is a fixture annotation reflecting that recollection,
-    not raw export data (see real_shot_fixtures.py). analyze_shot has no
-    way to see this - it only ever looks at the recorded flow curve, never
-    flavor - so this fixture isn't a classifier regression test so much as
-    a record that "healthy" (correct timing) and "tasted good" are
-    genuinely different questions this integration answers with two
-    separate systems (Stage 1 timing classification here vs. the
-    flavor-correction/feedback-notification system in runtime_peripherals.py),
-    not one. Filed from a live bug report: "I had a healthy shot today but
-    no notification triggered" - the shot itself did classify healthy (so
-    a notification should have been scheduled), the actual gap turned out
-    to be elsewhere (see this session's own investigation)."""
+    """A shot originally recorded/classified healthy (duration_ratio=0.94
+    under the old t90-based measurement) that the barista's own taste call
+    was "astringent" - flavor_mouthfeel_tag=dry_astringent is a fixture
+    annotation reflecting that recollection, not raw export data (see
+    real_shot_fixtures.py). This shot undershoots target (35.09g vs a 36g
+    target), so it never reaches a real 100%-of-target crossing; under the
+    t100-preferring duration_s fix, duration_ratio is computed by
+    extrapolating past t90 using this shot's own late-stage flow rate,
+    which (this shot decelerated hard late) lands at ~1.14 -
+    too_restrictive, not healthy. channeling_suspicion (0.17) stays well
+    under the threshold either way - this was never a channeling call.
+
+    analyze_shot has no way to see taste - it only ever looks at the
+    recorded flow curve - so this fixture isn't primarily a classifier
+    regression test so much as a record that "correct timing" and "tasted
+    good" are genuinely different questions this integration answers with
+    two separate systems (Stage 1 timing classification here vs. the
+    flavor-correction/feedback-notification system in
+    runtime_peripherals.py), not one - the mirror image of
+    TooFastButHealthyByTasteAdaptPiTests' "too_fast by timing, tasted
+    fine" case. Filed from a live bug report: "I had a healthy shot today
+    but no notification triggered" - at the time this shot classified
+    healthy so a notification should have been scheduled; the actual gap
+    turned out to be elsewhere (see this session's own investigation).
+    The classification itself changing to too_restrictive under the later
+    t100 fix doesn't affect that original notification-gap finding."""
 
     def setUp(self) -> None:
         self.shot = load_real_shot("healthy_astringent_adapt_pi")
 
-    def test_matches_the_barista_s_own_call(self) -> None:
+    def test_is_classified_too_restrictive_by_timing_despite_the_healthy_verdict(self) -> None:
         self.assertEqual(self.shot.recorded_classification, "healthy")
         result = analyze_shot(
             self.shot.samples,
@@ -435,7 +459,7 @@ class HealthyAstringentAdaptPiTests(unittest.TestCase):
             baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
-        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
         self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
 
     def test_the_fixture_carries_the_astringent_taste_annotation(self) -> None:
@@ -490,7 +514,18 @@ class DoubleLeadingGarbageAdaptPiTests(unittest.TestCase):
     it, so a plateau of repeated identical garbage doesn't mask itself.
     Recorded at capture time as invalid_measurement/
     disturbance_left_too_few_samples for the same reason as that other
-    fixture."""
+    fixture.
+
+    No independent (barista/taste) verdict exists for this fixture - it
+    was filed purely to regression-test the leading-garbage fix, so its
+    downstream too_fast/healthy/too_restrictive classification was always
+    incidental. This shot reaches a real 100%-of-target crossing, and
+    under the t100-preferring duration_s fix that lands duration_ratio at
+    ~1.13 - too_restrictive rather than healthy. Kept as too_restrictive
+    since there's no ground truth here to weigh against; what this test
+    class actually guards is the leading-garbage fix (assertIsNone(
+    invalid_reason) below), not the specific too_fast/healthy/
+    too_restrictive band."""
 
     def setUp(self) -> None:
         self.shot = load_real_shot("double_leading_garbage_adapt_pi")
@@ -504,7 +539,7 @@ class DoubleLeadingGarbageAdaptPiTests(unittest.TestCase):
             baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
         self.assertIsNone(result.invalid_reason)
-        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
         self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
 
     def test_the_fixture_still_has_its_stale_leading_run(self) -> None:
@@ -518,45 +553,34 @@ class DoubleLeadingGarbageAdaptPiTests(unittest.TestCase):
 
 class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
     """The barista's own overall call: "healthy (36g within healthy zone)
-    and tasted balanced" - and they're right that the trace itself
-    crosses target_yield_g (36.0g) at elapsed_ms=26048, genuinely inside
-    the chart's own healthy time window for this shot ([24795, 30994]ms -
-    see test_the_target_crossing_falls_inside_the_chart_s_own_healthy_
-    window below). Yet this is recorded/classified too_fast
-    (duration_ratio=0.843, just under the healthy band's own 0.88 lower
-    edge) - NOT a misclassification bug, but two compounding,
-    already-understood limitations landing on the same real shot:
+    and tasted balanced". This fixture was originally filed to document a
+    real classifier limitation: it was recorded/classified too_fast at
+    export time (duration_ratio=0.843) even though the trace crosses
+    target_yield_g (36.0g) at elapsed_ms=26211, genuinely inside the
+    chart's own healthy time window ([24795, 30994]ms) - because duration_
+    ratio was driven by t90 (reached at elapsed_ms=23755, 1.04s before the
+    too_fast cutoff), not by the real 100%-of-target crossing the chart
+    itself visualizes. This shot's flow decelerated hard late (late_flow_
+    g_s well under its own mid-pour rate), so the last 10% took
+    proportionally longer than a constant-rate projection from t90 would
+    assume.
 
-    1. (dominant) This bag had no per-bag baseline yet
-       (baseline_eligible=false), so expected_flow_g_s fell back to the
-       generic global/roast-level prior (1.7 g/s) rather than this bag's
-       own apparently-faster characteristic pace (mid_flow_g_s=2.198
-       g/s here) - see flow_analysis.py's module docstring on Bayesian
-       shrinkage. Recomputing duration_ratio with a prior matching this
-       bag's real pace instead lands at ~1.02 - squarely healthy.
-    2. (secondary) Classification is driven by t90 (time to 90% of
-       target, reached at elapsed_ms=23755 - 1.04s before the too_fast
-       cutoff), not by when the trace reaches 100% of target (which is
-       what the chart's healthy window visualizes). This shot's flow
-       decelerated hard late (late_flow_g_s=0.884 g/s vs
-       mid_flow_g_s=2.198 g/s), so the last 10% took proportionally
-       longer than the constant-rate assumption behind projecting a t90
-       crossing out to an implied 100%-of-target time - see
-       analyze_shot's own "Open caveat" comment on real flow not being
-       constant across a pour.
-
-    Kept as a real example of "too_fast" not implying something is
-    actually wrong with the shot - the mirror image of
-    HealthyAstringentAdaptPiTests' "healthy by timing, tasted bad" case.
-    These tests assert the *current*, correct too_fast classification -
-    they aren't a regression test for a bug fix, they document a real
-    example of two of the classifier's own known limitations for future
-    reference."""
+    That gap is exactly what analyze_shot's t100-preferring duration_s
+    logic now fixes: when a real 100%-of-target crossing exists, duration_
+    ratio is computed from it directly instead of extrapolating from t90.
+    Under the fix, this shot's duration_ratio becomes ~0.930 - correctly
+    healthy, matching the barista's own call. Kept as a regression test
+    for that fix (not a "known limitation" fixture anymore) - a real shot
+    where the old t90-based measurement flipped a healthy shot to
+    too_fast. See docs/data/DIAL_IN_RULES.md's Hoffmann ground-truth table
+    for confirmation that the 0.88/1.10 boundaries themselves are correctly
+    calibrated for this same (t100-based) measurement basis, so this fix -
+    not a boundary change - is the right lever here."""
 
     def setUp(self) -> None:
         self.shot = load_real_shot("too_fast_but_healthy_by_taste_adapt_pi")
 
-    def test_currently_classifies_too_fast_close_to_the_healthy_boundary(self) -> None:
+    def test_matches_the_barista_s_own_call(self) -> None:
         self.assertEqual(self.shot.recorded_classification, "too_fast")
         result = analyze_shot(
             self.shot.samples,
@@ -564,22 +588,33 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
             preinfusion_s=self.shot.preinfusion_s,
             baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
         )
-        self.assertEqual(result.classification, ShotClassification.TOO_FAST)
-        too_fast_factor, _ = flow_analysis.healthy_duration_ratio_bounds(CONFIG.duration_ratio_bands)
-        # Close to the boundary (not deep in too_fast territory) and with
-        # low channeling suspicion - consistent with a shot that was
-        # mechanically fine, just judged against a prior that doesn't yet
-        # reflect this particular bag's own faster natural pace.
-        self.assertAlmostEqual(too_fast_factor - result.duration_ratio, 0.037, places=2)
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.HEALTHY)
         self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
+
+    def test_duration_ratio_is_now_based_on_the_real_target_crossing(self) -> None:
+        """Confirms the fix's actual mechanism: t100_ms is found (this
+        shot doesn't undershoot), and duration_ratio is derived from it
+        rather than from t90_ms - not just that the final classification
+        happens to come out healthy."""
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
+        )
+        self.assertIsNotNone(result.t100_ms)
+        self.assertLess(result.t90_ms, result.t100_ms)
+        too_fast_factor, _ = flow_analysis.healthy_duration_ratio_bounds(CONFIG.duration_ratio_bands)
+        self.assertAlmostEqual(result.duration_ratio, 0.930, places=2)
+        self.assertGreater(result.duration_ratio, too_fast_factor)
 
     def test_the_target_crossing_falls_inside_the_chart_s_own_healthy_window(self) -> None:
         """The barista's own visual read of the graph: the weight trace
-        crosses target_yield_g well inside the healthy time window the
-        chart itself shades - even though t90 (90% of target, what
-        classification actually uses) crossed just before that window's
-        own start. Direct evidence for reason 2 in this class's own
-        docstring."""
+        crosses target_yield_g inside the healthy time window the chart
+        itself shades - and now (post-fix) that's also exactly what
+        classification itself uses, so this is no longer "what the chart
+        shows" vs "why classification disagreed" - both agree."""
         result = analyze_shot(
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
@@ -597,8 +632,11 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
         target_crossing_ms = next(
             s.elapsed_ms for s in self.shot.samples if s.weight_g >= self.shot.target_yield_g
         )
-        self.assertLess(result.t90_ms, healthy_start_ms)  # why classification says too_fast
-        self.assertTrue(healthy_start_ms <= target_crossing_ms <= healthy_end_ms)  # what the chart shows
+        self.assertTrue(healthy_start_ms <= target_crossing_ms <= healthy_end_ms)
+        # t100_ms is a crossing on the smoothed curve, so it's close to but
+        # not identical to the raw sample's own first at-or-above-target
+        # elapsed_ms - both should still fall inside the same window.
+        self.assertTrue(healthy_start_ms <= result.t100_ms <= healthy_end_ms)
 
     def test_the_fixture_carries_the_balanced_taste_annotation(self) -> None:
         self.assertEqual(self.shot.flavor_mouthfeel_tag, "balanced")

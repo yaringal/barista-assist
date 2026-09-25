@@ -1,4 +1,9 @@
 # Too slow / machine choked, adaptPI=True (app controlled)
+# NOTE (2026-09-25): classification= below reflects the flow-classification
+# logic that was live at export time, not ground truth - see
+# real_shot_fixtures.py's recorded_classification property and
+# docs/data/DIAL_IN_RULES.md Part 6 for why (e.g. the classifier's
+# duration_ratio measurement itself changed after this shot was recorded).
 [SHOT]
 shot_id=7ed5aae906664d46ae3943100d3121fd
 bag_id=27023e947ea94b95b74ea7d3c1d9b2f4

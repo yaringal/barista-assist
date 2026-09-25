@@ -47,6 +47,14 @@ class RealShot:
 
     @property
     def recorded_classification(self) -> str:
+        """The classification the code actually produced at export time -
+        historical fact, not ground truth. It reflects whatever flow-
+        classification logic was live that day, which has since changed
+        (e.g. the 2026-09 fix that switched duration_ratio from a t90-based
+        measurement to preferring a real 100%-of-target crossing - see
+        docs/data/DIAL_IN_RULES.md Part 6). Only an explicit human verdict -
+        this file's own leading comment, or a flavor_*_tag - or a Hoffmann-
+        video-sourced verdict counts as actual ground truth for a shot."""
         return self.fields["classification"]
 
     @property

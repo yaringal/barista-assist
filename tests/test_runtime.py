@@ -117,12 +117,18 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         preinfusion_s and the live expected_flow_g_s - computed rather than
         a hardcoded duration, so a future retune of either can't silently
         move a synthetic shot into a different classification band out from
-        under a test that depends on it landing in a specific one."""
+        under a test that depends on it landing in a specific one.
+
+        duration_s prefers a real 100%-of-target crossing (t100) over t90 -
+        see flow_analysis.py's analyze_shot - and a linear ramp to
+        target_yield_g reaches exactly 100% at its own last sample, so
+        ramp_seconds is simply the remaining duration after the flat
+        lead-in, with no t90-style 0.9 correction."""
         expected_flow_g_s = self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"]
         preinfusion_s = self.runtime.selected_bag.preinfusion_s
         expected_s = preinfusion_s + target_yield_g / expected_flow_g_s
         duration_s = target_ratio * expected_s
-        return (duration_s - flat_ms / 1000) / 0.9
+        return duration_s - flat_ms / 1000
 
     async def create_bag(
         self,

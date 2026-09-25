@@ -6,6 +6,11 @@
 # flavor_mouthfeel_tag=balanced below are a fixture annotation reflecting
 # the barista's own "Good shot" recollection above, not raw export data.
 
+# NOTE (2026-09-25): classification= below reflects the flow-classification
+# logic that was live at export time, not ground truth - see
+# real_shot_fixtures.py's recorded_classification property and
+# docs/data/DIAL_IN_RULES.md Part 6 for why (e.g. the classifier's
+# duration_ratio measurement itself changed after this shot was recorded).
 [SHOT]
 shot_id=d04b924e70444a1dbe222823056d71bf
 bag_id=4b81d62ef66241bb8f32048984941a8b

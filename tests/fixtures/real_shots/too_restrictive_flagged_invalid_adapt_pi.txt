@@ -13,6 +13,11 @@
 # Sample columns: seq	elapsed_ms	scale_ms	weight_g	flow_g_s	battery_percent	post_stop
 # post_stop=1 means the sample was recorded after the stop command.
 
+# NOTE (2026-09-25): classification= below reflects the flow-classification
+# logic that was live at export time, not ground truth - see
+# real_shot_fixtures.py's recorded_classification property and
+# docs/data/DIAL_IN_RULES.md Part 6 for why (e.g. the classifier's
+# duration_ratio measurement itself changed after this shot was recorded).
 [SHOT]
 shot_id=0181c6a2dda44b74937087140285d54f
 bag_id=a3e87d4bb9344d91931df1e1c2794650

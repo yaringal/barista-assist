@@ -192,14 +192,31 @@ class ShotAnalysis:
     # fast, above 1.0 = ran slow/restrictive. None when a shot couldn't be
     # classified at all (t90 never reached and no samples to fall back on,
     # or too few samples). This is what expert_rules.grind_correction's
-    # bands (definitions.yaml) key off of - see grind_correction.py.
-    # expected_s scaling with target_yield_g is deliberate - see the
-    # computation site below (analyze_shot) for why.
+    # bands (definitions.yaml) key off of - see grind_correction.py. The
+    # actual-duration side is t100_ms when the trace really reached
+    # target_yield_g, or else t90_ms plus a late-flow-rate-projected
+    # estimate of the remaining 10% - see the computation site below
+    # (analyze_shot) for why duration_s isn't simply t90_ms itself anymore.
+    # expected_s scaling with target_yield_g is deliberate - see that same
+    # site for why.
     duration_ratio: float | None
     t_first_flow_ms: int | None
     t10_ms: int | None
     t50_ms: int | None
     t90_ms: int | None
+    # First crossing of 100% of target_yield_g - None whenever the trace
+    # never actually reached target (a common, unremarkable case: plenty of
+    # healthy shots land a little under target, and any shot classified
+    # too_fast/too_restrictive by construction may never get there either).
+    # duration_ratio's own actual-duration side prefers this over t90_ms
+    # whenever it's available (see analyze_shot) - it's what the Live
+    # Shot/Shot History charts' own healthy-window shading visualizes
+    # (barista-assist-dashboard.js's healthyWindow), so classification and
+    # that shading now agree about what "reached target on time" means for
+    # any shot that actually reaches target, rather than the two silently
+    # disagreeing whenever a shot's late-shot flow rate isn't a good match
+    # for its own 0-90% pace.
+    t100_ms: int | None
     early_flow_g_s: float | None
     mid_flow_g_s: float | None
     late_flow_g_s: float | None
@@ -576,6 +593,7 @@ def _invalid(reason: InvalidReason) -> ShotAnalysis:
         t10_ms=None,
         t50_ms=None,
         t90_ms=None,
+        t100_ms=None,
         early_flow_g_s=None,
         mid_flow_g_s=None,
         late_flow_g_s=None,
@@ -691,6 +709,7 @@ def analyze_shot(
     t10_ms = _first_crossing_ms(times_ms, smoothed, 0.10 * target_yield_g)
     t50_ms = _first_crossing_ms(times_ms, smoothed, 0.50 * target_yield_g)
     t90_ms = _first_crossing_ms(times_ms, smoothed, 0.90 * target_yield_g)  # time to 90% of yield
+    t100_ms = _first_crossing_ms(times_ms, smoothed, target_yield_g)  # time to 100% of yield
 
     early_flow: list[float] = []
     mid_flow: list[float] = []
@@ -714,8 +733,39 @@ def analyze_shot(
 
     mid_accel = _linear_slope(mid_times, mid_values)
     late_accel = _linear_slope(late_times, late_values)
+    late_flow_g_s = statistics.median(late_flow) if late_flow else None
 
-    duration_s = (t90_ms if t90_ms is not None else times_ms[-1]) / 1000.0
+    # duration_s is meant to answer "how long did this shot actually take,
+    # start to finish" - t100_ms (the real crossing of 100% of target) is
+    # the truest answer whenever the trace actually got there, and it's
+    # exactly what the Live Shot/Shot History charts' own healthy-window
+    # shading visualizes (barista-assist-dashboard.js's healthyWindow), so
+    # using it here means classification and that shading can no longer
+    # silently disagree about the same shot the way they used to: a real
+    # shot classified too_fast even though its own target crossing plainly
+    # fell inside the chart's healthy window, because duration_s used to be
+    # t90_ms outright - a fine proxy only when the last 10% takes a
+    # proportional share of time, which isn't true for a shot whose flow
+    # decelerates (or accelerates) late. Real crossings aren't always
+    # available though - plenty of healthy shots land a little under
+    # target, and any too_fast/too_restrictive shot might too - so t100_ms
+    # is None more often than not; the fallback projects on from t90_ms
+    # using this same late-third-of-the-pour flow rate (late_flow_g_s,
+    # already computed above for the ShotAnalysis result itself), the best
+    # available estimate of how fast the remaining 10% would go. If even
+    # that's unusable (flow effectively stalled in the late bucket),
+    # duration_s falls back to t90_ms itself, then to the trace's last
+    # timestamp when 90% was never reached either - the same fallback chain
+    # this always had, just with a better first choice.
+    if t100_ms is not None:
+        duration_s = t100_ms / 1000.0
+    elif t90_ms is not None and late_flow_g_s and late_flow_g_s > 0:
+        remaining_g = target_yield_g - 0.90 * target_yield_g
+        duration_s = t90_ms / 1000.0 + remaining_g / late_flow_g_s
+    elif t90_ms is not None:
+        duration_s = t90_ms / 1000.0
+    else:
+        duration_s = times_ms[-1] / 1000.0
     # expected_s's target_yield_g/expected_flow_g_s term scales with
     # target_yield_g on purpose - this is a statement about the bag's
     # characteristic flow RATE, not a fixed personal time preference. "How I
@@ -728,9 +778,9 @@ def analyze_shot(
     # didn't scale with target_yield_g, that same shot would be wrongly
     # flagged too_restrictive purely for running longer, with nothing
     # actually wrong. preinfusion_s is added on top rather than folded into
-    # the rate term: duration_s (t90_ms) is measured from press_monotonic,
-    # i.e. it already includes the full pre-infusion hold, so expected_s
-    # must budget that same dead time or every shot reads as slower than it
+    # the rate term: duration_s is measured from press_monotonic, i.e. it
+    # already includes the full pre-infusion hold, so expected_s must
+    # budget that same dead time or every shot reads as slower than it
     # actually poured - matching the idealized-curve overlay the dashboard
     # already draws (flat through pre-infusion, then ramping to
     # target_yield_g over expected_s). Open caveat, not yet addressed: flow
@@ -782,9 +832,10 @@ def analyze_shot(
         t10_ms=t10_ms,
         t50_ms=t50_ms,
         t90_ms=t90_ms,
+        t100_ms=t100_ms,
         early_flow_g_s=statistics.median(early_flow) if early_flow else None,
         mid_flow_g_s=statistics.median(mid_flow) if mid_flow else None,
-        late_flow_g_s=statistics.median(late_flow) if late_flow else None,
+        late_flow_g_s=late_flow_g_s,
         max_flow_g_s=max(flow) if flow else None,
         flow_slope=_linear_slope(times_s, flow),
         flow_curvature=_mean_second_derivative(times_s, flow),

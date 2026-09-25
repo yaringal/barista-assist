@@ -8,6 +8,11 @@
 # about 8.0s. preinfusion_s below has been corrected to that true value so
 # this fixture matches the standard shot log structure.
 
+# NOTE (2026-09-25): classification= below reflects the flow-classification
+# logic that was live at export time, not ground truth - see
+# real_shot_fixtures.py's recorded_classification property and
+# docs/data/DIAL_IN_RULES.md Part 6 for why (e.g. the classifier's
+# duration_ratio measurement itself changed after this shot was recorded).
 [SHOT]
 shot_id=18cde69b94d54940aae4e7cc1caa8b9d
 bag_id=27023e947ea94b95b74ea7d3c1d9b2f4

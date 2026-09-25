@@ -126,13 +126,15 @@ class FlowAnalysisTests(unittest.TestCase):
         self.assertEqual(result.classification, ShotClassification.HEALTHY)
         self.assertIsNotNone(result.t50_ms)
         self.assertAlmostEqual(result.t50_ms, 0.5 * expected_s * 1000, delta=200)
-        # duration_ratio is built from t90, not total shot time, so even a
-        # shot at exactly the expected flow rate lands around 0.9, not 1.0 -
-        # for constant flow, reaching 90% of the yield takes ~90% of the
-        # total time by construction. This is the same t90-vs-total-time gap
-        # already called out in docs/DIAL_IN_RULES.md Part 4.
+        # duration_ratio prefers a real 100%-of-target crossing over t90, so
+        # a shot at exactly the expected flow rate lands right around 1.0 -
+        # the smoothed curve's own tail roll-off keeps it just shy of an
+        # exact target_yield_g crossing here, so this actually falls back to
+        # the t90+extrapolation path, which (constant flow) still recovers
+        # ~1.0. See docs/DIAL_IN_RULES.md's Hoffmann ground-truth table for
+        # why this full-duration basis (not t90) is the right one.
         self.assertIsNotNone(result.duration_ratio)
-        self.assertAlmostEqual(result.duration_ratio, 0.9, delta=0.05)
+        self.assertAlmostEqual(result.duration_ratio, 1.0, delta=0.05)
 
     def test_duration_ratio_is_none_for_an_invalid_shot(self) -> None:
         samples = _steady_flow_samples(18.0)[:3]  # too few samples
@@ -159,9 +161,11 @@ class FlowAnalysisTests(unittest.TestCase):
         # a shot at exactly the expected rate is now "too fast" under this
         # tighter factor - too_fast_factor is derived from the band right
         # before "healthy" (slightly_fast), not a flat field anymore, so
-        # that's the one entry this replaces.
+        # that's the one entry this replaces. duration_ratio for this shot
+        # is ~1.002 (see test_steady_flow_at_the_expected_rate_is_healthy),
+        # so the tightened factor must sit above that to flip it.
         tighter_bands = tuple(
-            {**band, "duration_ratio_max": 0.99} if band["name"] == "slightly_fast" else band
+            {**band, "duration_ratio_max": 1.05} if band["name"] == "slightly_fast" else band
             for band in CONFIG.duration_ratio_bands
         )
         tighter_config = dataclasses.replace(CONFIG, duration_ratio_bands=tighter_bands)
@@ -429,7 +433,7 @@ class FlowAnalysisTests(unittest.TestCase):
         regardless of how much of its own healthy history says otherwise,
         unlike the old per-bag-blended behavior this replaces. Only the
         roast-level pool (a different bag entirely) can shift the reference."""
-        bag_rate = 1.8  # well above the global prior of 1.25 g/s
+        bag_rate = 2.2  # well above the global prior of 1.7 g/s
         samples = _steady_flow_samples(duration_s=TARGET_YIELD_G / bag_rate)
 
         no_history = analyze_shot(
