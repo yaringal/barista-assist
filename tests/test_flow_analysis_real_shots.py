@@ -516,5 +516,93 @@ class DoubleLeadingGarbageAdaptPiTests(unittest.TestCase):
         self.assertLess(self.shot.samples[2].weight_g, 1.0)
 
 
+class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
+    """The barista's own overall call: "healthy (36g within healthy zone)
+    and tasted balanced" - and they're right that the trace itself
+    crosses target_yield_g (36.0g) at elapsed_ms=26048, genuinely inside
+    the chart's own healthy time window for this shot ([24795, 30994]ms -
+    see test_the_target_crossing_falls_inside_the_chart_s_own_healthy_
+    window below). Yet this is recorded/classified too_fast
+    (duration_ratio=0.843, just under the healthy band's own 0.88 lower
+    edge) - NOT a misclassification bug, but two compounding,
+    already-understood limitations landing on the same real shot:
+
+    1. (dominant) This bag had no per-bag baseline yet
+       (baseline_eligible=false), so expected_flow_g_s fell back to the
+       generic global/roast-level prior (1.7 g/s) rather than this bag's
+       own apparently-faster characteristic pace (mid_flow_g_s=2.198
+       g/s here) - see flow_analysis.py's module docstring on Bayesian
+       shrinkage. Recomputing duration_ratio with a prior matching this
+       bag's real pace instead lands at ~1.02 - squarely healthy.
+    2. (secondary) Classification is driven by t90 (time to 90% of
+       target, reached at elapsed_ms=23755 - 1.04s before the too_fast
+       cutoff), not by when the trace reaches 100% of target (which is
+       what the chart's healthy window visualizes). This shot's flow
+       decelerated hard late (late_flow_g_s=0.884 g/s vs
+       mid_flow_g_s=2.198 g/s), so the last 10% took proportionally
+       longer than the constant-rate assumption behind projecting a t90
+       crossing out to an implied 100%-of-target time - see
+       analyze_shot's own "Open caveat" comment on real flow not being
+       constant across a pour.
+
+    Kept as a real example of "too_fast" not implying something is
+    actually wrong with the shot - the mirror image of
+    HealthyAstringentAdaptPiTests' "healthy by timing, tasted bad" case.
+    These tests assert the *current*, correct too_fast classification -
+    they aren't a regression test for a bug fix, they document a real
+    example of two of the classifier's own known limitations for future
+    reference."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("too_fast_but_healthy_by_taste_adapt_pi")
+
+    def test_currently_classifies_too_fast_close_to_the_healthy_boundary(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "too_fast")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
+        )
+        self.assertEqual(result.classification, ShotClassification.TOO_FAST)
+        too_fast_factor, _ = flow_analysis.healthy_duration_ratio_bounds(CONFIG.duration_ratio_bands)
+        # Close to the boundary (not deep in too_fast territory) and with
+        # low channeling suspicion - consistent with a shot that was
+        # mechanically fine, just judged against a prior that doesn't yet
+        # reflect this particular bag's own faster natural pace.
+        self.assertAlmostEqual(too_fast_factor - result.duration_ratio, 0.037, places=2)
+        self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
+
+    def test_the_target_crossing_falls_inside_the_chart_s_own_healthy_window(self) -> None:
+        """The barista's own visual read of the graph: the weight trace
+        crosses target_yield_g well inside the healthy time window the
+        chart itself shades - even though t90 (90% of target, what
+        classification actually uses) crossed just before that window's
+        own start. Direct evidence for reason 2 in this class's own
+        docstring."""
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG
+        )
+        too_fast_factor, too_restrictive_factor = flow_analysis.healthy_duration_ratio_bounds(
+            CONFIG.duration_ratio_bands
+        )
+        expected_ms = self.shot.preinfusion_s * 1000 + (
+            self.shot.target_yield_g / CONFIG.expected_flow_g_s
+        ) * 1000
+        healthy_start_ms = expected_ms * too_fast_factor
+        healthy_end_ms = expected_ms * too_restrictive_factor
+        target_crossing_ms = next(
+            s.elapsed_ms for s in self.shot.samples if s.weight_g >= self.shot.target_yield_g
+        )
+        self.assertLess(result.t90_ms, healthy_start_ms)  # why classification says too_fast
+        self.assertTrue(healthy_start_ms <= target_crossing_ms <= healthy_end_ms)  # what the chart shows
+
+    def test_the_fixture_carries_the_balanced_taste_annotation(self) -> None:
+        self.assertEqual(self.shot.flavor_mouthfeel_tag, "balanced")
+
+
 if __name__ == "__main__":
     unittest.main()
