@@ -692,9 +692,17 @@ class BaristaDatabase:
             # now is (flow_analysis.py's analyze_shot expected_s formula),
             # not diluted by a pre-infusion duration that varies shot to shot
             # and would otherwise get blended in as if it were flow rate.
-            extraction_s = float(data["t90_ms"]) / 1000.0 - float(row["preinfusion_s"])
-            if extraction_s > 0:
-                flow_rates.append(float(row["target_yield_g"]) / extraction_s)
+            # t90_ms can be None even for a non-invalid classification (e.g.
+            # a timeout/choked shot that never reached 90% of its target but
+            # still produced a valid duration_ratio via analyze_shot's own
+            # final-sample-time fallback) - skip the flow-rate contribution
+            # for those rows rather than crashing, same as the existing
+            # extraction_s > 0 skip below.
+            t90_ms = data.get("t90_ms")
+            if t90_ms is not None:
+                extraction_s = float(t90_ms) / 1000.0 - float(row["preinfusion_s"])
+                if extraction_s > 0:
+                    flow_rates.append(float(row["target_yield_g"]) / extraction_s)
             ratios.append(float(row["target_yield_g"]) / float(row["dose_g"]))
             doses.append(float(row["dose_g"]))
         if not flow_rates:

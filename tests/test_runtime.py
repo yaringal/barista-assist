@@ -683,6 +683,61 @@ class ShotMarkersTests(RuntimeTestCase):
         global_prior = self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"]
         self.assertGreater(self.runtime.active_shot.expected_flow_g_s, global_prior)
 
+    async def test_adding_a_bag_then_brewing_survives_a_roast_level_shot_with_no_t90_crossing(self):
+        """End-to-end regression test for a real production crash: a
+        timeout/choked shot can be classified too_restrictive (not invalid)
+        via analyze_shot's own final-sample-time fallback, even though it
+        never reached 90% of its target - so its analysis_json's t90_ms is
+        None. Both async_new_bag (seeding a brand-new bag's recipe from its
+        roast-level pool) and async_brew (blending expected_flow_g_s from
+        that same pool) call storage.py's roast_level_baseline, which used
+        to crash on float(None) the moment such a shot entered the pool -
+        exactly this sequence (add a bag sharing that roast level, then
+        brew) is what a live user hit."""
+        pool_bag = await self.runtime.async_new_bag(
+            {
+                "slot": self.runtime.definitions.slots[0],
+                "coffee_name": "Pool bag",
+                "roast_level": "medium",
+                "target_yield_g": 50.0,
+            }
+        )
+        shot_id = self.runtime.db.create_shot(
+            bag=pool_bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=False,
+        )
+        self.runtime.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:01:00+00:00",
+            actual_yield_g=30.0,  # short of the 50g target - never reached t90
+            status="timeout",
+            stop_command_elapsed_ms=None,
+            samples=[ShotSample(0, 0, 0, 0.0, 0.0, 90)],
+            classification="too_restrictive",
+            channeling_suspicion=0.0,
+            analysis_json=json.dumps({"late_accel": 0.0, "t90_ms": None}),
+        )
+
+        # A brand-new bag in the other (empty) slot, sharing the same
+        # roast_level - async_new_bag's own roast-level-seeding query must
+        # not crash on the row above.
+        new_bag = await self.runtime.async_new_bag(
+            {
+                "slot": self.runtime.definitions.slots[1],
+                "coffee_name": "New bag",
+                "roast_level": "medium",
+            }
+        )
+        self.assertEqual(self.runtime.selected_slot, self.runtime.definitions.slots[1])
+
+        # async_brew's own blend of the same pool must not crash either.
+        await self.runtime.async_brew()
+        self.assertIsNotNone(self.runtime.active_shot)
+        self.assertEqual(self.runtime.active_shot.bag.id, new_bag.id)
+
 
 class MultiSlotLastShotScopingTests(RuntimeTestCase):
     """docs/DESIGN.md §17: "the active bag determines which recipe,
@@ -964,6 +1019,30 @@ class BrewValidationTests(RuntimeTestCase):
 
         with self.assertRaises(HomeAssistantError):
             await self.runtime.async_brew()
+
+    async def test_a_failure_after_connecting_the_scale_does_not_get_stuck_there(self):
+        """Regression test for a real production crash: an exception raised
+        anywhere between entering ShotPhase.CONNECTING_SCALE and creating
+        active_shot (e.g. storage.py's roast_level_baseline crashing on a
+        shot with no t90 crossing) left the dashboard showing "Connecting
+        scale" forever, since nothing ever reset the phase - unlike the
+        analogous try/except a few lines later, once active_shot exists.
+        No active_shot exists yet at this failure point, so there's nothing
+        for _async_finalize to finalize; the phase must be cleared directly
+        instead."""
+        await self.create_bag()
+
+        async def _boom(*_args, **_kwargs):
+            raise TypeError("float() argument must be a string or a real number, not 'NoneType'")
+
+        self.runtime._async_roast_level_flow_baseline = _boom
+
+        with self.assertRaises(TypeError):
+            await self.runtime.async_brew()
+
+        self.assertIsNone(self.runtime.active_shot)
+        self.assertNotEqual(self.runtime.status, ShotPhase.CONNECTING_SCALE.value)
+        self.assertEqual(self.runtime._phase, ShotPhase.IDLE)
 
 
 class NewBagValidationTests(RuntimeTestCase):

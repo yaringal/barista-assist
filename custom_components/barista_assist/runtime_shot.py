@@ -298,29 +298,41 @@ class RuntimeShotMixin:
                 raise HomeAssistantError("Stop compensation is too large for target yield")
 
             self._set_phase(ShotPhase.CONNECTING_SCALE)
-            await self.scale.async_ensure_connected()
-            await self.scale.async_wait_for_fresh_reading()
+            try:
+                await self.scale.async_ensure_connected()
+                await self.scale.async_wait_for_fresh_reading()
 
-            # Fixed once here, at brew time, rather than left to be computed
-            # only after the shot finishes (analyze_shot's own use of this)
-            # - the Live Shot/Shot History charts' idealized-curve overlay
-            # (_shot_markers) needs it available from the very first sample.
-            expected_flow_g_s = blended_expected_flow_g_s(
-                await self._async_roast_level_flow_baseline(bag.roast_level, bag.id),
-                FlowAnalysisConfig(**self.definitions.flow_analysis_constants),
-            )
-
-            started_at = datetime.now(timezone.utc).isoformat()
-            shot_id = await self.hass.async_add_executor_job(
-                lambda: self.db.create_shot(
-                    bag=bag,
-                    started_at=started_at,
-                    stop_compensation_g=self.early_stop_margin_min_g,
-                    preinfusion_s=preinfusion_s,
-                    adapt_pi=self.adapt_pi,
-                    expected_flow_g_s=expected_flow_g_s,
+                # Fixed once here, at brew time, rather than left to be
+                # computed only after the shot finishes (analyze_shot's own
+                # use of this) - the Live Shot/Shot History charts'
+                # idealized-curve overlay (_shot_markers) needs it available
+                # from the very first sample.
+                expected_flow_g_s = blended_expected_flow_g_s(
+                    await self._async_roast_level_flow_baseline(bag.roast_level, bag.id),
+                    FlowAnalysisConfig(**self.definitions.flow_analysis_constants),
                 )
-            )
+
+                started_at = datetime.now(timezone.utc).isoformat()
+                shot_id = await self.hass.async_add_executor_job(
+                    lambda: self.db.create_shot(
+                        bag=bag,
+                        started_at=started_at,
+                        stop_compensation_g=self.early_stop_margin_min_g,
+                        preinfusion_s=preinfusion_s,
+                        adapt_pi=self.adapt_pi,
+                        expected_flow_g_s=expected_flow_g_s,
+                    )
+                )
+            except Exception:
+                # No active_shot exists yet at this point, so there's
+                # nothing for _async_finalize to finalize - just clear the
+                # phase directly, matching the try/except a few lines below
+                # this one for the next phase (once active_shot does exist).
+                # Otherwise a failure here (e.g. the scale never connecting,
+                # or a bad roast-level baseline row) leaves the dashboard
+                # stuck showing "Connecting scale" forever.
+                self._set_phase(ShotPhase.IDLE)
+                raise
             self.active_shot = ActiveShot(
                 id=shot_id,
                 bag=bag,

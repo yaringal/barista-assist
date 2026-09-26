@@ -640,6 +640,23 @@ class StorageTests(unittest.TestCase):
 
         self.assertEqual(self.db.roast_level_baseline("medium")["shot_count"], 2)
 
+    def test_roast_level_baseline_skips_a_shot_with_no_t90_crossing(self) -> None:
+        """A real production crash: a timeout/choked shot can still be
+        classified too_restrictive (not invalid) via analyze_shot's own
+        final-sample-time fallback, even though it never reached 90% of its
+        target - so its analysis_json's t90_ms is None. roast_level_baseline
+        must skip that row's flow-rate contribution rather than crashing on
+        float(None), same as it already skips a row whose extraction_s
+        works out to <= 0."""
+        bag = self.new_bag(roast_level="medium")
+        self.finalize_with_analysis(bag, classification="too_restrictive", late_accel=0.0, t90_ms=None)
+        other_bag = self.new_bag(roast_level="medium")
+        self.finalize_with_analysis(other_bag, classification="healthy", late_accel=0.0, t90_ms=20000)
+
+        baseline = self.db.roast_level_baseline("medium")
+        self.assertEqual(baseline["shot_count"], 2)
+        self.assertAlmostEqual(baseline["median_flow_g_s"], 36.0 / 13.0)
+
     def test_roast_level_baseline_medians_across_bags_sharing_roast_level(self) -> None:
         # finalize_with_analysis's own shots all carry preinfusion_s=7.0 -
         # median_flow_g_s is extraction-only (t90 minus that preinfusion_s),

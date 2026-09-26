@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.9
+
+### Fixed
+
+- **A real crash, reported live**: pressing "Brew" (or adding a new bag) could fail outright with `float() argument must be a string or a real number, not 'NoneType'`, and leave the dashboard stuck showing "Connecting scale" afterward with no way to brew until the integration was reloaded. Root cause: a timeout/choked shot can be classified `too_restrictive` (not `invalid_measurement`) even though it never reached 90% of its target yield - a legitimate, unremarkable outcome of `analyze_shot`'s own final-sample-time fallback - so its stored `t90_ms` is `None`. Both adding a new bag and brewing one read a shared roast-level flow-rate pool (`storage.roast_level_baseline`) that assumed every pooled shot had a real `t90_ms`, and crashed the instant a shot like that entered the pool. That row is now skipped for the flow-rate calculation (same as an already-existing skip for a zero/negative extraction time), rather than crashing.
+- **Hardening**: a failure anywhere between the scale connecting and a shot actually starting (this crash included) no longer leaves the dashboard stuck on "Connecting scale" - the phase is now reset on any such failure, matching the equivalent safety net that already existed for the step right after it.
+
+### Testing
+
+- Added a direct regression test for the crash itself (`roast_level_baseline` given a shot with no `t90_ms`), and an end-to-end test reproducing the exact real sequence (add a bag sharing a roast level with such a shot, then brew).
+- Added a regression test confirming a mid-setup brew failure clears the phase instead of leaving it stuck.
+- Full suite: 338 tests, all passing (up from 335).
+
 ## 0.3.8
 
 ### Fixed

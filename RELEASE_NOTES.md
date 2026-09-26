@@ -1,11 +1,11 @@
-# Barista Assist v0.3.8
+# Barista Assist v0.3.9
 
-A real classification-accuracy fix: shots that finish inside the chart's own "healthy" window no longer get flagged too fast.
+A real crash fix: pressing Brew (or adding a new bag) could fail outright and leave the dashboard stuck on "Connecting scale".
 
 ## Fixed
 
-- A shot could classify "too fast" even though it visibly finished inside the shot chart's own shaded healthy time window. Classification was driven by time-to-90%-of-target instead of the actual completion time the chart itself shows - a shot with a slower late-stage pour could cross 90% just barely too early while its real completion landed safely inside the healthy window. Classification now prefers a shot's real completion time when it reaches one, only estimating from the 90% mark for shots that never reach their target.
-- Double-checked this fix against James Hoffmann's own published dial-in results before changing anything else - the existing too-fast/too-restrictive boundaries didn't need to move, they were already right for this corrected measurement.
+- Pressing "Brew" (or adding a new bag) could crash with a `float()` error, and leave the dashboard stuck showing "Connecting scale" with no way to brew until the integration was reloaded. Caused by a timeout/choked shot - a normal, if disappointing, real-world outcome - being missing one particular timing value that a shared roast-level lookup assumed was always present. That lookup now skips such shots gracefully instead of crashing.
+- As a safety net, any failure between the scale connecting and a shot actually starting no longer leaves the dashboard stuck on "Connecting scale".
 
 ## Upgrade
 
@@ -13,5 +13,6 @@ No manual steps required. Update via HACS and restart Home Assistant as usual - 
 
 ## Testing
 
-- One real shot fixture now correctly classifies healthy (the exact shot that prompted this fix); three others now correctly classify too_restrictive instead of healthy, a more accurate read on shots that were undershoots with a slow finish.
-- Full suite: 335 tests, all passing (up from 331).
+- Added a direct regression test for the crash, plus an end-to-end test reproducing the exact real sequence that triggered it (add a bag sharing a roast level with an affected shot, then brew).
+- Added a regression test confirming a mid-setup brew failure clears the phase instead of leaving it stuck.
+- Full suite: 338 tests, all passing (up from 335).
