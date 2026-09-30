@@ -1,12 +1,21 @@
 # Changelog
 
+## 0.3.11
+
+### Fixed
+
+- **The actuator delay added in 0.3.10 was still about a second too long**, reported live from directly watching the Live Shot chart: real flow was visibly already rising while still inside the grey pre-infusion band, on most shots. Checked against real data: `stop_latency_normal_s` alone (3.2s) left flow starting *inside* the band on 6 of 9 real adapt_pi shots; a new `-1.0s` correction (`stop_latency_calibration.preinfusion_actuator_offset_s`) brings that down to 2 of 9 - both already-documented outliers (a near-stalled puck, an unrelated noise-wobble fixture) unrelated to the actuator delay itself. No shot's classification changes as a result of this specific correction.
+
+### Testing
+
+- Full suite: 340 tests, all passing.
+
 ## 0.3.10
 
 ### Fixed
 
-- **A held (`adapt_pi`) pre-infusion could still be classified `too_restrictive` for real, reported shots that a barista judged healthy or balanced** - reported live: "the PI programmed is 7s but we count 10s with no flow." Checking the gap between the programmed pre-infusion duration and when flow actually started across every real shot in this installation's history confirmed it: for a Bot-held pre-infusion specifically (never for a machine-controlled one), the Bot's own press/hold/release cycle needs real time beyond the programmed hold before flow can plausibly begin - consistently, regardless of how the shot itself later classified. `duration_ratio`'s expected-time budget now accounts for this (based on `stop_latency_normal_s`, the same already-learned latency the stop side uses for the same physical Bot/valve transition, minus a small fixed correction - see below) for any shot whose pre-infusion was Bot-held; a machine-controlled pre-infusion is unaffected.
+- **A held (`adapt_pi`) pre-infusion could still be classified `too_restrictive` for real, reported shots that a barista judged healthy or balanced** - reported live: "the PI programmed is 7s but we count 10s with no flow." Checking the gap between the programmed pre-infusion duration and when flow actually started across every real shot in this installation's history confirmed it: for a Bot-held pre-infusion specifically (never for a machine-controlled one), the Bot's own press/hold/release cycle needs real time beyond the programmed hold before flow can plausibly begin - consistently, regardless of how the shot itself later classified. `duration_ratio`'s expected-time budget now accounts for this (based on `stop_latency_normal_s`, the same already-learned latency the stop side uses for the same physical Bot/valve transition) for any shot whose pre-infusion was Bot-held; a machine-controlled pre-infusion is unaffected.
 - **The shot chart's grey "Pre-infusion" band now shows the actual Bot-held window**, not just `[0, preinfusion_s]` - the Bot's press event fires at 0, but the real hold doesn't begin until the same actuator delay above has elapsed, so that leading span was being shaded as pre-infusion when it wasn't. The band now starts after that delay and keeps the same width as the programmed hold duration. A machine-controlled pre-infusion is unaffected (the band still starts at 0).
-- **That actuator delay itself was still about a second too long**, reported live from directly watching the chart: real flow was visibly already rising while still inside the grey band, on most shots. Checked against real data: `stop_latency_normal_s` alone (3.2s) left flow starting *inside* the band on 6 of 9 real adapt_pi shots; a new `-1.0s` correction (`stop_latency_calibration.preinfusion_actuator_offset_s`) brings that down to 2 of 9 - both already-documented outliers (a near-stalled puck, an unrelated noise-wobble fixture). No shot's classification changes as a result.
 
 ### Testing
 
