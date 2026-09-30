@@ -341,6 +341,7 @@ class RuntimeShotMixin:
                 target_yield_g=bag.target_yield_g,
                 early_stop_margin_min_g=self.early_stop_margin_min_g,
                 preinfusion_s=preinfusion_s,
+                adapt_pi=self.adapt_pi,
                 expected_flow_g_s=expected_flow_g_s,
                 samples=[],
                 # With Adapt PI off, the machine runs its own pre-infusion on
@@ -643,6 +644,15 @@ class RuntimeShotMixin:
             # the user, not silently diverge from it.
             expected_flow_g_s=shot.expected_flow_g_s,
             config=flow_analysis_config,
+            # Only a Bot-held pre-infusion goes through the Bot's own
+            # press/hold/release cycle - see analyze_shot's own comment on
+            # actuator_delay_s. stop_latency_normal_s is reused rather than
+            # learning a second, separate delay: the same physical Bot/valve
+            # transition applies to both (_async_press_brew_bot is "used by
+            # brew, stop, and abort alike"), and "normal" (not "elevated") is
+            # the right bucket since pre-infusion is inherently a near-zero-
+            # flow state.
+            actuator_delay_s=self.stop_latency_normal_s if shot.adapt_pi else 0.0,
         )
         if analysis.invalid_reason is not None:
             _LOGGER.warning(
@@ -726,15 +736,27 @@ class RuntimeShotMixin:
         shots = await self.hass.async_add_executor_job(lambda: self.db.recent_shots(limit=None))
         duration_ratio_bands = self._live_duration_ratio_bands()
         for shot in shots:
+            preinfusion_ms = int(shot["preinfusion_s"] * 1000)
+            actuator_delay_s = self.stop_latency_normal_s if bool(shot["adapt_pi"]) else 0.0
             healthy_window = healthy_window_ms(
-                int(shot["preinfusion_s"] * 1000),
+                preinfusion_ms,
                 shot["target_yield_g"],
                 shot.get("expected_flow_g_s"),
                 duration_ratio_bands,
+                actuator_delay_s,
             )
             shot["healthy_start_ms"], shot["healthy_end_ms"] = (
                 healthy_window if healthy_window else (None, None)
             )
+            # The chart's own grey pre-infusion band/label must cover only
+            # the actual Bot-held window - [actuator_delay_s, actuator_delay_s
+            # + preinfusion_s] - not [0, ...]: the Bot's press event fires at
+            # 0, but the hold itself doesn't begin until actuator_delay_s
+            # later (see _build_shot_markers's own comment), so that leading
+            # span is dead time before pre-infusion, not pre-infusion itself.
+            pi_band_start_ms = round(actuator_delay_s * 1000)
+            shot["pi_band_start_ms"] = pi_band_start_ms
+            shot["pi_band_end_ms"] = pi_band_start_ms + preinfusion_ms
         return shots
 
     async def async_shot_samples(

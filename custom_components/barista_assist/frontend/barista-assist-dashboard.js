@@ -354,10 +354,16 @@ function renderShotChart(samples, markers = {}) {
     )
     .join("");
 
+  // pi_band_start_ms/pi_band_end_ms (the actual Bot-held pre-infusion
+  // window, not [0, preinfusion_ms] - see runtime_entities.py's
+  // _build_shot_markers) are what the band/label actually cover; fall back
+  // to [0, preinfusion_ms] for a marker shape that predates those fields.
   const preinfusionMs = markers?.preinfusion_ms;
+  const piBandStartMs = markers?.pi_band_start_ms ?? 0;
+  const piBandEndMs = markers?.pi_band_end_ms ?? preinfusionMs;
   const piBand =
-    preinfusionMs > 0
-      ? `<rect x="${axisLeft}" y="${axisTop}" width="${(x(preinfusionMs) - axisLeft).toFixed(1)}" height="${(axisBottom - axisTop).toFixed(1)}" class="pi-band" />`
+    piBandEndMs > 0
+      ? `<rect x="${x(piBandStartMs).toFixed(1)}" y="${axisTop}" width="${(x(piBandEndMs) - x(piBandStartMs)).toFixed(1)}" height="${(axisBottom - axisTop).toFixed(1)}" class="pi-band" />`
       : "";
   const healthyBand = healthy
     ? `<rect x="${x(healthy.start_ms).toFixed(1)}" y="${axisTop}" width="${(x(healthy.end_ms) - x(healthy.start_ms)).toFixed(1)}" height="${(axisBottom - axisTop).toFixed(1)}" class="healthy-band" />`
@@ -378,8 +384,8 @@ function renderShotChart(samples, markers = {}) {
     ? `<line class="predicted-stop-line" x1="${x(predictedStopMs).toFixed(1)}" y1="${axisTop}" x2="${x(predictedStopMs).toFixed(1)}" y2="${axisBottom}" />`
     : "";
   const piLabel =
-    preinfusionMs > 0
-      ? `<span class="pi-label" style="left:${(((axisLeft + x(preinfusionMs)) / 2 / width) * 100).toFixed(2)}%">Pre-infusion</span>`
+    piBandEndMs > 0
+      ? `<span class="pi-label" style="left:${(((x(piBandStartMs) + x(piBandEndMs)) / 2 / width) * 100).toFixed(2)}%">Pre-infusion</span>`
       : "";
   const healthyLabel = healthy
     ? `<span class="healthy-label" style="left:${(((x(healthy.start_ms) + x(healthy.end_ms)) / 2 / width) * 100).toFixed(2)}%">Healthy</span>`
@@ -714,6 +720,13 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
   _shotMarkers(shot) {
     return {
       preinfusion_ms: typeof shot.preinfusion_s === "number" ? shot.preinfusion_s * 1000 : null,
+      // Server-computed (async_list_shots), same as healthy_start_ms/
+      // healthy_end_ms below - the actual Bot-held pre-infusion window for
+      // an adapt_pi shot starts after its own actuator delay, not at 0,
+      // which this client has no way to compute itself (stop_latency_
+      // normal_s is a live runtime value).
+      pi_band_start_ms: shot.pi_band_start_ms ?? null,
+      pi_band_end_ms: shot.pi_band_end_ms ?? null,
       stop_command_elapsed_ms: shot.stop_command_elapsed_ms ?? null,
       expected_flow_g_s: shot.expected_flow_g_s ?? null,
       target_yield_g: shot.target_yield_g ?? null,

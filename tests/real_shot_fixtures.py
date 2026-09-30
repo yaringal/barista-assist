@@ -35,6 +35,15 @@ class RealShot:
         return float(self.fields["target_yield_g"])
 
     @property
+    def adapt_pi(self) -> bool:
+        """Whether this shot held the brew Bot for preinfusion_s (True) or
+        let the machine run its own built-in pre-infusion on a single quick
+        tap (False) - see fields["adapt_pi"]'s own per-file NOTE comment for
+        fixtures that predate this export field (a hand-added annotation of
+        the barista's own recollection, not raw export data, for those)."""
+        return self.fields["adapt_pi"] == "True"
+
+    @property
     def preinfusion_s(self) -> float:
         """The effective pre-infusion duration analyze_shot should be called
         with - storage.py's export_shots_text always logs a shot's own

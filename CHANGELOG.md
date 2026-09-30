@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.10
+
+### Fixed
+
+- **A held (`adapt_pi`) pre-infusion could still be classified `too_restrictive` for real, reported shots that a barista judged healthy or balanced** - reported live: "the PI programmed is 7s but we count 10s with no flow." Checking the gap between the programmed pre-infusion duration and when flow actually started across every real shot in this installation's history confirmed it: for a Bot-held pre-infusion specifically (never for a machine-controlled one), the Bot's own press/hold/release cycle needs real time beyond the programmed hold before flow can plausibly begin - consistently, regardless of how the shot itself later classified. `duration_ratio`'s expected-time budget now accounts for this (reusing `stop_latency_normal_s`, the same already-learned latency the stop side uses for the same physical Bot/valve transition, rather than a new guess) for any shot whose pre-infusion was Bot-held; a machine-controlled pre-infusion is unaffected.
+- **The shot chart's grey "Pre-infusion" band now shows the actual Bot-held window**, not just `[0, preinfusion_s]` - the Bot's press event fires at 0, but the real hold doesn't begin until the same actuator delay above has elapsed, so that leading span was being shaded as pre-infusion when it wasn't. The band now starts after that delay and keeps the same width as the programmed hold duration. A machine-controlled pre-infusion is unaffected (the band still starts at 0).
+
+### Testing
+
+- Four real shot fixtures flip classification under the corrected budget - three from `too_restrictive` back to `healthy` (matching their original barista-confirmed calls), one from `healthy` to `too_fast` (the chart's own healthy-window shading shifts by the same amount, so it still agrees with the classifier - a genuine timing-vs-taste disagreement, not a contradiction).
+- Full suite: 340 tests, all passing (up from 338).
+
 ## 0.3.9
 
 ### Fixed

@@ -1,11 +1,11 @@
-# Barista Assist v0.3.9
+# Barista Assist v0.3.10
 
-A real crash fix: pressing Brew (or adding a new bag) could fail outright and leave the dashboard stuck on "Connecting scale".
+A second classification-accuracy fix, plus a matching chart correction: shots with a held (app-controlled) pre-infusion get a fairer read.
 
 ## Fixed
 
-- Pressing "Brew" (or adding a new bag) could crash with a `float()` error, and leave the dashboard stuck showing "Connecting scale" with no way to brew until the integration was reloaded. Caused by a timeout/choked shot - a normal, if disappointing, real-world outcome - being missing one particular timing value that a shared roast-level lookup assumed was always present. That lookup now skips such shots gracefully instead of crashing.
-- As a safety net, any failure between the scale connecting and a shot actually starting no longer leaves the dashboard stuck on "Connecting scale".
+- A shot with a held pre-infusion (Adapt PI on) could still be classified "too restrictive" even when a barista judged it healthy or balanced - reported live: "the PI programmed is 7s but we count 10s with no flow." The app-controlled Bot needs real time to physically engage, hold, and release before flow can begin, beyond the programmed hold duration itself - the expected-time budget now accounts for that (reusing the same already-learned delay the stop side already relies on). A machine-controlled pre-infusion is unaffected.
+- The shot chart's grey "Pre-infusion" band now shows the real held window instead of starting from the very beginning of the shot - it was shading a stretch of time that wasn't actually pre-infusion.
 
 ## Upgrade
 
@@ -13,6 +13,5 @@ No manual steps required. Update via HACS and restart Home Assistant as usual - 
 
 ## Testing
 
-- Added a direct regression test for the crash, plus an end-to-end test reproducing the exact real sequence that triggered it (add a bag sharing a roast level with an affected shot, then brew).
-- Added a regression test confirming a mid-setup brew failure clears the phase instead of leaving it stuck.
-- Full suite: 338 tests, all passing (up from 335).
+- Four real shot fixtures reclassify under the fix - three correctly back to healthy, one to too fast (with the chart's own shading confirmed to still agree with the new classification).
+- Full suite: 340 tests, all passing (up from 338).

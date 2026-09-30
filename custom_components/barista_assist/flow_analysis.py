@@ -542,21 +542,31 @@ def healthy_duration_ratio_bounds(duration_ratio_bands: tuple[dict[str, Any], ..
 
 
 def expected_shot_seconds(
-    preinfusion_s: float, target_yield_g: float, expected_flow_g_s: float
+    preinfusion_s: float,
+    target_yield_g: float,
+    expected_flow_g_s: float,
+    actuator_delay_s: float = 0.0,
 ) -> float:
     """analyze_shot's own "how long should this shot take" reference -
-    preinfusion_s plus target_yield_g/expected_flow_g_s (see analyze_shot's
-    own expected_s comment for why this deliberately scales with
-    target_yield_g, and adds preinfusion_s on top rather than folding it
-    into the rate). Factored out so healthy_window_ms below - which backs
-    the Live Shot/Shot History charts' healthy-window shading (see
+    preinfusion_s plus actuator_delay_s plus target_yield_g/expected_flow_g_s
+    (see analyze_shot's own expected_s comment for why this deliberately
+    scales with target_yield_g, and adds preinfusion_s/actuator_delay_s on
+    top rather than folding them into the rate). actuator_delay_s is 0.0 for
+    a machine-controlled pre-infusion (nothing to budget - see analyze_shot's
+    own comment on why), the caller's live stop_latency_normal_s otherwise
+    (see _async_finalize). Factored out so healthy_window_ms below - which
+    backs the Live Shot/Shot History charts' healthy-window shading (see
     runtime_entities.py's _shot_markers) - shares this exact formula with
     analyze_shot's own too_fast/too_restrictive classification, rather than
     a second copy in the frontend that could silently drift out of sync if
     this formula ever changes (e.g. the ramp-up modeling analyze_shot's own
     "Open caveat" comment anticipates). 0.0 when expected_flow_g_s isn't a
     usable positive rate."""
-    return preinfusion_s + target_yield_g / expected_flow_g_s if expected_flow_g_s > 0 else 0.0
+    return (
+        preinfusion_s + actuator_delay_s + target_yield_g / expected_flow_g_s
+        if expected_flow_g_s > 0
+        else 0.0
+    )
 
 
 def healthy_window_ms(
@@ -564,17 +574,23 @@ def healthy_window_ms(
     target_yield_g: float | None,
     expected_flow_g_s: float | None,
     duration_ratio_bands: tuple[dict[str, Any], ...],
+    actuator_delay_s: float = 0.0,
 ) -> tuple[float, float] | None:
     """(start_ms, end_ms) of the time window analyze_shot's own too_fast/
     too_restrictive classification draws its line at - expected_shot_
     seconds * (too_fast_factor, too_restrictive_factor), in ms. Backs the
     Live Shot/Shot History charts' healthy-window shading directly (see
     runtime_entities.py's _shot_markers) so the frontend never recomputes
-    this formula itself. None when target_yield_g/expected_flow_g_s aren't
-    known yet."""
+    this formula itself. actuator_delay_s must match whatever analyze_shot
+    itself was/will be called with for this same shot (see
+    expected_shot_seconds's own comment), or this shading would silently
+    disagree with the real classification again. None when target_yield_g/
+    expected_flow_g_s aren't known yet."""
     if not target_yield_g or not expected_flow_g_s:
         return None
-    expected_s = expected_shot_seconds(preinfusion_ms / 1000, target_yield_g, expected_flow_g_s)
+    expected_s = expected_shot_seconds(
+        preinfusion_ms / 1000, target_yield_g, expected_flow_g_s, actuator_delay_s
+    )
     too_fast_factor, too_restrictive_factor = healthy_duration_ratio_bounds(duration_ratio_bands)
     return expected_s * too_fast_factor * 1000, expected_s * too_restrictive_factor * 1000
 
@@ -619,6 +635,7 @@ def analyze_shot(
     baseline: BaselineFeatures | None,
     expected_flow_g_s: float,
     config: FlowAnalysisConfig,
+    actuator_delay_s: float = 0.0,
 ) -> ShotAnalysis:
     """Classify one shot's flow curve (docs/DESIGN.md section 13, Stage 1).
 
@@ -642,6 +659,11 @@ def analyze_shot(
     bag's shot finishing), and classification must match what the Live
     Shot/Shot History charts' idealized-curve overlay already showed the
     user, not silently diverge from it.
+
+    actuator_delay_s (default 0.0) budgets extra dead time between the
+    configured preinfusion_s and when flow can plausibly start, for a shot
+    whose pre-infusion was held by the brew Bot rather than run by the
+    machine's own built-in timer - see the expected_s comment below for why.
     """
     if len(samples) < config.min_samples:
         return _invalid(InvalidReason.TOO_FEW_SAMPLES)
@@ -783,13 +805,34 @@ def analyze_shot(
     # budget that same dead time or every shot reads as slower than it
     # actually poured - matching the idealized-curve overlay the dashboard
     # already draws (flat through pre-infusion, then ramping to
-    # target_yield_g over expected_s). Open caveat, not yet addressed: flow
-    # isn't necessarily constant across the pour itself (a real ramp-up
-    # period between first-flow and a roughly-steady rate), and this
-    # formula doesn't budget that ramp-up as separate dead time on top of
-    # preinfusion_s - needs real data to fit the ramp-up shape before
-    # changing it.
-    expected_s = expected_shot_seconds(preinfusion_s, target_yield_g, expected_flow_g_s)
+    # target_yield_g over expected_s).
+    #
+    # actuator_delay_s budgets one specific piece of that dead time: a
+    # Bot-held pre-infusion routes through the Bot's own physical press/
+    # hold/release cycle on the same valve/pump system a stop press acts
+    # on, so real flow can plausibly start only after that release *plus*
+    # however long it takes the machine to build from near-zero to real
+    # pressure - not the instant the programmed hold duration elapses. A
+    # live user report ("the PI programmed is 7s but we count 10s with no
+    # flow") confirmed this: t_first_flow_ms landing ~3.2s past
+    # preinfusion_s, consistently, across real adapt_pi shots regardless of
+    # classification - and 3.2s is stop_latency_normal_s's own seed value,
+    # the already-learned estimate for that same Bot/valve transition's
+    # latency on the stop side. Reusing it here (rather than learning a
+    # second, separate delay from scratch) is what _async_finalize passes
+    # in. A machine-controlled pre-infusion never engages the Bot for the
+    # hold itself (a single quick tap starts the machine's own onboard
+    # timer), so it has no such actuator step to budget - actuator_delay_s
+    # is 0.0 for those shots.
+    #
+    # Open caveat, still not addressed: flow isn't necessarily constant
+    # across the pour itself (a real ramp-up period between first-flow and
+    # a roughly-steady rate), and this formula doesn't budget that ramp-up
+    # as separate dead time on top of preinfusion_s/actuator_delay_s -
+    # needs real data to fit the ramp-up shape before changing it.
+    expected_s = expected_shot_seconds(
+        preinfusion_s, target_yield_g, expected_flow_g_s, actuator_delay_s
+    )
     duration_ratio = duration_s / expected_s if expected_s > 0 else None
 
     absolute_score = _absolute_mechanical_suspicion(mid_accel, late_accel, config)

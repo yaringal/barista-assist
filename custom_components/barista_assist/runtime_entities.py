@@ -565,6 +565,7 @@ class RuntimeEntitiesMixin:
         if shot is not None and shot.press_monotonic is not None:
             return self._build_shot_markers(
                 preinfusion_s=shot.preinfusion_s,
+                adapt_pi=shot.adapt_pi,
                 target_yield_g=shot.target_yield_g,
                 expected_flow_g_s=shot.expected_flow_g_s,
                 stop_command_elapsed_ms=shot.stop_command_elapsed_ms,
@@ -573,6 +574,7 @@ class RuntimeEntitiesMixin:
         if self.last_shot:
             return self._build_shot_markers(
                 preinfusion_s=self.last_shot["preinfusion_s"],
+                adapt_pi=bool(self.last_shot["adapt_pi"]),
                 target_yield_g=self.last_shot["target_yield_g"],
                 expected_flow_g_s=self.last_shot.get("expected_flow_g_s"),
                 stop_command_elapsed_ms=self.last_shot.get("stop_command_elapsed_ms"),
@@ -584,6 +586,7 @@ class RuntimeEntitiesMixin:
         self,
         *,
         preinfusion_s: float,
+        adapt_pi: bool,
         target_yield_g: float | None,
         expected_flow_g_s: float | None,
         stop_command_elapsed_ms: int | None,
@@ -601,21 +604,42 @@ class RuntimeEntitiesMixin:
         classification draws its line at, computed here rather than in the
         frontend so the healthy-window shading (barista-assist-
         dashboard.js's healthyWindow) can never silently diverge from what
-        actually classified the shot if that formula ever changes.
+        actually classified the shot if that formula ever changes. adapt_pi
+        decides whether that window also budgets stop_latency_normal_s as
+        actuator_delay_s (see analyze_shot's own comment) - it must match
+        whatever analyze_shot itself used/will use for this same shot.
         predicted_stop_elapsed_ms (runtime_shot.py's
         _predicted_stop_elapsed_ms) is when that same decision expected the
         shot to actually finish pouring, drawn as a second, distinct
         vertical line from stop_command_elapsed_ms itself, since the two
         differ by the machine's own physical stop latency. None values
         mean "not known yet" (e.g. stop_command_elapsed_ms before the shot
-        has actually stopped) - the frontend must not treat that as zero."""
+        has actually stopped) - the frontend must not treat that as zero.
+        pi_band_start_ms/pi_band_end_ms are the Bot-held pre-infusion
+        window itself, in ms: the brew Bot's own press event fires at 0,
+        but the actual hold doesn't begin until actuator_delay_s later (the
+        Bot physically engaging the button) and lasts preinfusion_s from
+        there, releasing on its own - so [0, actuator_delay_s] is dead time
+        before any real pre-infusion starts, not pre-infusion itself, and
+        the chart's own grey band/label (barista-assist-dashboard.js's
+        piBand) must not shade it as such. For a machine-controlled shot
+        (actuator_delay_s=0.0), pi_band_start_ms is 0 and this collapses to
+        the plain [0, preinfusion_ms] band it's always been."""
         preinfusion_ms = int(preinfusion_s * 1000)
+        actuator_delay_s = self.stop_latency_normal_s if adapt_pi else 0.0
         healthy_window = healthy_window_ms(
-            preinfusion_ms, target_yield_g, expected_flow_g_s, self._live_duration_ratio_bands()
+            preinfusion_ms,
+            target_yield_g,
+            expected_flow_g_s,
+            self._live_duration_ratio_bands(),
+            actuator_delay_s,
         )
         healthy_start_ms, healthy_end_ms = healthy_window if healthy_window else (None, None)
+        pi_band_start_ms = round(actuator_delay_s * 1000)
         return {
             "preinfusion_ms": preinfusion_ms,
+            "pi_band_start_ms": pi_band_start_ms,
+            "pi_band_end_ms": pi_band_start_ms + preinfusion_ms,
             "stop_command_elapsed_ms": stop_command_elapsed_ms,
             "predicted_stop_elapsed_ms": self._predicted_stop_elapsed_ms(
                 samples, stop_command_elapsed_ms

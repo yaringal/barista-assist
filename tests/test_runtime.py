@@ -123,10 +123,17 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         see flow_analysis.py's analyze_shot - and a linear ramp to
         target_yield_g reaches exactly 100% at its own last sample, so
         ramp_seconds is simply the remaining duration after the flat
-        lead-in, with no t90-style 0.9 correction."""
+        lead-in, with no t90-style 0.9 correction.
+
+        expected_s also budgets actuator_delay_s (stop_latency_normal_s,
+        for the default adapt_pi=True) the same way _async_finalize's own
+        analyze_shot call does - see analyze_shot's own comment on why a
+        Bot-held pre-infusion needs that extra budgeted dead time and a
+        machine-controlled one doesn't."""
         expected_flow_g_s = self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"]
         preinfusion_s = self.runtime.selected_bag.preinfusion_s
-        expected_s = preinfusion_s + target_yield_g / expected_flow_g_s
+        actuator_delay_s = self.runtime.stop_latency_normal_s if self.runtime.adapt_pi else 0.0
+        expected_s = preinfusion_s + actuator_delay_s + target_yield_g / expected_flow_g_s
         duration_s = target_ratio * expected_s
         return duration_s - flat_ms / 1000
 
@@ -575,7 +582,16 @@ class ShotMarkersTests(RuntimeTestCase):
         markers = self.runtime._shot_markers()
 
         self.assertEqual(markers["preinfusion_ms"], 2000)
+        # adapt_pi=True by default (start_shot) - the chart's own grey
+        # pre-infusion band/label must cover the actual Bot-held window,
+        # which starts after the Bot's own actuator delay, not at 0 (see
+        # _build_shot_markers's own comment) - the band's width still
+        # matches the programmed hold duration exactly, just shifted later.
+        actuator_delay_ms = round(self.runtime.stop_latency_normal_s * 1000)
+        self.assertEqual(markers["pi_band_start_ms"], actuator_delay_ms)
+        self.assertEqual(markers["pi_band_end_ms"], actuator_delay_ms + 2000)
         self.assertIsNone(markers["stop_command_elapsed_ms"])
+
         # No prior healthy shots for this brand-new bag - falls back to the
         # global prior (flow_analysis_constants.expected_flow_g_s).
         self.assertAlmostEqual(
@@ -588,7 +604,11 @@ class ShotMarkersTests(RuntimeTestCase):
         # the live duration_ratio_bands, not recomputed by the frontend) -
         # the chart's healthy-window shading must use these exact values.
         expected_start, expected_end = flow_analysis_module.healthy_window_ms(
-            2000, 36.0, markers["expected_flow_g_s"], self.runtime._live_duration_ratio_bands()
+            2000,
+            36.0,
+            markers["expected_flow_g_s"],
+            self.runtime._live_duration_ratio_bands(),
+            self.runtime.stop_latency_normal_s,  # adapt_pi=True by default (start_shot)
         )
         self.assertEqual(markers["healthy_start_ms"], expected_start)
         self.assertEqual(markers["healthy_end_ms"], expected_end)
@@ -619,6 +639,24 @@ class ShotMarkersTests(RuntimeTestCase):
             stop_ms + round(self.runtime.stop_latency_normal_s * 1000),
         )
 
+    async def test_pi_band_has_no_actuator_delay_for_a_machine_controlled_shot(self):
+        """Mirrors test_reflects_the_active_shot above, but adapt_pi=False:
+        the machine runs its own built-in pre-infusion on a single quick
+        tap, never engaging the Bot for the hold itself - see analyze_shot's
+        own comment on why only a Bot-held pre-infusion needs
+        actuator_delay_s budgeted. The band collapses to plain
+        [0, preinfusion_ms] here - pi_band_start_ms is 0, pi_band_end_ms
+        equals preinfusion_ms exactly."""
+        self.runtime.adapt_pi = False
+        self.runtime.machine_pi_s = 2.0  # the effective preinfusion_s when adapt_pi=False
+        await self.start_shot(target_yield_g=36.0)
+
+        markers = self.runtime._shot_markers()
+
+        self.assertEqual(markers["preinfusion_ms"], 2000)
+        self.assertEqual(markers["pi_band_start_ms"], 0)
+        self.assertEqual(markers["pi_band_end_ms"], 2000)
+
     async def test_reflects_the_last_finished_shot(self):
         await self.start_shot(preinfusion_s=1.0)
         await self.wait_for_extracting()
@@ -628,10 +666,17 @@ class ShotMarkersTests(RuntimeTestCase):
         markers = self.runtime._shot_markers()
 
         self.assertEqual(markers["preinfusion_ms"], 1000)
+        actuator_delay_ms = round(self.runtime.stop_latency_normal_s * 1000)
+        self.assertEqual(markers["pi_band_start_ms"], actuator_delay_ms)
+        self.assertEqual(markers["pi_band_end_ms"], actuator_delay_ms + 1000)
         self.assertIsNotNone(markers["expected_flow_g_s"])
         self.assertEqual(markers["target_yield_g"], 36.0)
         expected_start, expected_end = flow_analysis_module.healthy_window_ms(
-            1000, 36.0, markers["expected_flow_g_s"], self.runtime._live_duration_ratio_bands()
+            1000,
+            36.0,
+            markers["expected_flow_g_s"],
+            self.runtime._live_duration_ratio_bands(),
+            self.runtime.stop_latency_normal_s,  # adapt_pi=True by default (start_shot)
         )
         self.assertEqual(markers["healthy_start_ms"], expected_start)
         self.assertEqual(markers["healthy_end_ms"], expected_end)
@@ -2476,10 +2521,29 @@ class ShotHistoryTests(RuntimeTestCase):
         shots = await self.runtime.async_list_shots()
 
         expected_start, expected_end = flow_analysis_module.healthy_window_ms(
-            1000, 36.0, shots[0]["expected_flow_g_s"], self.runtime._live_duration_ratio_bands()
+            1000,
+            36.0,
+            shots[0]["expected_flow_g_s"],
+            self.runtime._live_duration_ratio_bands(),
+            self.runtime.stop_latency_normal_s,  # adapt_pi=True by default (start_shot)
         )
         self.assertEqual(shots[0]["healthy_start_ms"], expected_start)
         self.assertEqual(shots[0]["healthy_end_ms"], expected_end)
+
+    async def test_list_shots_includes_its_own_pi_band(self):
+        """The shot-history view's own per-shot chart draws the same grey
+        pre-infusion band the Live Shot card does (see runtime_entities.py's
+        _build_shot_markers) - pi_band_start_ms/pi_band_end_ms aren't stored
+        per shot either, so they're enriched here the same way
+        healthy_start_ms/healthy_end_ms are, right above."""
+        await self.start_shot(preinfusion_s=1.0, target_yield_g=36.0)
+        await self.runtime._async_finalize("complete")
+
+        shots = await self.runtime.async_list_shots()
+
+        actuator_delay_ms = round(self.runtime.stop_latency_normal_s * 1000)
+        self.assertEqual(shots[0]["pi_band_start_ms"], actuator_delay_ms)
+        self.assertEqual(shots[0]["pi_band_end_ms"], actuator_delay_ms + 1000)
 
     async def test_export_shots_text_can_filter_to_one_shot(self):
         """The shot-history card's per-row export button - a pass-through to

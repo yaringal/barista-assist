@@ -71,6 +71,15 @@ class ActiveShot:
     target_yield_g: float
     early_stop_margin_min_g: float
     preinfusion_s: float
+    # Whether this specific shot held the brew Bot for preinfusion_s (True)
+    # or let the machine run its own built-in pre-infusion on a single quick
+    # tap (False) - captured once here rather than read live from
+    # BaristaRuntime.adapt_pi, since that setting could change while this
+    # shot is still active. Used to decide whether analyze_shot's
+    # actuator_delay_s applies (see _async_finalize) - only a Bot-held
+    # pre-infusion goes through the Bot's own press/hold/release mechanism,
+    # so only it needs that extra budgeted dead time.
+    adapt_pi: bool
     # flow_analysis.blended_expected_flow_g_s's rate for this bag's
     # roast_level (docs/DESIGN.md's Phase 3b - not this bag's
     # own history), fixed once at brew time (see async_brew) - feeds the
