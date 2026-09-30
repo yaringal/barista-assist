@@ -626,7 +626,7 @@ class RuntimeEntitiesMixin:
         (actuator_delay_s=0.0), pi_band_start_ms is 0 and this collapses to
         the plain [0, preinfusion_ms] band it's always been."""
         preinfusion_ms = int(preinfusion_s * 1000)
-        actuator_delay_s = self.stop_latency_normal_s if adapt_pi else 0.0
+        actuator_delay_s = self._preinfusion_actuator_delay_s(adapt_pi)
         healthy_window = healthy_window_ms(
             preinfusion_ms,
             target_yield_g,

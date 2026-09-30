@@ -31,15 +31,21 @@ analyze_shot = flow_analysis.analyze_shot
 # The real, sourced config - see test_flow_analysis.py's own CONFIG for why
 # this isn't a hardcoded/default FlowAnalysisConfig.
 CONFIG = flow_analysis.FlowAnalysisConfig(**definitions.load_definitions().flow_analysis_constants)
-# Live-sourced, not hardcoded, same as CONFIG above - _async_finalize passes
-# this same value (self.stop_latency_normal_s) as actuator_delay_s for every
-# adapt_pi shot, 0.0 for a machine-controlled one (see analyze_shot's own
-# comment on why).
+# Live-sourced, not hardcoded, same as CONFIG above - mirrors runtime_shot.py's
+# _preinfusion_actuator_delay_s exactly (stop_latency_normal_s plus
+# stop_latency_calibration.preinfusion_actuator_offset_s, clamped at 0) for
+# every adapt_pi shot, 0.0 for a machine-controlled one (see analyze_shot's
+# own comment on why).
 STOP_LATENCY_NORMAL_S = definitions.load_definitions().defaults["controller"]["stop_latency_normal_s"]
+PREINFUSION_ACTUATOR_OFFSET_S = definitions.load_definitions().stop_latency_calibration[
+    "preinfusion_actuator_offset_s"
+]
 
 
 def _actuator_delay_s(shot) -> float:
-    return STOP_LATENCY_NORMAL_S if shot.adapt_pi else 0.0
+    if not shot.adapt_pi:
+        return 0.0
+    return max(0.0, STOP_LATENCY_NORMAL_S + PREINFUSION_ACTUATOR_OFFSET_S)
 
 
 class GoodShotAdaptPiTests(unittest.TestCase):
@@ -56,9 +62,9 @@ class GoodShotAdaptPiTests(unittest.TestCase):
     outside the healthy window (duration_ratio=1.105 vs. too_restrictive_
     factor=1.10) - but that was itself missing a second real gap: expected_s
     didn't yet budget actuator_delay_s (see analyze_shot's own comment and
-    docs/data/DIAL_IN_RULES.md's Part 7), the dead time a Bot-held pre-
+    docs/data/DIAL_IN_RULES.md's Parts 7-8), the dead time a Bot-held pre-
     infusion needs beyond its own programmed hold before flow can plausibly
-    start. With both fixes applied, duration_ratio settles at ~0.992 -
+    start. With both fixes applied, duration_ratio settles at ~1.025 -
     correctly healthy, matching the barista's own call."""
 
     def setUp(self) -> None:
@@ -445,8 +451,8 @@ class HealthyAstringentAdaptPiTests(unittest.TestCase):
     36g target), so it never reaches a real 100%-of-target crossing;
     duration_ratio comes from extrapolating past t90 using this shot's own
     late-stage flow rate, plus the budgeted actuator_delay_s (see
-    analyze_shot's own comment and docs/data/DIAL_IN_RULES.md's Part 7) -
-    together landing at ~1.025, correctly healthy, matching the original
+    analyze_shot's own comment and docs/data/DIAL_IN_RULES.md's Parts 7-8) -
+    together landing at ~1.059, correctly healthy, matching the original
     recorded call. (Earlier today, with only the t100 fix applied and
     actuator_delay_s not yet budgeted, this same shot briefly computed
     too_restrictive - a real but incomplete intermediate state, not the
@@ -543,8 +549,8 @@ class DoubleLeadingGarbageAdaptPiTests(unittest.TestCase):
     fix (assertIsNone(invalid_reason) below), not the specific too_fast/
     healthy/too_restrictive band. This shot reaches a real 100%-of-target
     crossing; with both the t100 fix and actuator_delay_s budgeted (see
-    analyze_shot's own comment and docs/data/DIAL_IN_RULES.md's Part 7),
-    duration_ratio lands at ~1.02 - healthy. (With only the t100 fix
+    analyze_shot's own comment and docs/data/DIAL_IN_RULES.md's Parts 7-8),
+    duration_ratio lands at ~1.05 - healthy. (With only the t100 fix
     applied, this briefly computed too_restrictive (~1.13) - a real but
     incomplete intermediate state, accepted as-is at the time since there
     was no ground truth here to weigh it against either way.)"""
@@ -598,7 +604,7 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
 
     Fix 1 alone moved this shot to duration_ratio~0.930 (healthy) - briefly
     looking like the whole story. Fix 2, layered on top, moves it back to
-    ~0.835 (too_fast): expected_s grows by actuator_delay_s while duration_s
+    ~0.863 (too_fast): expected_s grows by actuator_delay_s while duration_s
     (already anchored to a real t100 crossing) doesn't change, so the ratio
     drops. That's not a regression on fix 1 - checking against the chart's
     own healthy window (test_the_target_crossing_no_longer_falls_inside_
@@ -608,7 +614,15 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
     other - the original self-contradiction stays fixed. What's left is a
     genuine timing-vs-taste disagreement (too_fast by timing, "balanced"
     by taste), the same accepted pattern as good_shot_adapt_pi/
-    healthy_astringent_adapt_pi's own fixtures, not a new bug."""
+    healthy_astringent_adapt_pi's own fixtures, not a new bug.
+
+    actuator_delay_s itself was refined once more (docs/data/DIAL_IN_RULES.md's
+    Part 8): stop_latency_normal_s alone (3.2s) overshot, visibly leaving
+    real, already-rising flow inside the chart's own grey pre-infusion band
+    for most adapt_pi shots - stop_latency_calibration.preinfusion_
+    actuator_offset_s (-1.0s) corrects that. This shot's own duration_ratio
+    settles at ~0.863 under the final, offset-corrected delay (2.2s) -
+    still too_fast, by a slightly smaller margin than the uncorrected 0.835."""
 
     def setUp(self) -> None:
         self.shot = load_real_shot("too_fast_but_healthy_by_taste_adapt_pi")
@@ -642,7 +656,7 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
         self.assertIsNotNone(result.t100_ms)
         self.assertLess(result.t90_ms, result.t100_ms)
         too_fast_factor, _ = flow_analysis.healthy_duration_ratio_bounds(CONFIG.duration_ratio_bands)
-        self.assertAlmostEqual(result.duration_ratio, 0.835, places=2)
+        self.assertAlmostEqual(result.duration_ratio, 0.863, places=2)
         self.assertLess(result.duration_ratio, too_fast_factor)
 
     def test_the_target_crossing_no_longer_falls_inside_the_chart_s_own_healthy_window(self) -> None:

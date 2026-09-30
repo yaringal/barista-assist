@@ -76,6 +76,20 @@ class RuntimeShotMixin:
             else self.stop_latency_normal_s
         )
 
+    def _preinfusion_actuator_delay_s(self, adapt_pi: bool) -> float:
+        """analyze_shot's actuator_delay_s for one shot (see its own
+        comment, and stop_latency_calibration.preinfusion_actuator_offset_s's
+        in definitions.yaml) - 0.0 for a machine-controlled pre-infusion
+        (no Bot-held step to budget), stop_latency_normal_s plus that offset
+        otherwise, clamped to never go negative. Shared by _async_finalize,
+        _build_shot_markers, and async_list_shots so the classifier and the
+        chart's own grey pre-infusion band can never quietly disagree about
+        this value."""
+        if not adapt_pi:
+            return 0.0
+        offset_s = self.definitions.stop_latency_calibration["preinfusion_actuator_offset_s"]
+        return max(0.0, self.stop_latency_normal_s + offset_s)
+
     def _predicted_stop_elapsed_ms(
         self, samples: list[ShotSample], stop_command_elapsed_ms: int | None
     ) -> int | None:
@@ -644,15 +658,7 @@ class RuntimeShotMixin:
             # the user, not silently diverge from it.
             expected_flow_g_s=shot.expected_flow_g_s,
             config=flow_analysis_config,
-            # Only a Bot-held pre-infusion goes through the Bot's own
-            # press/hold/release cycle - see analyze_shot's own comment on
-            # actuator_delay_s. stop_latency_normal_s is reused rather than
-            # learning a second, separate delay: the same physical Bot/valve
-            # transition applies to both (_async_press_brew_bot is "used by
-            # brew, stop, and abort alike"), and "normal" (not "elevated") is
-            # the right bucket since pre-infusion is inherently a near-zero-
-            # flow state.
-            actuator_delay_s=self.stop_latency_normal_s if shot.adapt_pi else 0.0,
+            actuator_delay_s=self._preinfusion_actuator_delay_s(shot.adapt_pi),
         )
         if analysis.invalid_reason is not None:
             _LOGGER.warning(
@@ -737,7 +743,7 @@ class RuntimeShotMixin:
         duration_ratio_bands = self._live_duration_ratio_bands()
         for shot in shots:
             preinfusion_ms = int(shot["preinfusion_s"] * 1000)
-            actuator_delay_s = self.stop_latency_normal_s if bool(shot["adapt_pi"]) else 0.0
+            actuator_delay_s = self._preinfusion_actuator_delay_s(bool(shot["adapt_pi"]))
             healthy_window = healthy_window_ms(
                 preinfusion_ms,
                 shot["target_yield_g"],

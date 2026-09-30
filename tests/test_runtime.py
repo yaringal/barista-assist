@@ -587,7 +587,7 @@ class ShotMarkersTests(RuntimeTestCase):
         # which starts after the Bot's own actuator delay, not at 0 (see
         # _build_shot_markers's own comment) - the band's width still
         # matches the programmed hold duration exactly, just shifted later.
-        actuator_delay_ms = round(self.runtime.stop_latency_normal_s * 1000)
+        actuator_delay_ms = round(self.runtime._preinfusion_actuator_delay_s(True) * 1000)
         self.assertEqual(markers["pi_band_start_ms"], actuator_delay_ms)
         self.assertEqual(markers["pi_band_end_ms"], actuator_delay_ms + 2000)
         self.assertIsNone(markers["stop_command_elapsed_ms"])
@@ -608,7 +608,7 @@ class ShotMarkersTests(RuntimeTestCase):
             36.0,
             markers["expected_flow_g_s"],
             self.runtime._live_duration_ratio_bands(),
-            self.runtime.stop_latency_normal_s,  # adapt_pi=True by default (start_shot)
+            self.runtime._preinfusion_actuator_delay_s(True),  # adapt_pi=True by default (start_shot)
         )
         self.assertEqual(markers["healthy_start_ms"], expected_start)
         self.assertEqual(markers["healthy_end_ms"], expected_end)
@@ -666,7 +666,7 @@ class ShotMarkersTests(RuntimeTestCase):
         markers = self.runtime._shot_markers()
 
         self.assertEqual(markers["preinfusion_ms"], 1000)
-        actuator_delay_ms = round(self.runtime.stop_latency_normal_s * 1000)
+        actuator_delay_ms = round(self.runtime._preinfusion_actuator_delay_s(True) * 1000)
         self.assertEqual(markers["pi_band_start_ms"], actuator_delay_ms)
         self.assertEqual(markers["pi_band_end_ms"], actuator_delay_ms + 1000)
         self.assertIsNotNone(markers["expected_flow_g_s"])
@@ -676,7 +676,7 @@ class ShotMarkersTests(RuntimeTestCase):
             36.0,
             markers["expected_flow_g_s"],
             self.runtime._live_duration_ratio_bands(),
-            self.runtime.stop_latency_normal_s,  # adapt_pi=True by default (start_shot)
+            self.runtime._preinfusion_actuator_delay_s(True),  # adapt_pi=True by default (start_shot)
         )
         self.assertEqual(markers["healthy_start_ms"], expected_start)
         self.assertEqual(markers["healthy_end_ms"], expected_end)
@@ -2525,7 +2525,7 @@ class ShotHistoryTests(RuntimeTestCase):
             36.0,
             shots[0]["expected_flow_g_s"],
             self.runtime._live_duration_ratio_bands(),
-            self.runtime.stop_latency_normal_s,  # adapt_pi=True by default (start_shot)
+            self.runtime._preinfusion_actuator_delay_s(True),  # adapt_pi=True by default (start_shot)
         )
         self.assertEqual(shots[0]["healthy_start_ms"], expected_start)
         self.assertEqual(shots[0]["healthy_end_ms"], expected_end)
@@ -2541,7 +2541,7 @@ class ShotHistoryTests(RuntimeTestCase):
 
         shots = await self.runtime.async_list_shots()
 
-        actuator_delay_ms = round(self.runtime.stop_latency_normal_s * 1000)
+        actuator_delay_ms = round(self.runtime._preinfusion_actuator_delay_s(True) * 1000)
         self.assertEqual(shots[0]["pi_band_start_ms"], actuator_delay_ms)
         self.assertEqual(shots[0]["pi_band_end_ms"], actuator_delay_ms + 1000)
 

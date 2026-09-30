@@ -300,6 +300,23 @@ stop_latency_calibration:
   settle_buffer_s: 2.0
   min_settle_s: 4.0
 
+  # duration_ratio/the chart's grey pre-infusion band both budget an extra
+  # actuator_delay_s for a Bot-held pre-infusion (see flow_analysis.py's
+  # analyze_shot) - reusing stop_latency_normal_s rather than learning a
+  # second value, since the same Bot/valve transition drives both. But a
+  # live check of real adapt_pi shots (both t_first_flow_ms and a direct
+  # look at the dashboard chart - flow visibly already rising before the
+  # grey band's own right edge, for most shots) showed the two aren't quite
+  # equal: stopping (residual pressure bleeding off across the whole
+  # system, until essentially no more flow) takes longer than starting
+  # (building just enough pressure for the first detectable drops) - a
+  # lower bar to clear. -1.0s fixes that: checked against every real
+  # adapt_pi shot in this installation's fixtures, it moves all but two
+  # (a near-stalled puck and an unrelated noise-wobble case, both already
+  # documented outliers) to showing real flow starting at or after the
+  # band's own end, with zero classification flips versus not applying it.
+  preinfusion_actuator_offset_s: -1.0
+
 # =============================================================================
 # expert_rules - correction policy consolidated from James Hoffmann's, Lance
 # Hedrick's, and Matt Perger's dial-in videos (DESIGN.md §13-15): which
