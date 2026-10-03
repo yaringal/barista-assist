@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.12
+
+### Fixed
+
+- **The actuator delay was still about a second too long even after 0.3.11**, pinned down with a direct physical measurement this time: the brew Bot's own button-hold release was timed at 8.3s into a real shot, while the dashboard's grey pre-infusion band (built from 0.3.11's value) showed it ending at 9.3s. `stop_latency_calibration.preinfusion_actuator_offset_s` moves from `-1.0` to `-2.0` to match - checked against every real adapt_pi shot in this installation's fixtures, this is a cleaner fit than 0.3.11's value (8 of 9 now show flow starting after the band ends, vs. 3 of 9 before), and it fully resolves the one classification that still disagreed with its own barista-confirmed taste call (`too_fast_but_healthy_by_taste_adapt_pi`, "healthy... balanced" - now classifies `healthy` outright with no remaining disagreement).
+- **Tapping a flavor-feedback notification action (e.g. "Thin") recorded the answer but left the notification sitting in the companion app's notification shade**, looking unanswered. The original notification was never sent with a `tag`, so there was nothing to target afterward - every flavor-feedback notification now carries one, and the action handler sends a `clear_notification` follow-up for that exact tag once the answer is recorded (or the shot it was about turns out to have been deleted).
+- **The "Future shot recommendation" card could show a raw internal field name** (e.g. "target_yield_g: 36.0 → 41.0 (Sour / Sharp)") instead of a readable one ("Target yield: ..."). The flavor tag itself was already mapped to a human-readable label; the recipe field next to it wasn't.
+
+### Testing
+
+- Added three more real shot fixtures from live reports: the two that originally prompted the actuator-delay investigation (now both correctly `healthy`, including the full grind-correction sequence between them - a barista-confirmed-fine shot's own false `too_restrictive` read led to an unnecessary +0.5 grind bump on the next one), and a new one carrying real flavor tags (`sour_sharp`/`thin_weak`) that disagree directionally with its own (correct) `healthy` timing classification - a case the project's own drift-detection reports are meant to surface, not a bug.
+- Full suite: 349 tests, all passing (up from 340).
+
 ## 0.3.11
 
 ### Fixed

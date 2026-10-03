@@ -144,6 +144,17 @@ _FLAVOR_AXES = {
 # _recommended_flavor_note/_stalled_flavor_tags so the dashboard note never
 # shows a raw tag key like "sour_sharp".
 _FLAVOR_TAG_LABELS = {tag: title for tags in _FLAVOR_AXES.values() for tag, title in tags}
+# flavor_correction._LEVER_TO_FIELD's own recipe field name -> the same
+# human-readable label dashboard.yaml's own tiles use for that field -
+# reused by runtime_entities.py's _recommended_flavor_note so the "Future
+# shot recommendation" card never shows a raw field key like
+# "target_yield_g" alongside the already-mapped flavor tag label.
+_RECIPE_FIELD_LABELS = {
+    "target_yield_g": "Target yield",
+    "dose_g": "Dose",
+    "temperature_offset_c": "Temperature offset",
+    "preinfusion_s": "Pre-infusion",
+}
 # expert_rules.flavor_correction.minimum_meaningful_step's own YAML field
 # name -> the dashboard-editable BaristaRuntime attribute that overrides it
 # (see runtime_entities.py's _flavor_correction_config and

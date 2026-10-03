@@ -62,9 +62,9 @@ class GoodShotAdaptPiTests(unittest.TestCase):
     outside the healthy window (duration_ratio=1.105 vs. too_restrictive_
     factor=1.10) - but that was itself missing a second real gap: expected_s
     didn't yet budget actuator_delay_s (see analyze_shot's own comment and
-    docs/data/DIAL_IN_RULES.md's Parts 7-8), the dead time a Bot-held pre-
+    docs/data/DIAL_IN_RULES.md's Parts 7-9), the dead time a Bot-held pre-
     infusion needs beyond its own programmed hold before flow can plausibly
-    start. With both fixes applied, duration_ratio settles at ~1.025 -
+    start. With both fixes applied, duration_ratio settles at ~1.060 -
     correctly healthy, matching the barista's own call."""
 
     def setUp(self) -> None:
@@ -451,8 +451,8 @@ class HealthyAstringentAdaptPiTests(unittest.TestCase):
     36g target), so it never reaches a real 100%-of-target crossing;
     duration_ratio comes from extrapolating past t90 using this shot's own
     late-stage flow rate, plus the budgeted actuator_delay_s (see
-    analyze_shot's own comment and docs/data/DIAL_IN_RULES.md's Parts 7-8) -
-    together landing at ~1.059, correctly healthy, matching the original
+    analyze_shot's own comment and docs/data/DIAL_IN_RULES.md's Parts 7-9) -
+    together landing at ~1.095, correctly healthy, matching the original
     recorded call. (Earlier today, with only the t100 fix applied and
     actuator_delay_s not yet budgeted, this same shot briefly computed
     too_restrictive - a real but incomplete intermediate state, not the
@@ -549,8 +549,8 @@ class DoubleLeadingGarbageAdaptPiTests(unittest.TestCase):
     fix (assertIsNone(invalid_reason) below), not the specific too_fast/
     healthy/too_restrictive band. This shot reaches a real 100%-of-target
     crossing; with both the t100 fix and actuator_delay_s budgeted (see
-    analyze_shot's own comment and docs/data/DIAL_IN_RULES.md's Parts 7-8),
-    duration_ratio lands at ~1.05 - healthy. (With only the t100 fix
+    analyze_shot's own comment and docs/data/DIAL_IN_RULES.md's Parts 7-9),
+    duration_ratio lands at ~1.09 - healthy. (With only the t100 fix
     applied, this briefly computed too_restrictive (~1.13) - a real but
     incomplete intermediate state, accepted as-is at the time since there
     was no ground truth here to weigh it against either way.)"""
@@ -592,42 +592,38 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
     logic disagrees") worth fixing, not a known limitation to merely
     document.
 
-    Two real gaps were found and fixed:
+    Three real gaps were found and fixed (docs/data/DIAL_IN_RULES.md's
+    Parts 6-9):
     1. duration_ratio was driven by t90 (reached at elapsed_ms=23755, 1.04s
        before the too_fast cutoff), not the real 100%-of-target crossing
        the chart itself visualizes - analyze_shot now prefers a real t100
        crossing when one exists.
-    2. expected_s didn't budget actuator_delay_s - the dead time a Bot-held
-       pre-infusion needs beyond its own programmed hold before flow can
-       plausibly start (see analyze_shot's own comment and docs/data/
-       DIAL_IN_RULES.md's Part 7).
+    2. expected_s didn't budget actuator_delay_s at all - the dead time a
+       Bot-held pre-infusion needs beyond its own programmed hold before
+       flow can plausibly start.
+    3. actuator_delay_s itself (reused from stop_latency_normal_s) was
+       initially over-estimated by a full ~2s: a live measurement of the
+       Bot's own physical button-hold lift (8.3s into a real shot) against
+       what the dashboard's own grey band showed at the time (9.3s)
+       pinned down stop_latency_calibration.preinfusion_actuator_offset_s
+       at -2.0s, not the -1.0s an earlier visual check alone had
+       suggested.
 
-    Fix 1 alone moved this shot to duration_ratio~0.930 (healthy) - briefly
-    looking like the whole story. Fix 2, layered on top, moves it back to
-    ~0.863 (too_fast): expected_s grows by actuator_delay_s while duration_s
-    (already anchored to a real t100 crossing) doesn't change, so the ratio
-    drops. That's not a regression on fix 1 - checking against the chart's
-    own healthy window (test_the_target_crossing_no_longer_falls_inside_
-    the_chart_s_own_healthy_window below) confirms the window itself
-    shifts by the same actuator_delay_s and the target crossing now falls
-    outside it too, so the chart and the classifier still agree with each
-    other - the original self-contradiction stays fixed. What's left is a
-    genuine timing-vs-taste disagreement (too_fast by timing, "balanced"
-    by taste), the same accepted pattern as good_shot_adapt_pi/
-    healthy_astringent_adapt_pi's own fixtures, not a new bug.
-
-    actuator_delay_s itself was refined once more (docs/data/DIAL_IN_RULES.md's
-    Part 8): stop_latency_normal_s alone (3.2s) overshot, visibly leaving
-    real, already-rising flow inside the chart's own grey pre-infusion band
-    for most adapt_pi shots - stop_latency_calibration.preinfusion_
-    actuator_offset_s (-1.0s) corrects that. This shot's own duration_ratio
-    settles at ~0.863 under the final, offset-corrected delay (2.2s) -
-    still too_fast, by a slightly smaller margin than the uncorrected 0.835."""
+    With all three applied, this shot's duration_ratio settles at ~0.892 -
+    correctly healthy, matching the barista's own "balanced" taste call
+    outright. (Along the way it passed through two different intermediate
+    states - healthy under fix 1 alone, too_fast again once fix 2 added an
+    under-corrected actuator_delay_s on top - before landing here; see this
+    file's own git history/docs/data/DIAL_IN_RULES.md for that full trail,
+    not a sign any single step was wrong on its own.) The chart's own
+    healthy-window shading uses this identical formula, so it was never
+    possible for the two to disagree for long - this fixture's whole
+    throughline is both of them converging on the same, correct answer."""
 
     def setUp(self) -> None:
         self.shot = load_real_shot("too_fast_but_healthy_by_taste_adapt_pi")
 
-    def test_is_classified_too_fast_by_timing_despite_the_healthy_verdict(self) -> None:
+    def test_matches_the_barista_s_own_call(self) -> None:
         self.assertEqual(self.shot.recorded_classification, "too_fast")
         result = analyze_shot(
             self.shot.samples,
@@ -637,15 +633,13 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
             actuator_delay_s=_actuator_delay_s(self.shot)
         )
         self.assertIsNone(result.invalid_reason)
-        self.assertEqual(result.classification, ShotClassification.TOO_FAST)
+        self.assertEqual(result.classification, ShotClassification.HEALTHY)
         self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
 
     def test_duration_ratio_is_based_on_the_real_target_crossing(self) -> None:
         """Confirms the t100 fix's own mechanism still applies: t100_ms is
         found (this shot doesn't undershoot), and duration_ratio is derived
-        from it rather than from t90_ms - the remaining too_fast verdict
-        comes from actuator_delay_s widening expected_s, not from reverting
-        to a t90-based duration_s."""
+        from it rather than from t90_ms."""
         result = analyze_shot(
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
@@ -655,18 +649,14 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
         )
         self.assertIsNotNone(result.t100_ms)
         self.assertLess(result.t90_ms, result.t100_ms)
-        too_fast_factor, _ = flow_analysis.healthy_duration_ratio_bounds(CONFIG.duration_ratio_bands)
-        self.assertAlmostEqual(result.duration_ratio, 0.863, places=2)
-        self.assertLess(result.duration_ratio, too_fast_factor)
+        self.assertAlmostEqual(result.duration_ratio, 0.892, places=2)
 
-    def test_the_target_crossing_no_longer_falls_inside_the_chart_s_own_healthy_window(self) -> None:
-        """The chart's own healthy-window shading uses this exact same
-        actuator_delay_s-budgeted formula (see runtime_entities.py's
-        _build_shot_markers), so it shifts along with the classification -
-        the target crossing that used to fall inside the (narrower, pre-
-        actuator-delay) window now falls before the (wider) one too. Chart
-        and classifier still agree with each other; this session's
-        original bug (the two disagreeing) stays fixed."""
+    def test_the_target_crossing_falls_inside_the_chart_s_own_healthy_window(self) -> None:
+        """The barista's own visual read of the graph: the weight trace
+        crosses target_yield_g inside the healthy time window the chart
+        itself shades - and that's also exactly what classification itself
+        uses, so chart and classifier agree with each other, resolving this
+        session's original bug (the two disagreeing)."""
         result = analyze_shot(
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
@@ -674,7 +664,7 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
             baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
             actuator_delay_s=_actuator_delay_s(self.shot)
         )
-        healthy_start_ms, _ = flow_analysis.healthy_window_ms(
+        healthy_start_ms, healthy_end_ms = flow_analysis.healthy_window_ms(
             int(self.shot.preinfusion_s * 1000),
             self.shot.target_yield_g,
             CONFIG.expected_flow_g_s,
@@ -684,11 +674,134 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
         target_crossing_ms = next(
             s.elapsed_ms for s in self.shot.samples if s.weight_g >= self.shot.target_yield_g
         )
-        self.assertLess(target_crossing_ms, healthy_start_ms)
-        self.assertLess(result.t100_ms, healthy_start_ms)
+        self.assertTrue(healthy_start_ms <= target_crossing_ms <= healthy_end_ms)
+        self.assertTrue(healthy_start_ms <= result.t100_ms <= healthy_end_ms)
 
     def test_the_fixture_carries_the_balanced_taste_annotation(self) -> None:
         self.assertEqual(self.shot.flavor_mouthfeel_tag, "balanced")
+
+
+class PreinfusionActuatorDelayReport1AdaptPiTests(unittest.TestCase):
+    """The real shot that directly prompted the actuator-delay investigation
+    itself (docs/data/DIAL_IN_RULES.md's Parts 7-8): "the PI programmed is
+    7s but we count 10s with no flow" - t_first_flow_ms lands 3.47s past
+    this shot's own preinfusion_s=7.0. Recorded/classified too_restrictive
+    at export time (pre-actuator-delay-fix); with the final, offset-
+    corrected actuator_delay_s budgeted, this shot correctly classifies
+    healthy instead. This shot's own too_restrictive misread is what
+    produced the +0.5 recommended_grind_delta the barista then acted on
+    for the very next shot (see PreinfusionActuatorDelayReport2AdaptPiTests
+    below, same bag, grind 16.0 here -> 16.5 there) - itself based on a
+    false read, since this shot was never actually too_restrictive."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("preinfusion_actuator_delay_report_1_adapt_pi")
+
+    def test_matches_the_corrected_formula(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "too_restrictive")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
+            actuator_delay_s=_actuator_delay_s(self.shot)
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
+
+    def test_flow_starts_well_past_the_programmed_preinfusion(self) -> None:
+        """Confirms the test above is exercising the real actuator-delay
+        gap this test class's docstring describes, rather than a fixture
+        that never had one in the first place."""
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
+            actuator_delay_s=_actuator_delay_s(self.shot)
+        )
+        self.assertGreater(result.t_first_flow_ms, self.shot.preinfusion_s * 1000)
+
+
+class PreinfusionActuatorDelayReport2AdaptPiTests(unittest.TestCase):
+    """Same bag as PreinfusionActuatorDelayReport1AdaptPiTests above, the
+    very next day - run at grind=16.5 (16.0 -> 16.5), the +0.5
+    recommended_grind_delta that shot's own (false, pre-actuator-delay-fix)
+    too_restrictive misread produced. Also part of the same "the PI
+    programmed is 7s but we count 10s with no flow" report, and also
+    correctly classifies healthy once the final actuator_delay_s is
+    budgeted - meaning the grind bump this shot ran at was itself
+    unnecessary, acted on a false read rather than a real puck problem."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("preinfusion_actuator_delay_report_2_adapt_pi")
+
+    def test_matches_the_corrected_formula(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "too_restrictive")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
+            actuator_delay_s=_actuator_delay_s(self.shot)
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
+
+    def test_ran_at_the_grind_the_previous_shot_s_false_flag_recommended(self) -> None:
+        """Confirms the test above is exercising the real grind-bump
+        sequence this test class's docstring describes - this shot's own
+        grind really is the previous shot's dose/grind plus its recommended
+        delta, not a coincidence."""
+        previous = load_real_shot("preinfusion_actuator_delay_report_1_adapt_pi")
+        self.assertEqual(previous.fields["bag_id"], self.shot.fields["bag_id"])
+        self.assertAlmostEqual(
+            float(self.shot.fields["grind"]),
+            float(previous.fields["grind"]) + float(previous.fields["recommended_grind_delta"]),
+        )
+
+
+class SourSharpThinWeakAdaptPiTests(unittest.TestCase):
+    """Same bag as the PreinfusionActuatorDelayReport*AdaptPiTests pair
+    (grind kept at 16.5, the day after), with real recorded flavor tags
+    this time: flavor_extraction_tag=sour_sharp, flavor_mouthfeel_tag=
+    thin_weak - both classic under-extraction/too-fast taste signatures.
+    Yet this shot classifies healthy, on the slower/restrictive side of the
+    band - timing and taste point in different directions here, exactly
+    the kind of case tests/test_constant_drift.py's
+    GrindFlavorConsistencyReport (docs/todo/ADAPTIVE_LEARNING_PLAN.md §3)
+    is meant to surface, not a classifier bug (analyze_shot has no way to
+    see taste at all). Also exercises the leading-garbage fix again (seq=0,
+    weight_g=145.200 dropping to 0.0 at seq=1)."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("sour_sharp_thin_weak_adapt_pi")
+
+    def test_matches_the_barista_s_own_call(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "healthy")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
+            actuator_delay_s=_actuator_delay_s(self.shot)
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
+
+    def test_the_fixture_still_has_its_leading_garbage_sample(self) -> None:
+        """Confirms the test above is exercising the real leading-garbage
+        case this test class's docstring describes, rather than a fixture
+        that never had one in the first place."""
+        self.assertGreater(self.shot.samples[0].weight_g, 100.0)
+        self.assertLess(self.shot.samples[1].weight_g, 1.0)
+
+    def test_the_fixture_carries_both_flavor_tags(self) -> None:
+        self.assertEqual(self.shot.flavor_extraction_tag, "sour_sharp")
+        self.assertEqual(self.shot.flavor_mouthfeel_tag, "thin_weak")
 
 
 if __name__ == "__main__":

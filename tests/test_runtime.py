@@ -1593,6 +1593,13 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.assertIn("barista_flavor:shot-123:mouthfeel:dry_astringent", actions)
         self.assertIn("barista_flavor:shot-123:mouthfeel:balanced", actions)
 
+        # Each axis gets its own notification `tag` - needed so tapping an
+        # action can later clear that exact notification (see
+        # _async_clear_flavor_notification) without touching the other,
+        # independent axis's still-unanswered one.
+        tags = {data["data"]["tag"] for _domain, _service, data in calls}
+        self.assertEqual(tags, {"barista_flavor_shot-123_extraction", "barista_flavor_shot-123_mouthfeel"})
+
     async def test_one_axis_s_notify_failure_does_not_block_the_other_axis(self):
         """The two axes are independent notify.* calls - one failing (e.g.
         the notify service is temporarily unavailable) must not also
@@ -1665,8 +1672,12 @@ class FlavorFeedbackTests(RuntimeTestCase):
     async def test_a_tag_report_never_triggers_a_followup_notification(self):
         """The old confirmation-follow-up mechanism is gone entirely -
         recording a tag (whichever one) never sends a second, immediate
-        notification of its own; the next notification for that axis only
-        ever goes out on the next real shot, same as a fresh report."""
+        *question* notification of its own; the next question for that axis
+        only ever goes out on the next real shot, same as a fresh report.
+        The one service call it does still make (see
+        test_notification_action_clears_the_answered_notification below) is
+        a clear_notification, not a new question - that's a different thing
+        this test isn't about."""
         self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
         await self.create_bag()
         await self._brew_shot()
@@ -1682,7 +1693,47 @@ class FlavorFeedbackTests(RuntimeTestCase):
             {"action": f"barista_flavor:{shot_b}:extraction:sour_sharp"},
         )
 
-        self.assertEqual(self.hass.services.calls, [])
+        messages = [data["message"] for _domain, _service, data in self.hass.services.calls]
+        self.assertEqual(messages, ["clear_notification"])
+
+    async def test_notification_action_clears_the_answered_notification(self):
+        """Tapping an action records the answer but, without this, leaves
+        the notification sitting in the companion app's shade/lock screen
+        looking unanswered - the service call recording the answer is a
+        different thing from the one that actually dismisses it (see
+        _async_clear_flavor_notification)."""
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+        await self.create_bag()
+        shot_id = await self._brew_shot()
+        self.hass.services.calls.clear()
+
+        await self.hass.bus.async_fire(
+            "mobile_app_notification_action",
+            {"action": f"barista_flavor:{shot_id}:extraction:sour_sharp"},
+        )
+
+        self.assertEqual(len(self.hass.services.calls), 1)
+        domain, service, data = self.hass.services.calls[0]
+        self.assertEqual((domain, service), ("notify", "mock_notify"))
+        self.assertEqual(data["message"], "clear_notification")
+        self.assertEqual(data["data"]["tag"], f"barista_flavor_{shot_id}_extraction")
+
+    async def test_notification_action_clears_even_for_a_deleted_shot(self):
+        """The notification itself was still really tapped, even if the
+        shot it was about has since been deleted - there's nothing left to
+        record, but the stale notification should still be dismissed
+        rather than left sitting there forever."""
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+
+        await self.hass.bus.async_fire(
+            "mobile_app_notification_action",
+            {"action": "barista_flavor:no-such-shot:extraction:sour_sharp"},
+        )
+
+        self.assertEqual(len(self.hass.services.calls), 1)
+        _domain, _service, data = self.hass.services.calls[0]
+        self.assertEqual(data["message"], "clear_notification")
+        self.assertEqual(data["data"]["tag"], "barista_flavor_no-such-shot_extraction")
 
     async def test_notification_action_event_ignores_unrelated_actions(self):
         """Some other integration's own actionable notification fires the
@@ -1719,9 +1770,11 @@ class FlavorFeedbackTests(RuntimeTestCase):
         """docs/todo/LEVER_SEQUENCING_PLAN.md §3.2 point 1: the primary
         intervention fires on the *first* report, no repetition gate (this
         replaced the old require_persistent_pattern_shots-gated behavior) -
-        reads as "{field}: {current} -> {recommended} ({label})", the same
-        style as recommended_grind_note, with the tag shown via its
-        _FLAVOR_TAG_LABELS display label rather than its raw key."""
+        reads as "{field label}: {current} -> {recommended} ({tag label})",
+        the same style as recommended_grind_note, with both the recipe
+        field and the tag shown via their own human-readable display labels
+        (_RECIPE_FIELD_LABELS/_FLAVOR_TAG_LABELS) rather than their raw
+        "target_yield_g"/"sour_sharp"-style keys."""
         await self.create_bag()
         bag = self.runtime.selected_bag
         await self.runtime.async_brew()
@@ -1743,6 +1796,8 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.assertIsNotNone(note)
         self.assertIn("(Sour / Sharp)", note)
         self.assertIn(f"{bag.target_yield_g:g}", note)
+        self.assertIn("Target yield:", note)
+        self.assertNotIn("target_yield_g:", note)
 
     async def test_recommended_flavor_note_is_none_after_balanced(self):
         """docs/todo/LEVER_SEQUENCING_PLAN.md §3.2 point 3: `balanced`

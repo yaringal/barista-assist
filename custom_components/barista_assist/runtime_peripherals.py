@@ -50,6 +50,16 @@ def _flavor_tag_actions(shot_id: str, axis: str, *, prefix: str) -> list[dict[st
     return actions
 
 
+def _flavor_notification_tag(shot_id: str, axis: str) -> str:
+    """The companion-app notification `tag` for one axis's flavor-feedback
+    notification - set on the original send and reused on the
+    "clear_notification" follow-up (see _async_send_flavor_feedback_
+    notifications/_handle_flavor_notification_action) so tapping an action
+    actually dismisses that notification from the device's shade/lock
+    screen instead of leaving it sitting there answered."""
+    return f"{_FLAVOR_ACTION_PREFIX}_{shot_id}_{axis}"
+
+
 class RuntimePeripheralsMixin:
     """Mixed into BaristaRuntime - see that class for the shared __init__/state."""
 
@@ -317,7 +327,10 @@ class RuntimePeripheralsMixin:
                     service,
                     {
                         "message": f"How was the {axis} on that last shot?",
-                        "data": {"actions": actions},
+                        "data": {
+                            "actions": actions,
+                            "tag": _flavor_notification_tag(shot_id, axis),
+                        },
                     },
                 )
             except Exception:
@@ -374,6 +387,37 @@ class RuntimePeripheralsMixin:
                 axis,
                 tag,
             )
+            await self._async_clear_flavor_notification(shot_id, axis)
             return
         _LOGGER.debug("Recorded flavor tag %s (axis=%s) for shot %s", tag, axis, shot_id)
         await self.async_refresh_cache()
+        await self._async_clear_flavor_notification(shot_id, axis)
+
+    async def _async_clear_flavor_notification(self, shot_id: str, axis: str) -> None:
+        """Dismiss the one flavor-feedback notification the user just
+        answered (see _flavor_notification_tag) from the companion app's
+        own notification shade/lock screen - without this, tapping an
+        action records the answer but leaves the notification sitting
+        there looking unanswered. Best-effort: a configured notify service
+        is expected (this is only ever called after an action from one of
+        our own notifications actually fired), but never lets a failure
+        here mask the real work (recording the tag) already done above."""
+        service = self.entry.options.get(CONF_NOTIFY_SERVICE)
+        if not service:
+            return
+        try:
+            await self.hass.services.async_call(
+                "notify",
+                service,
+                {
+                    "message": "clear_notification",
+                    "data": {"tag": _flavor_notification_tag(shot_id, axis)},
+                },
+            )
+        except Exception:
+            _LOGGER.warning(
+                "Failed to clear the %s flavor-feedback notification for shot %s",
+                axis,
+                shot_id,
+                exc_info=True,
+            )

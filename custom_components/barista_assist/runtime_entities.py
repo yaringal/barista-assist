@@ -21,6 +21,7 @@ from .storage import ShotSample
 from .runtime_shared import (
     _FLAVOR_AXES,
     _FLAVOR_TAG_LABELS,
+    _RECIPE_FIELD_LABELS,
     _GRIND_BAND_CONTROLLER_FIELDS,
     _GRIND_BAND_DELTA_FIELDS,
     _DURATION_RATIO_BAND_MAX_FIELDS,
@@ -398,9 +399,11 @@ class RuntimeEntitiesMixin:
         anything to report at all - that's a real "no recommendation"
         state, not a fault. Tags are shown via _FLAVOR_TAG_LABELS (the same
         human-readable labels the notification action buttons use), not
-        their raw "sour_sharp"-style keys."""
+        their raw "sour_sharp"-style keys - and likewise the recipe field
+        itself is shown via _RECIPE_FIELD_LABELS, not its raw
+        "target_yield_g"-style key."""
         notes = [
-            f"{field}: {current:g} → {recommended:g} ({_FLAVOR_TAG_LABELS[tag]})"
+            f"{_RECIPE_FIELD_LABELS[field]}: {current:g} → {recommended:g} ({_FLAVOR_TAG_LABELS[tag]})"
             for field, (current, recommended, tag) in self._all_flavor_field_recommendations().items()
         ]
         notes.extend(

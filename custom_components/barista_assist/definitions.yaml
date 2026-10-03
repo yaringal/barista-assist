@@ -310,12 +310,23 @@ stop_latency_calibration:
   # equal: stopping (residual pressure bleeding off across the whole
   # system, until essentially no more flow) takes longer than starting
   # (building just enough pressure for the first detectable drops) - a
-  # lower bar to clear. -1.0s fixes that: checked against every real
-  # adapt_pi shot in this installation's fixtures, it moves all but two
-  # (a near-stalled puck and an unrelated noise-wobble case, both already
-  # documented outliers) to showing real flow starting at or after the
-  # band's own end, with zero classification flips versus not applying it.
-  preinfusion_actuator_offset_s: -1.0
+  # lower bar to clear.
+  #
+  # First corrected to -1.0s on that evidence. Then directly measured: a
+  # user timed the Bot's own physical button-hold lift (the real release
+  # event, not an inference) at 8.3s into a real shot whose preinfusion_s
+  # was 7.0s, while the dashboard's own grey band (built from the -1.0s
+  # value) showed it ending at 9.3s - a full 1.0s too late. -2.0s matches
+  # that direct measurement (7.0 + max(0, 3.2-2.0) = 8.2s, vs. the observed
+  # 8.3s) and is also the cleaner fit against every real adapt_pi shot in
+  # this installation's fixtures: all but one (an unrelated noise-wobble
+  # case, already documented as an outlier) show real flow starting at or
+  # after the band's own end. It also resolves, with no disagreement left
+  # at all, the one classification that previously still disagreed with
+  # its own barista-confirmed taste call (too_fast_but_healthy_by_taste_
+  # adapt_pi, "healthy... balanced" - now classifies healthy outright
+  # rather than too_fast-but-matching-the-chart).
+  preinfusion_actuator_offset_s: -2.0
 
 # =============================================================================
 # expert_rules - correction policy consolidated from James Hoffmann's, Lance
