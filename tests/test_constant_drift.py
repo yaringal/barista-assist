@@ -42,7 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ha_stubs  # noqa: E402
-from real_shot_fixtures import FIXTURES_DIR, load_real_shot  # noqa: E402
+from real_shot_fixtures import actuator_delay_s, FIXTURES_DIR, load_real_shot  # noqa: E402
 
 flow_analysis = ha_stubs.import_barista_module("flow_analysis")
 definitions = ha_stubs.import_barista_module("definitions")
@@ -81,6 +81,7 @@ def _classify(shot, config) -> tuple:
         baseline=None,
         expected_flow_g_s=config.expected_flow_g_s,
         config=config,
+        actuator_delay_s=actuator_delay_s(shot),
     )
     return (result.classification, result.invalid_reason)
 
@@ -141,13 +142,19 @@ class StopLatencyBucketDriftReport(unittest.TestCase):
                 shot.actual_yield_g,
                 window_ms=CONFIG.smoothing_window_ms,
                 min_flow_g_s=calibration["min_flow_for_learning_g_s"],
+                sustain_ms=calibration["elevated_sustain_ms"],
+                cutoff_g_s=calibration["bucket_cutoff_g_s"],
             )
             if result is not None:
                 pairs.append(result)
 
         cutoff = calibration["bucket_cutoff_g_s"]
-        normal = sorted(flow for flow, _latency in pairs if flow < cutoff)
-        elevated = sorted(flow for flow, _latency in pairs if flow >= cutoff)
+        # Bucketed by the same `elevated` decision _observed_stop_latency
+        # itself made (sustain-checked), not re-derived from flow_at_decision
+        # vs. cutoff here - a shot whose flow only spiked briefly belongs in
+        # "normal" even though flow_at_decision alone might sit above cutoff.
+        normal = sorted(flow for flow, _latency, elevated in pairs if not elevated)
+        elevated = sorted(flow for flow, _latency, elevated in pairs if elevated)
 
         print(
             "\n=== Stop-latency bucket drift report "
@@ -158,7 +165,7 @@ class StopLatencyBucketDriftReport(unittest.TestCase):
             f"(normal={len(normal)}, elevated={len(elevated)}, cutoff={cutoff:g} g/s)"
         )
         if pairs:
-            all_flows = sorted(flow for flow, _latency in pairs)
+            all_flows = sorted(flow for flow, _latency, _elevated in pairs)
             bin_width = 0.5
             lo = int(all_flows[0] // bin_width)
             hi = int(all_flows[-1] // bin_width) + 1
@@ -168,9 +175,9 @@ class StopLatencyBucketDriftReport(unittest.TestCase):
                 count = sum(1 for flow in all_flows if bin_lo <= flow < bin_hi)
                 marker = " <-- cutoff" if bin_lo <= cutoff < bin_hi else ""
                 print(f"    [{bin_lo:4.1f}, {bin_hi:4.1f}): {'#' * count} ({count}){marker}")
-            for label, flows in (("normal", normal), ("elevated", elevated)):
+            for label, flows, want_elevated in (("normal", normal, False), ("elevated", elevated, True)):
                 if flows:
-                    latencies = [lat for flow, lat in pairs if (flow < cutoff) == (label == "normal")]
+                    latencies = [lat for _flow, lat, is_elevated in pairs if is_elevated == want_elevated]
                     print(
                         f"  {label}: flow range [{flows[0]:.2f}, {flows[-1]:.2f}] g/s, "
                         f"observed latency mean={statistics.mean(latencies):.2f}s "
@@ -237,6 +244,7 @@ class GrindFlavorConsistencyReport(unittest.TestCase):
                     baseline=None,
                     expected_flow_g_s=CONFIG.expected_flow_g_s,
                     config=CONFIG,
+                    actuator_delay_s=actuator_delay_s(shot),
                 )
                 actual = _DIRECTION_BY_CLASSIFICATION.get(str(result.classification))
                 if actual is not None and actual != expected:

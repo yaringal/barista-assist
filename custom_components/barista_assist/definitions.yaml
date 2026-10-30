@@ -104,13 +104,24 @@ flow_analysis_constants:
   # baseline (raw weight oscillating between -0.5g and -0.1g - nowhere near
   # real flow) whose smoothed derivative happened to clear
   # first_flow_threshold_g_s for exactly 300ms, wrongly tripping
-  # flow_started_before_preinfusion_end. 400ms already fixes it; 600ms
-  # (chosen for margin, not because 400 was insufficient) makes zero
-  # difference to any other real fixture's classification across the whole
-  # tested range 300-1200ms - see
-  # tests/test_flow_analysis_real_shots.py's
-  # TooFastButFlaggedInvalidAdaptPiTests.
-  first_flow_sustain_ms: 600
+  # flow_started_before_preinfusion_end. 400ms already fixed that one, and
+  # 600ms (chosen for margin) made zero difference to any other fixture on
+  # hand at the time.
+  #
+  # A later fixture, 2026_10_05_0840_adapt_pi, found 600ms's own margin was
+  # too thin: a *longer* noise wobble while the Bot's hold is still
+  # settling (smoothed weight staying negative, i.e. still below the empty-
+  # cup tare - physically not real coffee) held above threshold for exactly
+  # 601ms, missing 600ms by a hair and wrongly tripping the same
+  # flow_started_before_preinfusion_end reason on an otherwise-analyzable
+  # shot (33.2g against a 40g target - it should classify too_restrictive,
+  # not invalid). 900ms (validated across the whole range 650-1500ms)
+  # fixes it with zero effect on any other fixture; 2000ms+ starts wrongly
+  # invalidating a genuinely-choked shot instead (choked_machine_pi's own
+  # real, sustained-but-not-perfectly-continuous flow stops qualifying) -
+  # see tests/test_constant_drift.py's ConstantDriftReport and
+  # docs/data/DIAL_IN_RULES.md Part 9.
+  first_flow_sustain_ms: 900
 
   # First detected flow earlier than this fraction of preinfusion_s is
   # implausible (pre-infusion should be a low/no-flow soak). Placeholder.
@@ -288,6 +299,40 @@ stop_latency_calibration:
   # in the real gap between our normal (~2.0-2.4 g/s) and elevated
   # (~3.6-5.1 g/s) shots; revisit as more real shots accumulate.
   bucket_cutoff_g_s: 3.0
+
+  # A real, diagnosed bug: a brief (~300-400ms) flow spike right at the
+  # stop decision - a small channeling-like burst, not a sustained fast
+  # pour - could push the short-window-smoothed flow just over
+  # bucket_cutoff_g_s, triggering the elevated bucket's larger latency for
+  # a flow rate that was never actually sustained. One real shot stopped
+  # 11.4g short of target this way (the projected margin, based on the
+  # spike, was nearly double what the pour's real trailing flow needed),
+  # undershooting badly enough that the resulting trace never reached 90%
+  # of target and the classifier fell back to its crudest duration
+  # measure - a misleading too_restrictive call with nothing to do with
+  # the puck. The bucket decision now requires flow to average at or above
+  # bucket_cutoff_g_s over this longer trailing window (not just the
+  # short smoothing_window_ms one the margin math itself still uses) -
+  # checked directly against every real fixture with a recorded stop
+  # decision: any value from 600ms to 2000ms correctly reclassifies both
+  # real brief-spike shots found so far back to the normal bucket, with
+  # zero effect on every genuinely-elevated shot (all comfortably above
+  # 4 g/s, nowhere near the cutoff). That "zero effect" check is against
+  # the retrospective, already-completed-trace bucket classification
+  # (_observed_stop_latency/StopLatencyBucketDriftReport) only - it does
+  # NOT generalize to the live, mid-shot decision this same sustain check
+  # also gates (_stop_latency_for_flow): good_but_flagged_machine_pi's own
+  # live-replay test (test_runtime.py's
+  # test_reproduces_another_real_good_shot_s_exact_recorded_stop_point)
+  # shows raising this value to match first_flow_sustain_ms's own 900ms
+  # (docs/data/DIAL_IN_RULES.md Part 9) makes that shot's live spike stop
+  # qualifying for the elevated bucket in time, reverting its trigger to
+  # the less accurate normal-bucket timing - a real regression, not a
+  # no-op. Deliberately kept independent of first_flow_sustain_ms despite
+  # addressing an analogous "don't trust a brief blip" problem elsewhere -
+  # 600ms is its own validated value for this specific real-time decision,
+  # not a value that should track the other constant's.
+  elevated_sustain_ms: 600
 
   # Flow at the stop decision must clear this floor for the observed
   # latency ((final_weight - weight_at_decision) / flow) to be numerically

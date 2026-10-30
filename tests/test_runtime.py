@@ -2695,6 +2695,47 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
     def test_smoothed_flow_g_s_of_no_samples_is_zero(self):
         self.assertEqual(BaristaRuntime._smoothed_flow_g_s([], 500), 0.0)
 
+    def test_a_brief_flow_spike_does_not_trigger_the_elevated_bucket(self):
+        """Regression test for a real production bug (docs/data/
+        DIAL_IN_RULES.md): a short (~300-400ms) channeling-like burst could
+        push the short-window-smoothed flow just over bucket_cutoff_g_s,
+        triggering stop_latency_elevated_s's much larger margin for a flow
+        rate that was never actually sustained - one real shot stopped
+        11.4g short of target this way. elevated_sustain_ms requires the
+        longer trailing window to also clear the cutoff before the elevated
+        bucket applies; a brief 3-sample spike here (flow=6.0, after a long
+        run at flow=0.5) pushes the short (500ms) window to 3.25 g/s -
+        genuinely over the 3.0 cutoff on its own - but the longer
+        elevated_sustain_ms (600ms) window, still mostly covering the
+        pre-spike run, averages only 2.857 - under cutoff, so this must
+        still resolve to stop_latency_normal_s."""
+        samples = [ShotSample(i, i * 100, i * 100, float(i) * 0.05, 0.5, 90) for i in range(20)]
+        spike_start = samples[-1].elapsed_ms
+        for j in range(3):
+            elapsed_ms = spike_start + (j + 1) * 100
+            samples.append(
+                ShotSample(20 + j, elapsed_ms, elapsed_ms, samples[-1].weight_g + 0.6, 6.0, 90)
+            )
+
+        cutoff = self.runtime.definitions.stop_latency_calibration["bucket_cutoff_g_s"]
+        self.assertGreaterEqual(self.runtime._smoothed_flow_now(samples), cutoff)
+        self.assertEqual(
+            self.runtime._stop_latency_for_flow(samples), self.runtime.stop_latency_normal_s
+        )
+
+    def test_a_sustained_elevated_flow_does_trigger_the_elevated_bucket(self):
+        """Mirrors the test above - a flow rate that's actually held above
+        bucket_cutoff_g_s for the full elevated_sustain_ms window (not just
+        a brief spike) must still correctly resolve to
+        stop_latency_elevated_s, same as before this fix."""
+        samples = [
+            ShotSample(i, i * 100, i * 100, float(i) * 0.5, 5.0, 90) for i in range(10)
+        ]
+
+        self.assertEqual(
+            self.runtime._stop_latency_for_flow(samples), self.runtime.stop_latency_elevated_s
+        )
+
     async def test_margin_never_drops_below_the_floor_regardless_of_flow(self):
         """early_stop_margin_min_g is a floor, not a reference point to scale
         from either side - a slow or stalled pour must never get a *smaller*
@@ -2807,13 +2848,18 @@ class StopLatencyCalibrationTests(RuntimeTestCase):
     async def test_reproduces_another_real_good_shot_s_exact_recorded_stop_point(self):
         """This shot's own flow at the decision point falls into the
         elevated bucket, so it triggers earlier/lower than a single shared
-        latency would have (see stop_latency_elevated_s's comment) - 24.2g
+        latency would have (see stop_latency_elevated_s's comment) - 24.5g
         here rather than the flat-threshold-adjacent 28.0g the normal bucket
-        alone would give."""
+        alone would give. (24.5g, not the pre-elevated_sustain_ms 24.2g - a
+        brief flow spike right before this reaches the cutoff needs
+        elevated_sustain_ms's own 600ms to confirm before the elevated
+        bucket kicks in, delaying the trigger by ~200ms/0.3g - see
+        stop_latency_calibration.elevated_sustain_ms's own comment for the
+        real bug this guards against.)"""
         trigger = self._replay_stop_trigger(
             "good_but_flagged_machine_pi", early_stop_margin_min_g=8.0
         )
-        self.assertEqual(trigger, (19185, 24.2))
+        self.assertEqual(trigger, (19395, 24.5))
 
     async def test_still_triggers_meaningfully_earlier_for_the_flagship_overshoot_shot(self):
         """Not an exact-reproduction case (that shot's real recorded stop

@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ha_stubs  # noqa: E402
-from real_shot_fixtures import load_real_shot  # noqa: E402
+from real_shot_fixtures import actuator_delay_s as _actuator_delay_s, load_real_shot  # noqa: E402
 
 flow_analysis = ha_stubs.import_barista_module("flow_analysis")
 definitions = ha_stubs.import_barista_module("definitions")
@@ -31,21 +31,6 @@ analyze_shot = flow_analysis.analyze_shot
 # The real, sourced config - see test_flow_analysis.py's own CONFIG for why
 # this isn't a hardcoded/default FlowAnalysisConfig.
 CONFIG = flow_analysis.FlowAnalysisConfig(**definitions.load_definitions().flow_analysis_constants)
-# Live-sourced, not hardcoded, same as CONFIG above - mirrors runtime_shot.py's
-# _preinfusion_actuator_delay_s exactly (stop_latency_normal_s plus
-# stop_latency_calibration.preinfusion_actuator_offset_s, clamped at 0) for
-# every adapt_pi shot, 0.0 for a machine-controlled one (see analyze_shot's
-# own comment on why).
-STOP_LATENCY_NORMAL_S = definitions.load_definitions().defaults["controller"]["stop_latency_normal_s"]
-PREINFUSION_ACTUATOR_OFFSET_S = definitions.load_definitions().stop_latency_calibration[
-    "preinfusion_actuator_offset_s"
-]
-
-
-def _actuator_delay_s(shot) -> float:
-    if not shot.adapt_pi:
-        return 0.0
-    return max(0.0, STOP_LATENCY_NORMAL_S + PREINFUSION_ACTUATOR_OFFSET_S)
 
 
 class GoodShotAdaptPiTests(unittest.TestCase):
@@ -441,6 +426,52 @@ class TooFastButFlaggedInvalidAdaptPiTests(unittest.TestCase):
         early_samples = [s for s in self.shot.samples if s.elapsed_ms < 3000]
         self.assertLess(min(s.weight_g for s in early_samples), -0.3)
         self.assertGreater(max(s.weight_g for s in early_samples), -0.2)
+
+
+class EarlyNoiseWobbleJustOverOldSustainAdaptPiTests(unittest.TestCase):
+    """A held pre-infusion shot (preinfusion_s=7.0) that undershot badly
+    (33.2g against a 40g target). The same class of bug
+    TooFastButFlaggedInvalidAdaptPiTests above regression-tests - a noise
+    wobble while the Bot's hold is still settling, nowhere near real flow
+    (smoothed weight stays negative, i.e. below the empty-cup tare,
+    throughout) - but with a longer wobble this time: it clears
+    first_flow_threshold_g_s continuously for exactly 601ms, missing the
+    then-current first_flow_sustain_ms=600 by a hair and wrongly tripping
+    flow_started_before_preinfusion_end, when the real pour doesn't
+    actually start until ~8s in (right around where this shot's own
+    preinfusion_s plus actuator_delay_s says it should). Raising
+    first_flow_sustain_ms to 900ms (definitions.yaml) fixes it with zero
+    change to every other real fixture's own classification (verified
+    across the whole 650-1500ms range - see
+    tests/test_constant_drift.py's ConstantDriftReport and
+    docs/data/DIAL_IN_RULES.md Part 9). The shot never reaches 90% of
+    target once correctly analyzed, so it reads as too_restrictive (a
+    choked/restrictive pour), not healthy - there was no human taste
+    verdict recorded for this one."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("2026_10_05_0840_adapt_pi")
+
+    def test_the_real_pour_is_correctly_read_as_restrictive_not_invalid(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "invalid_measurement")
+        result = analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
+            actuator_delay_s=_actuator_delay_s(self.shot)
+        )
+        self.assertIsNone(result.invalid_reason)
+        self.assertIsNone(result.t90_ms)
+        self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
+
+    def test_the_fixture_still_has_its_noise_wobble(self) -> None:
+        """Confirms the test above is exercising the real near-baseline
+        noise wobble this test class's docstring describes, rather than a
+        fixture that never had one in the first place."""
+        early_samples = [s for s in self.shot.samples if s.elapsed_ms < 4000]
+        self.assertLess(min(s.weight_g for s in early_samples), -0.3)
+        self.assertGreater(max(s.weight_g for s in early_samples), -0.1)
 
 
 class HealthyAstringentAdaptPiTests(unittest.TestCase):
