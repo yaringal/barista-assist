@@ -110,6 +110,12 @@ class ActiveShot:
     # whatever those settings happen to be *now* instead of what actually
     # applied when it ran.
     effective_stop_margin_g: float | None = None
+    # When the brew Bot confirmed the automatic stop press (pySwitchbot's
+    # turn_on waits for the Bot's own BLE reply), on the same clock as
+    # stop_command_elapsed_ms - which is recorded *before* any wait for the
+    # quick-tap reprogram and the press itself. The gap between the two shows
+    # how late a given stop press physically happened.
+    stop_press_confirmed_elapsed_ms: int | None = None
 
 
 def _recipe_snapshot(bag: Bag) -> dict[str, Any]:

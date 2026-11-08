@@ -286,6 +286,49 @@ class StorageTests(unittest.TestCase):
         )
         self.assertIsNone(self.db.latest_shot_bag(bag.id)["effective_stop_margin_g"])
 
+    def test_finalize_shot_persists_and_exports_stop_press_confirmation(self) -> None:
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=True,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=36.0,
+            status="complete",
+            stop_command_elapsed_ms=25000,
+            samples=[],
+            stop_press_confirmed_elapsed_ms=25400,
+        )
+        self.assertEqual(self.db.latest_shot_bag(bag.id)["stop_press_confirmed_elapsed_ms"], 25400)
+        self.assertIn("stop_press_confirmed_elapsed_ms=25400\n", self.db.export_shots_text())
+
+    def test_finalize_shot_stop_press_confirmation_defaults_to_none(self) -> None:
+        """A shot not ended by the automatic stop never had a stop press to
+        confirm - must persist as None and export as blank."""
+        bag = self.new_bag()
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at="2026-08-16T17:00:00+00:00",
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=True,
+        )
+        self.db.finalize_shot(
+            shot_id,
+            ended_at="2026-08-16T17:00:33+00:00",
+            actual_yield_g=20.0,
+            status="aborted",
+            stop_command_elapsed_ms=12000,
+            samples=[],
+        )
+        self.assertIsNone(self.db.latest_shot_bag(bag.id)["stop_press_confirmed_elapsed_ms"])
+        self.assertIn("stop_press_confirmed_elapsed_ms=\n", self.db.export_shots_text())
+
     def test_finalize_shot_persists_recommended_grind_delta(self) -> None:
         """Phase 4's (docs/DESIGN.md section 28) expert-system grind
         recommendation, computed by grind_correction.recommend_grind_delta

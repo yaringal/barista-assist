@@ -487,6 +487,11 @@ class RuntimeShotMixin:
                 shot.stop_command_elapsed_ms = int(elapsed_s * 1000)
                 self._set_phase(ShotPhase.STOPPING)
                 await self._async_press_stop(shot, "stop")
+                shot.stop_press_confirmed_elapsed_ms = int(self._elapsed_since_press(shot) * 1000)
+                _LOGGER.info(
+                    "Stop press confirmed by the brew Bot %dms after the stop command",
+                    shot.stop_press_confirmed_elapsed_ms - shot.stop_command_elapsed_ms,
+                )
                 self._set_phase(ShotPhase.SETTLING)
                 self._settle_task = self.hass.async_create_background_task(
                     self._settle_then_finalize(), "barista_assist_settle"
@@ -650,6 +655,7 @@ class RuntimeShotMixin:
                 channeling_suspicion=analysis.channeling_suspicion,
                 analysis_json=json.dumps(asdict(analysis)),
                 recommended_grind_delta=recommended_grind_delta,
+                stop_press_confirmed_elapsed_ms=shot.stop_press_confirmed_elapsed_ms,
             )
         )
         self._last_shot_samples = shot.samples

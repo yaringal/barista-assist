@@ -198,6 +198,26 @@ class AutoStopTests(RuntimeTestCase):
         self.assertEqual(self.runtime.status, ShotPhase.SETTLING.value)
         self.assertTrue(self.runtime.active_shot.stop_triggered)
 
+    async def test_auto_stop_records_when_the_bot_confirmed_the_press(self):
+        """stop_command_elapsed_ms is recorded before the quick-tap
+        reprogram wait and the press itself; the confirmation time is
+        recorded after the Bot replies, so it can never come first - and it
+        must reach the stored shot."""
+        await self.start_shot()
+        await self.wait_for_extracting()
+        await asyncio.sleep(0.05)
+
+        self.scale.push_reading(make_reading(weight_g=35.0))  # >= 36 - 1.5
+        await self.hass.tasks[-1]  # the async_stop_at_target() task just scheduled
+
+        shot = self.runtime.active_shot
+        self.assertIsNotNone(shot.stop_press_confirmed_elapsed_ms)
+        self.assertGreaterEqual(shot.stop_press_confirmed_elapsed_ms, shot.stop_command_elapsed_ms)
+        confirmed_ms = shot.stop_press_confirmed_elapsed_ms
+
+        await self.runtime._async_finalize("complete")
+        self.assertEqual(self.runtime.last_shot["stop_press_confirmed_elapsed_ms"], confirmed_ms)
+
     async def test_scheduling_the_stop_records_the_effective_margin_used(self):
         """ActiveShot.effective_stop_margin_g must capture the actual
         _effective_stop_margin_g(shot) value at the instant the stop was

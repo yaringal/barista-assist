@@ -11,7 +11,7 @@ import statistics
 from typing import Any, Iterable
 from uuid import uuid4
 
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 10
 BAG_RECIPE_FIELDS = frozenset(
     {"dose_g", "grind", "target_yield_g", "temperature_offset_c", "preinfusion_s"}
 )
@@ -235,8 +235,13 @@ class BaristaDatabase:
         analysis_json: str | None = None,
         effective_stop_margin_g: float | None = None,
         recommended_grind_delta: float | None = None,
+        stop_press_confirmed_elapsed_ms: int | None = None,
     ) -> None:
-        """effective_stop_margin_g is the live-projected margin actually used
+        """stop_press_confirmed_elapsed_ms is when the brew Bot confirmed the
+        automatic stop press (see ActiveShot.stop_press_confirmed_elapsed_ms)
+        - None for a shot not ended by the automatic stop.
+
+        effective_stop_margin_g is the live-projected margin actually used
         at this shot's own automatic target-weight stop decision (see
         ActiveShot.effective_stop_margin_g) - None for a shot ended by manual
         abort/timeout instead, since no weight-triggered margin was ever
@@ -253,7 +258,8 @@ class BaristaDatabase:
                 SET ended_at=?, actual_yield_g=?, status=?,
                     stop_command_elapsed_ms=?, sample_count=?,
                     classification=?, channeling_suspicion=?, analysis_json=?,
-                    effective_stop_margin_g=?, recommended_grind_delta=?
+                    effective_stop_margin_g=?, recommended_grind_delta=?,
+                    stop_press_confirmed_elapsed_ms=?
                 WHERE id=?
                 """,
                 (
@@ -267,6 +273,7 @@ class BaristaDatabase:
                     analysis_json,
                     effective_stop_margin_g,
                     recommended_grind_delta,
+                    stop_press_confirmed_elapsed_ms,
                     shot_id,
                 ),
             )
@@ -455,6 +462,7 @@ class BaristaDatabase:
                 f"adapt_pi={bool(shot['adapt_pi'])}",
                 f"stop_compensation_g={shot['stop_compensation_g']}",
                 f"stop_command_elapsed_ms={shot['stop_command_elapsed_ms'] if shot['stop_command_elapsed_ms'] is not None else ''}",
+                f"stop_press_confirmed_elapsed_ms={shot['stop_press_confirmed_elapsed_ms'] if shot['stop_press_confirmed_elapsed_ms'] is not None else ''}",
                 f"sample_count={shot['sample_count']}",
                 '',
                 'seq\telapsed_ms\tscale_ms\tweight_g\tflow_g_s\tbattery_percent\tpost_stop',
