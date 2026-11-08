@@ -60,6 +60,31 @@ def _flavor_notification_tag(shot_id: str, axis: str) -> str:
     return f"{_FLAVOR_ACTION_PREFIX}_{shot_id}_{axis}"
 
 
+# Reserved shot id for the Settings view's "Send test notification" button:
+# its notifications are the real ones, but answering them records nothing.
+_TEST_NOTIFICATION_SHOT_ID = "test"
+
+
+def _flavor_notification_payload(shot_id: str, axis: str, *, test: bool = False) -> dict[str, Any]:
+    """The notify.<service> payload for one axis's taste-feedback
+    notification - shared by the real post-shot path and the test button,
+    so a test press sends exactly what a real shot would."""
+    question = f"How was the {axis} on that last shot?"
+    return {
+        "message": f"[Test] {question}" if test else question,
+        "data": {
+            "actions": _flavor_tag_actions(shot_id, axis, prefix=_FLAVOR_ACTION_PREFIX),
+            "tag": _flavor_notification_tag(shot_id, axis),
+            # Android 16 bundles an app's ungrouped notifications after the
+            # second one, and the last of them then often won't clear by tag
+            # even though the tapped action registers; an explicit group
+            # avoids it (home-assistant community thread "Possible bug found
+            # with clearing app notifications (Android)").
+            "group": f"{_FLAVOR_ACTION_PREFIX}_{shot_id}",
+        },
+    }
+
+
 class RuntimePeripheralsMixin:
     """Mixed into BaristaRuntime - see that class for the shared __init__/state."""
 
@@ -244,11 +269,12 @@ class RuntimePeripheralsMixin:
     # -- taste-feedback push notifications --
     async def async_send_test_notification(self) -> None:
         """Manual diagnostic for the Settings view's "Send test
-        notification" button - sends one real notify.<service> call (the
-        same CONF_NOTIFY_SERVICE option the automatic flavor-feedback path
-        below uses) so a user can verify their configured service actually
-        works without waiting for a real healthy shot to trigger that path
-        naturally. Unlike _schedule_flavor_feedback_notifications (which
+        notification" button - sends the same two taste-feedback
+        notifications a real healthy shot does (same buttons, tag and group,
+        via the same CONF_NOTIFY_SERVICE option), marked "[Test]" and tied to
+        _TEST_NOTIFICATION_SHOT_ID, so a user can check delivery, the buttons
+        and that answered notifications clear, without pulling a shot.
+        Answering one records nothing (see _handle_flavor_notification_action). Unlike _schedule_flavor_feedback_notifications (which
         silently no-ops when nothing's configured - appropriate for a
         background task with no one watching for it right then), this
         raises, so a button press with nothing configured surfaces a clear
@@ -258,17 +284,13 @@ class RuntimePeripheralsMixin:
             raise HomeAssistantError(
                 "No notification service configured - set one in this integration's options first"
             )
-        _LOGGER.debug("Sending test notification via notify.%s", service)
-        await self.hass.services.async_call(
-            "notify",
-            service,
-            {
-                "message": (
-                    "Barista Assist test notification - if you can see this, "
-                    "your notify service is working."
-                )
-            },
-        )
+        _LOGGER.debug("Sending test flavor-feedback notifications via notify.%s", service)
+        for axis in _FLAVOR_AXES:
+            await self.hass.services.async_call(
+                "notify",
+                service,
+                _flavor_notification_payload(_TEST_NOTIFICATION_SHOT_ID, axis, test=True),
+            )
 
     def _schedule_flavor_feedback_notifications(self, shot_id: str, bag_id: str) -> None:
         """Schedule the taste-feedback push notifications for a just-
@@ -320,18 +342,9 @@ class RuntimePeripheralsMixin:
             "Sending flavor-feedback notifications for shot %s via notify.%s", shot_id, service
         )
         for axis in _FLAVOR_AXES:
-            actions = _flavor_tag_actions(shot_id, axis, prefix=_FLAVOR_ACTION_PREFIX)
             try:
                 await self.hass.services.async_call(
-                    "notify",
-                    service,
-                    {
-                        "message": f"How was the {axis} on that last shot?",
-                        "data": {
-                            "actions": actions,
-                            "tag": _flavor_notification_tag(shot_id, axis),
-                        },
-                    },
+                    "notify", service, _flavor_notification_payload(shot_id, axis)
                 )
             except Exception:
                 # The two axes are independent notifications - one axis's
@@ -367,6 +380,10 @@ class RuntimePeripheralsMixin:
             shot_id, axis, tag = action[len(prefix):].split(":")
         except ValueError:
             _LOGGER.warning("Malformed flavor-feedback action id: %s", action)
+            return
+        if shot_id == _TEST_NOTIFICATION_SHOT_ID:
+            _LOGGER.info("Test notification answered (axis=%s, tag=%s) - not recorded", axis, tag)
+            await self._async_clear_flavor_notification(shot_id, axis)
             return
         try:
             recorded = await self.hass.async_add_executor_job(

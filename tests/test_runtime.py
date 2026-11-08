@@ -1646,6 +1646,10 @@ class FlavorFeedbackTests(RuntimeTestCase):
         # independent axis's still-unanswered one.
         tags = {data["data"]["tag"] for _domain, _service, data in calls}
         self.assertEqual(tags, {"barista_flavor_shot-123_extraction", "barista_flavor_shot-123_mouthfeel"})
+        # Both carry an explicit, shared group - see the Android 16 note at
+        # the send site.
+        groups = {data["data"]["group"] for _domain, _service, data in calls}
+        self.assertEqual(groups, {"barista_flavor_shot-123"})
 
     async def test_one_axis_s_notify_failure_does_not_block_the_other_axis(self):
         """The two axes are independent notify.* calls - one failing (e.g.
@@ -1666,19 +1670,35 @@ class FlavorFeedbackTests(RuntimeTestCase):
         self.assertEqual(self.hass.services.calls, [])
 
     async def test_send_test_notification_sends_via_the_configured_service(self):
-        """The Settings view's "Send test notification" button - a manual
-        diagnostic reusing the same CONF_NOTIFY_SERVICE option, so a user
-        can verify it actually works without waiting for a real healthy
-        shot to trigger the automatic flavor-feedback path above."""
+        """The Settings view's "Send test notification" button sends the
+        same two taste-feedback notifications a real shot does (buttons,
+        tag, group), marked "[Test]", so delivery, buttons and clearing can
+        all be checked without pulling a shot."""
         self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
 
         await self.runtime.async_send_test_notification()
+        test_calls = list(self.hass.services.calls)
+        self.hass.services.calls.clear()
+        await self.runtime._async_send_flavor_feedback_notifications("test", "bag-456")
+        real_calls = list(self.hass.services.calls)
+
+        self.assertEqual(len(test_calls), 2)
+        for (domain, service, data), (_d, _s, real) in zip(test_calls, real_calls):
+            self.assertEqual((domain, service), ("notify", "mock_notify"))
+            self.assertEqual(data["data"], real["data"])
+            self.assertEqual(data["message"], f"[Test] {real['message']}")
+
+    async def test_answering_a_test_notification_clears_it_without_recording(self):
+        self.entry.options[CONF_NOTIFY_SERVICE] = "mock_notify"
+
+        await self.hass.bus.async_fire(
+            "mobile_app_notification_action", {"action": "barista_flavor:test:mouthfeel:balanced"}
+        )
 
         self.assertEqual(len(self.hass.services.calls), 1)
-        domain, service, data = self.hass.services.calls[0]
-        self.assertEqual(domain, "notify")
-        self.assertEqual(service, "mock_notify")
-        self.assertIn("message", data)
+        _domain, _service, data = self.hass.services.calls[0]
+        self.assertEqual(data["message"], "clear_notification")
+        self.assertEqual(data["data"]["tag"], "barista_flavor_test_mouthfeel")
 
     async def test_send_test_notification_raises_without_a_configured_service(self):
         """Unlike the automatic flavor-feedback path (a silent no-op is
