@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.13
+
+### Fixed
+
+- **Brief flow spikes stopped real shots far short of target.** The stop margin used flow averaged over just 500ms, so a ~300ms spike right at the stop decision inflated it (10/29: 22.6g on a 34g target; 10/05: 30.3g on 40g). The stop logic now averages over 2s (`stop_latency_calibration.flow_window_ms`), which also predicts real post-stop drip better (mean error 1.72g -> 1.24g across 23 auto-stopped Bot-held shots).
+- **Shots stopped early by the auto-stop were classified `too_restrictive`**, as if the puck had choked. A shot that never reaches 90% of target is now `invalid_measurement` / `stopped_short_of_target` when the auto-stop ended it (no grind change, excluded from baselines and from stop-latency learning); a shot that ran to the timeout still reads `too_restrictive`.
+- **The grey pre-infusion band and every shot's classification moved whenever stop learning moved**, because the Bot-held dead time was derived from the learned stop latency. They now use fixed values (`preinfusion_timing`): the band starts 1.3s after the press (Bot hold timed directly), and the expected shot time adds a further 2.0s for flow to start after the hold (median across 24 real shots). Barista-confirmed good shots now centre on `duration_ratio` ~1.0 instead of crowding just under the restrictive edge; several shots that read slightly restrictive (+0.5 grind) now read healthy.
+- **A scale-noise wobble before pre-infusion could invalidate an otherwise good shot** (`flow_started_before_preinfusion_end`) - first-flow detection now requires 900ms of sustained flow instead of 600ms.
+- **Taste answers on shots that badly missed target yield changed the recipe.** 10/19 ended at 43g on a 36g target and tasted "thin" - explained by the overshoot, not the dose. Answers on shots more than 10% off target (`expert_rules.flavor_correction.max_yield_miss_fraction`) are still recorded but no longer drive recommendations, and the "Future shot recommendation" flavor row says why.
+- **Charts drew stray readings from before the scale settled** (e.g. a 149.6g first sample), squashing the weight axis. They're now left out of both charts (the raw export keeps them).
+- **Taste notifications could fail to clear on Android 16**, which bundles an app's ungrouped notifications. Each shot's two notifications now share an explicit group.
+
+### Changed
+
+- **One learned stop latency instead of two.** With the 2s window, the normal/fast split no longer helped (replayed Bot-held shots landed closer to target with one value: 1.71g vs 1.90g mean miss), and live values had ended up inverted. "Learned stop latency (normal flow)" and "(fast flow)" are replaced by a single "Learned stop latency" sensor; the saved normal-flow value carries over.
+- **"Send test notification"** now sends the same two taste notifications a real shot does (marked "[Test]"); answering one only dismisses it.
+
+### Added
+
+- **Stop-press timing is recorded.** Each auto-stopped shot stores when the brew Bot confirmed the stop press (`stop_press_confirmed_elapsed_ms`, new database column, migration 010) and includes it in the export - to tell whether late presses explain overshoots like 11/04 (41.9g on a 34g target).
+- **"Installed version"** row on the Settings tab.
+- Chart legend explains the time axis ("seconds since brew press").
+
+### Testing
+
+- New standing reports: `StopLatencySplitReport` (does fast pours' real stop latency differ enough to bring back a separate value? today +0.17s, no) and `FlowStartLagReport` (does the fixed 2.0s flow-start lag still match real shots? today median 2.10s, yes).
+- `too_fast_but_healthy_by_taste_adapt_pi` (tasted balanced) now reads too_fast by timing - recorded as an accepted timing-vs-taste disagreement.
+- Full suite: 367 tests, all passing (up from 349).
+
 ## 0.3.12
 
 ### Fixed
