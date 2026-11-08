@@ -1731,6 +1731,18 @@ axes are independent because the underlying symptoms are not mutually
 exclusive - a shot can be sour and astringent at once - so collapsing them
 into one notification with one winning tag would lose real signal.
 
+**Answers on shots that missed their target yield don't drive
+recommendations.** A shot can classify `healthy` by timing yet land well off
+its target yield when the stop is late or early - e.g. 43g on a 36g target
+(2026-10-19), which tasted "thin". That taste reflects a 1:2.4 brew ratio,
+not the recipe, so acting on it would push the dose up to fix a stop
+error. Answers on a shot whose actual yield missed target by more than
+`expert_rules.flavor_correction.max_yield_miss_fraction` (10%, either way)
+are still recorded, but `storage.recent_flavor_tags` and
+`latest_tagged_shot_recipe` both skip them, and the "Future shot
+recommendation" flavor row says "Last shot overshot target by Xg - its
+taste answers won't change the recipe".
+
 Sequencing is a full state machine, not an independent per-tag lookup:
 `flavor_correction.py`'s `resolve_flavor_state` replays each axis's own
 answered-response history (derived fresh each time, nothing persisted in a

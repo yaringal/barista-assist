@@ -333,6 +333,9 @@ class BaristaRuntime(
         self._bag_latest_shot = {}
         self._bag_flavor_latest_tagged_shot_recipe = {}
         self._bag_puck_prep_streak = {}
+        max_yield_miss_fraction = self.definitions.expert_rules["flavor_correction"][
+            "max_yield_miss_fraction"
+        ]
         for bag in self._bags.values():
             # A nested comprehension here would need `await` inside a
             # comprehension whose immediate enclosing scope is another
@@ -350,6 +353,7 @@ class BaristaRuntime(
                     bag.id,
                     axis,
                     self.definitions.expert_rules["flavor_correction"]["state_replay_limit"],
+                    max_yield_miss_fraction,
                 )
                 for axis in _FLAVOR_AXES
             }
@@ -358,7 +362,7 @@ class BaristaRuntime(
             )
             self._bag_flavor_latest_tagged_shot_recipe[bag.id] = {
                 axis: await self.hass.async_add_executor_job(
-                    self.db.latest_tagged_shot_recipe, bag.id, axis
+                    self.db.latest_tagged_shot_recipe, bag.id, axis, max_yield_miss_fraction
                 )
                 for axis in _FLAVOR_AXES
             }

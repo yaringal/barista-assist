@@ -434,6 +434,14 @@ expert_rules:
     # cycle can span more shots than recent_flavor_tags's own default (5).
     state_replay_limit: 20
 
+    # Taste answers on a shot whose actual yield missed target_yield_g by
+    # more than this fraction (either way) are still recorded, but don't
+    # drive recipe recommendations: the taste reflects a different brew
+    # ratio than the recipe (2026-10-19: 43g on a 36g target tasted "thin" -
+    # explained by the 7g overshoot, not the dose). Shots with no recorded
+    # yield still count.
+    max_yield_miss_fraction: 0.10
+
     tags:
       sour_sharp:
         lever: yield

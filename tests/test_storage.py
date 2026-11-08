@@ -449,6 +449,49 @@ class StorageTests(unittest.TestCase):
             self.db.recent_flavor_tags(bag.id, "extraction"), ["balanced", "sour_sharp"]
         )
 
+    def _tagged_shot(self, bag, started_at: str, tag: str, actual_yield_g: float | None) -> str:
+        shot_id = self.db.create_shot(
+            bag=bag,
+            started_at=started_at,
+            stop_compensation_g=1.5,
+            preinfusion_s=7.0,
+            adapt_pi=True,
+        )
+        if actual_yield_g is not None:
+            self.db.finalize_shot(
+                shot_id,
+                ended_at=started_at,
+                actual_yield_g=actual_yield_g,
+                status="complete",
+                stop_command_elapsed_ms=25000,
+                samples=[],
+            )
+        self.db.record_flavor_tag(shot_id, "mouthfeel", tag)
+        return shot_id
+
+    def test_flavor_reads_skip_shots_that_missed_target_yield(self) -> None:
+        """A shot that missed its target yield by more than the fraction
+        (either way) is skipped by both reads, so they agree on which shot
+        is the latest that counts; a shot with no recorded yield counts."""
+        bag = self.new_bag()  # target_yield_g=36.0
+        on_target = self._tagged_shot(bag, "2026-08-16T17:00:00+00:00", "dry_astringent", 37.0)
+        self._tagged_shot(bag, "2026-08-16T18:00:00+00:00", "thin_weak", 43.0)  # +19%
+        self._tagged_shot(bag, "2026-08-16T19:00:00+00:00", "thin_weak", 30.0)  # -17%
+
+        self.assertEqual(
+            self.db.recent_flavor_tags(bag.id, "mouthfeel", 5, 0.10), ["dry_astringent"]
+        )
+        self.assertEqual(
+            self.db.latest_tagged_shot_recipe(bag.id, "mouthfeel", 0.10)["id"], on_target
+        )
+        # Without the fraction, nothing is skipped.
+        self.assertEqual(len(self.db.recent_flavor_tags(bag.id, "mouthfeel", 5)), 3)
+
+        no_yield = self._tagged_shot(bag, "2026-08-16T20:00:00+00:00", "balanced", None)
+        self.assertEqual(
+            self.db.latest_tagged_shot_recipe(bag.id, "mouthfeel", 0.10)["id"], no_yield
+        )
+
     def test_recent_flavor_tags_is_empty_with_no_history(self) -> None:
         bag = self.new_bag()
         self.assertEqual(self.db.recent_flavor_tags(bag.id, "mouthfeel"), [])

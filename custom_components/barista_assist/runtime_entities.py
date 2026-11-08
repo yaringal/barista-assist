@@ -387,6 +387,24 @@ class RuntimeEntitiesMixin:
             return None
         return f"puck_prep_issue x{streak} in a row at this recipe - grind overridden to coarsen"
 
+    def _yield_miss_note(self) -> str | None:
+        """A note when the selected bag's last shot missed its target yield
+        by more than expert_rules.flavor_correction.max_yield_miss_fraction -
+        its taste answers are recorded but don't drive recommendations (see
+        storage.recent_flavor_tags), so say why. None otherwise."""
+        if not self.last_shot:
+            return None
+        actual = self.last_shot.get("actual_yield_g")
+        target = self.last_shot.get("target_yield_g")
+        if actual is None or not target:
+            return None
+        miss = actual - target
+        fraction = self.definitions.expert_rules["flavor_correction"]["max_yield_miss_fraction"]
+        if abs(miss) <= fraction * target:
+            return None
+        direction = "overshot" if miss > 0 else "undershot"
+        return f"Last shot {direction} target by {abs(miss):.1f}g - its taste answers won't change the recipe"
+
     def _recommended_flavor_note(self) -> str | None:
         """"Current -> recommended" text per flavor-correction axis for the
         currently selected bag (docs/
@@ -413,6 +431,9 @@ class RuntimeEntitiesMixin:
         streak_note = self._puck_prep_streak_note()
         if streak_note is not None:
             notes.append(streak_note)
+        yield_miss_note = self._yield_miss_note()
+        if yield_miss_note is not None:
+            notes.append(yield_miss_note)
         return "; ".join(notes) if notes else None
 
     def _recipe_field_short_note(self, field: str) -> str | None:

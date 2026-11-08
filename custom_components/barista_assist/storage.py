@@ -552,7 +552,22 @@ class BaristaDatabase:
             ).fetchone()
         return dict(row) if row else None
 
-    def latest_tagged_shot_recipe(self, bag_id: str, axis: str) -> dict[str, Any] | None:
+    @staticmethod
+    def _yield_within_clause(max_yield_miss_fraction: float | None) -> tuple[str, tuple[Any, ...]]:
+        """SQL condition (plus params) keeping only shots whose actual yield
+        is within max_yield_miss_fraction of their own target - shots with
+        no recorded yield always pass. A no-op when the fraction is None."""
+        if max_yield_miss_fraction is None:
+            return "", ()
+        return (
+            " AND (actual_yield_g IS NULL OR "
+            "ABS(actual_yield_g - target_yield_g) <= ? * target_yield_g)",
+            (float(max_yield_miss_fraction),),
+        )
+
+    def latest_tagged_shot_recipe(
+        self, bag_id: str, axis: str, max_yield_miss_fraction: float | None = None
+    ) -> dict[str, Any] | None:
         """The most recent shot on this bag answered on `axis` (a non-null
         flavor tag there), together with that shot's own id and recipe
         snapshot (dose_g/target_yield_g/temperature_offset_c/
@@ -563,17 +578,20 @@ class BaristaDatabase:
         fields can already be mid-edit toward a combination of pending
         recommendations before the user even presses Brew, so "current"
         must never be read live off the bag. None if this bag has never
-        been tagged on this axis."""
+        been tagged on this axis. max_yield_miss_fraction skips the same
+        off-target shots recent_flavor_tags does, so the two agree on which
+        shot is the latest one that counts."""
         tag_column = self._FLAVOR_AXIS_COLUMNS[axis]
+        yield_clause, yield_params = self._yield_within_clause(max_yield_miss_fraction)
         with self._connect() as db:
             row = db.execute(
                 f"""
                 SELECT id, dose_g, target_yield_g, temperature_offset_c, preinfusion_s
                 FROM shots
-                WHERE bag_id=? AND {tag_column} IS NOT NULL
+                WHERE bag_id=? AND {tag_column} IS NOT NULL{yield_clause}
                 ORDER BY started_at DESC LIMIT 1
                 """,
-                (bag_id,),
+                (bag_id, *yield_params),
             ).fetchone()
         return dict(row) if row else None
 
@@ -742,7 +760,13 @@ class BaristaDatabase:
             cursor = db.execute(f"UPDATE shots SET {column}=? WHERE id=?", (tag, shot_id))
         return cursor.rowcount > 0
 
-    def recent_flavor_tags(self, bag_id: str, axis: str, limit: int = 5) -> list[str]:
+    def recent_flavor_tags(
+        self,
+        bag_id: str,
+        axis: str,
+        limit: int = 5,
+        max_yield_miss_fraction: float | None = None,
+    ) -> list[str]:
         """Most-recent-first answered responses for one axis of a bag's
         shot history - tags and "balanced" (docs/DESIGN.md's Phase 5).
         Shots never answered on this axis are skipped entirely (not
@@ -754,16 +778,21 @@ class BaristaDatabase:
         one axis (e.g. extraction tapped, mouthfeel notification ignored)
         is included for that axis exactly like a fully-answered shot, and
         skipped for the other - answering one axis never blocks, delays, or
-        counts against the other axis's own persistent-pattern check."""
+        counts against the other axis's own persistent-pattern check.
+
+        max_yield_miss_fraction (expert_rules.flavor_correction.
+        max_yield_miss_fraction) skips answers on shots whose actual yield
+        missed target by more than that fraction - see that key's comment."""
         tag_column = self._FLAVOR_AXIS_COLUMNS[axis]
+        yield_clause, yield_params = self._yield_within_clause(max_yield_miss_fraction)
         with self._connect() as db:
             rows = db.execute(
                 f"""
                 SELECT {tag_column} AS tag
                 FROM shots
-                WHERE bag_id=? AND {tag_column} IS NOT NULL
+                WHERE bag_id=? AND {tag_column} IS NOT NULL{yield_clause}
                 ORDER BY started_at DESC LIMIT ?
                 """,
-                (bag_id, int(limit)),
+                (bag_id, *yield_params, int(limit)),
             ).fetchall()
         return [row["tag"] for row in rows]

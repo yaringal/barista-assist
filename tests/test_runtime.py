@@ -1854,6 +1854,28 @@ class FlavorFeedbackTests(RuntimeTestCase):
 
         self.assertIsNone(self._recommended_flavor())
 
+    async def test_an_overshot_shot_s_taste_answer_does_not_change_the_recipe(self):
+        """2026-10-19: 43g on a 36g target tasted "thin" - explained by the
+        overshoot, not the recipe. The answer is recorded, but no
+        recommendation follows from it, and the note says why."""
+        await self.start_shot(target_yield_g=36.0)
+        shot = self.runtime.active_shot
+        shot.samples = FlowAnalysisWiringTests._ramp_samples(
+            flat_ms=1000, ramp_seconds=self._ramp_seconds_for_ratio(1.0), target_yield_g=43.0
+        )
+        shot.stop_command_elapsed_ms = shot.samples[-1].elapsed_ms
+        await self.runtime._async_finalize("complete")
+        shot_id = self.runtime.last_shot["id"]
+        await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.record_flavor_tag, shot_id, "extraction", "sour_sharp"
+        )
+        await self.runtime.async_refresh_cache()
+
+        self.assertEqual(self.runtime.last_shot["flavor_extraction_tag"], "sour_sharp")
+        note = self._recommended_flavor()
+        self.assertNotIn("(Sour / Sharp)", note)
+        self.assertIn("Last shot overshot target by 7.0g", note)
+
     async def test_recommended_flavor_note_is_none_with_no_bag(self):
         definition = self.runtime.definitions.entity("sensor", "recommended_flavor")
         self.assertIsNone(self.runtime.entity_value(definition))
@@ -2100,7 +2122,10 @@ class FlavorFeedbackTests(RuntimeTestCase):
         # make this very shot trigger the coarsen-override, breaking the
         # recommended_grind_delta assertion below for an unrelated reason.
         self.runtime.puck_prep_issue_streak_threshold = 2
-        await self.create_bag()
+        # The synthetic puck_prep_issue shot ends at ~77g; a matching target
+        # keeps it within max_yield_miss_fraction, so its taste answer still
+        # counts and only the classification-based guard is under test.
+        await self.create_bag(target_yield_g=75.0)
         target_yield = self.runtime.selected_bag.target_yield_g
 
         # A single puck_prep_issue shot - below the streak threshold pinned
