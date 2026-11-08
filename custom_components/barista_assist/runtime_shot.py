@@ -689,6 +689,7 @@ class RuntimeShotMixin:
             expected_flow_g_s=shot.expected_flow_g_s,
             config=flow_analysis_config,
             actuator_delay_s=self._preinfusion_actuator_delay_s(shot.adapt_pi),
+            stopped_by_target=status == "complete",
         )
         if analysis.invalid_reason is not None:
             _LOGGER.warning(

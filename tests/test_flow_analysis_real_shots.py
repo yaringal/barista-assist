@@ -444,26 +444,26 @@ class EarlyNoiseWobbleJustOverOldSustainAdaptPiTests(unittest.TestCase):
     change to every other real fixture's own classification (verified
     across the whole 650-1500ms range - see
     tests/test_constant_drift.py's ConstantDriftReport and
-    docs/data/DIAL_IN_RULES.md Part 9). The shot never reaches 90% of
-    target once correctly analyzed, so it reads as too_restrictive (a
-    choked/restrictive pour), not healthy - there was no human taste
-    verdict recorded for this one."""
+    docs/data/DIAL_IN_RULES.md Part 9). Past the first-flow check, this
+    shot is still invalid, but for the right reason: the auto-stop fired
+    at 30.3g against a 40g target (a brief flow spike inflating the stop
+    margin), so it never reached 90% of target - see
+    StoppedShortOfTargetAdaptPiTests below."""
 
     def setUp(self) -> None:
         self.shot = load_real_shot("2026_10_05_0840_adapt_pi")
 
-    def test_the_real_pour_is_correctly_read_as_restrictive_not_invalid(self) -> None:
+    def test_the_noise_no_longer_counts_as_early_flow(self) -> None:
         self.assertEqual(self.shot.recorded_classification, "invalid_measurement")
         result = analyze_shot(
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
             baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
-            actuator_delay_s=_actuator_delay_s(self.shot)
+            actuator_delay_s=_actuator_delay_s(self.shot),
+            stopped_by_target=self.shot.stopped_by_target,
         )
-        self.assertIsNone(result.invalid_reason)
-        self.assertIsNone(result.t90_ms)
-        self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
+        self.assertEqual(result.invalid_reason, flow_analysis.InvalidReason.STOPPED_SHORT_OF_TARGET)
 
     def test_the_fixture_still_has_its_noise_wobble(self) -> None:
         """Confirms the test above is exercising the real near-baseline
@@ -472,6 +472,48 @@ class EarlyNoiseWobbleJustOverOldSustainAdaptPiTests(unittest.TestCase):
         early_samples = [s for s in self.shot.samples if s.elapsed_ms < 4000]
         self.assertLess(min(s.weight_g for s in early_samples), -0.3)
         self.assertGreater(max(s.weight_g for s in early_samples), -0.1)
+
+
+class StoppedShortOfTargetAdaptPiTests(unittest.TestCase):
+    """Shots the auto-stop ended well short of target - never reaching 90%
+    of it - used to be forced to too_restrictive, as if the puck had
+    choked. None of them did: 2026_10_05 (stopped at 30.3g/40g) and
+    2026_10_29 (22.6g/34g) were both stopped early by a brief flow spike
+    inflating the stop margin, and 2026_09_23_1006 actually gushed (peak
+    flow ~6.3 g/s) before being stopped at 17.1g/36g. Every real choke in
+    the fixtures instead ran to the shot timeout (status=timeout), which
+    is what still reads as too_restrictive."""
+
+    STOPPED_SHORT = ("2026_10_05_0840_adapt_pi", "2026_10_29_1130_adapt_pi", "2026_09_23_1006_adapt_pi")
+    TIMED_OUT = ("choked_adapt_pi", "choked_machine_pi", "too_restrictive_machine_pi", "2026_09_23_1005_adapt_pi")
+
+    def _analyze(self, shot):
+        return analyze_shot(
+            shot.samples,
+            target_yield_g=shot.target_yield_g,
+            preinfusion_s=shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
+            actuator_delay_s=_actuator_delay_s(shot),
+            stopped_by_target=shot.stopped_by_target,
+        )
+
+    def test_shots_the_auto_stop_ended_early_are_invalid_not_restrictive(self) -> None:
+        for name in self.STOPPED_SHORT:
+            with self.subTest(name=name):
+                shot = load_real_shot(name)
+                self.assertTrue(shot.stopped_by_target)
+                result = self._analyze(shot)
+                self.assertEqual(result.classification, ShotClassification.INVALID)
+                self.assertEqual(result.invalid_reason, flow_analysis.InvalidReason.STOPPED_SHORT_OF_TARGET)
+
+    def test_shots_that_timed_out_short_of_target_are_still_too_restrictive(self) -> None:
+        for name in self.TIMED_OUT:
+            with self.subTest(name=name):
+                shot = load_real_shot(name)
+                self.assertFalse(shot.stopped_by_target)
+                result = self._analyze(shot)
+                self.assertIsNone(result.t90_ms)
+                self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
 
 
 class HealthyAstringentAdaptPiTests(unittest.TestCase):

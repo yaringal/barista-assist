@@ -398,6 +398,31 @@ class FlowAnalysisTests(unittest.TestCase):
         self.assertIsNone(result.t90_ms)
         self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
 
+    def test_falling_short_of_90_percent_after_the_auto_stop_is_invalid(self) -> None:
+        """The same short trace, but ended by the automatic stop-at-target
+        rather than a timeout: the stop fired early, so the trace says
+        nothing reliable about the puck."""
+
+        def flow_fn(t: float) -> float:
+            return 2.0 if t < 8.0 else 0.01
+
+        samples = _simulate(flow_fn, duration_s=20.0)
+        result = analyze_shot(
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE,
+            expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG, stopped_by_target=True
+        )
+        self.assertEqual(result.classification, ShotClassification.INVALID)
+        self.assertEqual(result.invalid_reason, InvalidReason.STOPPED_SHORT_OF_TARGET)
+
+    def test_reaching_90_percent_after_the_auto_stop_is_classified_normally(self) -> None:
+        expected_s = TARGET_YIELD_G / CONFIG.expected_flow_g_s
+        samples = _steady_flow_samples(duration_s=expected_s * 2.2)
+        result = analyze_shot(
+            samples, target_yield_g=TARGET_YIELD_G, preinfusion_s=0.0, baseline=HEALTHY_BASELINE,
+            expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG, stopped_by_target=True
+        )
+        self.assertEqual(result.classification, ShotClassification.TOO_RESTRICTIVE)
+
     def test_design_doc_example_a_is_too_fast(self) -> None:
         """docs/DESIGN.md section 25, Example A: 18g -> 38g, PI 7s, 24s total,
         smooth/globally-high-flow curve, explicitly "clearly fast" (needs a

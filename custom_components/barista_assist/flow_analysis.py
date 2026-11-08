@@ -148,6 +148,7 @@ class InvalidReason(str, Enum):
     FLOW_STARTED_BEFORE_PREINFUSION_END = "flow_started_before_preinfusion_end"
     DISTURBANCE_LEFT_TOO_FEW_SAMPLES = "disturbance_left_too_few_samples"
     LEADING_GARBAGE_LEFT_TOO_FEW_SAMPLES = "leading_garbage_left_too_few_samples"
+    STOPPED_SHORT_OF_TARGET = "stopped_short_of_target"
 
     def __str__(self) -> str:
         return self.value
@@ -636,6 +637,7 @@ def analyze_shot(
     expected_flow_g_s: float,
     config: FlowAnalysisConfig,
     actuator_delay_s: float = 0.0,
+    stopped_by_target: bool = False,
 ) -> ShotAnalysis:
     """Classify one shot's flow curve (docs/DESIGN.md section 13, Stage 1).
 
@@ -664,6 +666,12 @@ def analyze_shot(
     configured preinfusion_s and when flow can plausibly start, for a shot
     whose pre-infusion was held by the brew Bot rather than run by the
     machine's own built-in timer - see the expected_s comment below for why.
+
+    stopped_by_target (default False) says the shot ended because the
+    automatic stop-at-target fired, not because it timed out or was aborted.
+    A shot that ended that way yet never reached 90% of target was stopped
+    too early - the trace says nothing reliable about the puck, so it comes
+    back invalid (STOPPED_SHORT_OF_TARGET) rather than too_restrictive.
     """
     if len(samples) < config.min_samples:
         return _invalid(InvalidReason.TOO_FEW_SAMPLES)
@@ -732,6 +740,11 @@ def analyze_shot(
     t50_ms = _first_crossing_ms(times_ms, smoothed, 0.50 * target_yield_g)
     t90_ms = _first_crossing_ms(times_ms, smoothed, 0.90 * target_yield_g)  # time to 90% of yield
     t100_ms = _first_crossing_ms(times_ms, smoothed, target_yield_g)  # time to 100% of yield
+    # Every real choke in the fixtures ran to the shot timeout; every shot
+    # that fell short after the auto-stop fired was stopped early instead
+    # (e.g. a brief flow spike inflating the stop margin), not choked.
+    if t90_ms is None and stopped_by_target:
+        return _invalid(InvalidReason.STOPPED_SHORT_OF_TARGET)
 
     early_flow: list[float] = []
     mid_flow: list[float] = []

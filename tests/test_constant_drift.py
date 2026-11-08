@@ -82,6 +82,7 @@ def _classify(shot, config) -> tuple:
         expected_flow_g_s=config.expected_flow_g_s,
         config=config,
         actuator_delay_s=actuator_delay_s(shot),
+        stopped_by_target=shot.stopped_by_target,
     )
     return (result.classification, result.invalid_reason)
 
@@ -245,6 +246,7 @@ class GrindFlavorConsistencyReport(unittest.TestCase):
                     expected_flow_g_s=CONFIG.expected_flow_g_s,
                     config=CONFIG,
                     actuator_delay_s=actuator_delay_s(shot),
+                    stopped_by_target=shot.stopped_by_target,
                 )
                 actual = _DIRECTION_BY_CLASSIFICATION.get(str(result.classification))
                 if actual is not None and actual != expected:

@@ -91,6 +91,13 @@ class RealShot:
         return int(raw) if raw else None
 
     @property
+    def stopped_by_target(self) -> bool:
+        """Mirrors runtime_shot.py's _async_finalize: only the automatic
+        stop-at-target finalizes a shot with status=complete (a timeout,
+        abort or error each record their own status instead)."""
+        return self.fields.get("status") == "complete"
+
+    @property
     def actual_yield_g(self) -> float | None:
         """None when blank - same scope as stop_command_elapsed_ms above."""
         raw = self.fields.get("actual_yield_g", "")

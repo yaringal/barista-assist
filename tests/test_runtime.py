@@ -1306,8 +1306,14 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         # Spread over more than flow_analysis's 500ms smoothing window - too
         # tight a span makes every sample's window cover the whole sequence,
         # flattening the signal to a constant and looking like no flow at all.
-        for weight in (4.0, 9.0, 14.0, 19.0, 24.0, 30.0, 36.0):
-            self.scale.push_reading(make_reading(weight_g=weight))
+        # Rising for longer than first_flow_sustain_ms, then settling at the
+        # final weight so the smoothed trace actually reaches 90% of target
+        # (an auto-stopped shot that doesn't reads as stopped_short_of_target).
+        for weight in range(2, 38, 2):
+            self.scale.push_reading(make_reading(weight_g=float(weight)))
+            await asyncio.sleep(0.09)
+        for _ in range(4):
+            self.scale.push_reading(make_reading(weight_g=36.0, flow_g_s=0.0))
             await asyncio.sleep(0.09)
 
         await self.runtime._async_finalize("complete")
@@ -2983,11 +2989,19 @@ class LearnedStopLatencyTests(RuntimeTestCase):
         shot = self.runtime.active_shot
         seed_normal = self.runtime.stop_latency_normal_s
 
-        for weight in (4.0, 9.0, 14.0, 19.0, 24.0, 30.0, 36.0):
-            self.scale.push_reading(make_reading(weight_g=weight, flow_g_s=2.0))
+        for weight in range(2, 38, 2):
+            self.scale.push_reading(make_reading(weight_g=float(weight), flow_g_s=2.0))
             await asyncio.sleep(0.09)
-        # Decision at the second-to-last sample: weight=30.0, flow=2.0 (normal bucket, <3.0).
+        # Decision at the second-to-last sample: weight=34.0, flow=2.0 (normal bucket, <3.0).
         shot.stop_command_elapsed_ms = shot.samples[-2].elapsed_ms
+        for _ in range(4):
+            self.scale.push_reading(make_reading(weight_g=36.0, flow_g_s=0.0))
+            await asyncio.sleep(0.09)
+        # Lowered only now, after the readings above: a 36g target from the
+        # start would let the live auto-stop fire mid-test. At 36g the trace
+        # reaches 90% of target, so it isn't read as stopped_short_of_target
+        # (which correctly skips latency learning).
+        shot.target_yield_g = 36.0
 
         await self.runtime._async_finalize("complete")
 
