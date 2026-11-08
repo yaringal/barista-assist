@@ -109,8 +109,7 @@ class BaristaRuntime(
         self.machine_pi_s = float(defaults["controller"]["machine_pi_s"])
         self.machine_max_shot_s = float(defaults["controller"]["machine_max_shot_s"])
         self.safety_margin_s = float(defaults["controller"]["safety_margin_s"])
-        self.stop_latency_normal_s = float(defaults["controller"]["stop_latency_normal_s"])
-        self.stop_latency_elevated_s = float(defaults["controller"]["stop_latency_elevated_s"])
+        self.stop_latency_s = float(defaults["controller"]["stop_latency_s"])
         flavor_min_step = self.definitions.expert_rules["flavor_correction"]["minimum_meaningful_step"]
         self.min_step_target_yield_g = float(flavor_min_step["target_yield_g"])
         self.min_step_dose_g = float(flavor_min_step["dose_g"])
@@ -231,16 +230,15 @@ class BaristaRuntime(
         self.safety_margin_s = float(
             state.get("safety_margin_s", self.definitions.defaults["controller"]["safety_margin_s"])
         )
-        self.stop_latency_normal_s = float(
+        # Falls back to the old normal-flow value saved before the two
+        # learned latencies were merged into one, so it isn't relearned.
+        self.stop_latency_s = float(
             state.get(
-                "stop_latency_normal_s",
-                self.definitions.defaults["controller"]["stop_latency_normal_s"],
-            )
-        )
-        self.stop_latency_elevated_s = float(
-            state.get(
-                "stop_latency_elevated_s",
-                self.definitions.defaults["controller"]["stop_latency_elevated_s"],
+                "stop_latency_s",
+                state.get(
+                    "stop_latency_normal_s",
+                    self.definitions.defaults["controller"]["stop_latency_s"],
+                ),
             )
         )
         flavor_min_step = self.definitions.expert_rules["flavor_correction"]["minimum_meaningful_step"]
@@ -262,16 +260,15 @@ class BaristaRuntime(
         )
         _LOGGER.debug(
             "BaristaRuntime initialized: selected_slot=%s adapt_pi=%s machine_max_shot_s=%.1f "
-            "safety_margin_s=%.1f early_stop_margin=%.2f-%.2fg stop_latency=%.2f/%.2fs "
-            "(normal/elevated) notify_service=%s",
+            "safety_margin_s=%.1f early_stop_margin=%.2f-%.2fg stop_latency=%.2fs "
+            "notify_service=%s",
             self.selected_slot,
             self.adapt_pi,
             self.machine_max_shot_s,
             self.safety_margin_s,
             self.early_stop_margin_min_g,
             self.early_stop_margin_max_g,
-            self.stop_latency_normal_s,
-            self.stop_latency_elevated_s,
+            self.stop_latency_s,
             self.entry.options.get(CONF_NOTIFY_SERVICE) or "(disabled)",
         )
 
@@ -300,8 +297,7 @@ class BaristaRuntime(
                 "machine_pi_s": self.machine_pi_s,
                 "machine_max_shot_s": self.machine_max_shot_s,
                 "safety_margin_s": self.safety_margin_s,
-                "stop_latency_normal_s": self.stop_latency_normal_s,
-                "stop_latency_elevated_s": self.stop_latency_elevated_s,
+                "stop_latency_s": self.stop_latency_s,
                 "safe_shot_deadline_s": self.safe_shot_deadline_s,
                 "min_step_target_yield_g": self.min_step_target_yield_g,
                 "min_step_dose_g": self.min_step_dose_g,

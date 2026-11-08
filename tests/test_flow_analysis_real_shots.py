@@ -385,7 +385,7 @@ class TooFastButFlaggedInvalidAdaptPiTests(unittest.TestCase):
     projection reacted to the high flow rate and stopped early. That
     undershoot is a separate, real product concern (runtime_shot.py's
     stop-margin projection, tracked in aggregate by
-    test_constant_drift.py's StopLatencyBucketDriftReport) that this
+    test_constant_drift.py's StopLatencySplitReport) that this
     classifier never sees at all - analyze_shot only ever looks at the
     recorded flow curve, not the stop decision that produced it.
 
@@ -674,7 +674,7 @@ class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
     2. expected_s didn't budget actuator_delay_s at all - the dead time a
        Bot-held pre-infusion needs beyond its own programmed hold before
        flow can plausibly start.
-    3. actuator_delay_s itself (reused from stop_latency_normal_s) was
+    3. actuator_delay_s itself (reused from stop_latency_s) was
        initially over-estimated by a full ~2s: a live measurement of the
        Bot's own physical button-hold lift (8.3s into a real shot) against
        what the dashboard's own grey band showed at the time (9.3s)

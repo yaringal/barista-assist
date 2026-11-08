@@ -48,59 +48,24 @@ class RuntimeShotMixin:
         return sum(recent) / len(recent)
 
     def _smoothed_flow_now(self, samples: list[ShotSample]) -> float:
-        """_smoothed_flow_g_s over definitions.yaml's own
-        flow_analysis_constants.smoothing_window_ms, clamped to non-negative
-        (a smoothed average can dip slightly below zero right at the very
-        start of a pour) - the one "current flow rate" both
-        _effective_stop_margin_g and _predicted_stop_elapsed_ms project
-        against."""
+        """_smoothed_flow_g_s over stop_latency_calibration.flow_window_ms
+        (see its comment in definitions.yaml for why 2s, not the analysis's
+        own 500ms), clamped to non-negative (an average can dip slightly
+        below zero right at the very start of a pour) - the one "current
+        flow rate" both _effective_stop_margin_g and
+        _predicted_stop_elapsed_ms project against."""
         return max(
             0.0,
             self._smoothed_flow_g_s(
-                samples, self.definitions.flow_analysis_constants["smoothing_window_ms"]
+                samples, self.definitions.stop_latency_calibration["flow_window_ms"]
             ),
         )
-
-    @staticmethod
-    def _is_sustained_elevated_flow(
-        samples: list[ShotSample], *, cutoff_g_s: float, sustain_ms: int
-    ) -> bool:
-        """Whether flow has averaged at or above cutoff_g_s over the
-        trailing sustain_ms, not just the shorter smoothing_window_ms the
-        margin math itself uses - see stop_latency_calibration.
-        elevated_sustain_ms's own comment in definitions.yaml for the real
-        bug this guards against (a brief, sub-second spike flipping the
-        bucket for a flow rate that was never actually sustained). Shared
-        by _stop_latency_for_flow (the live decision) and
-        _observed_stop_latency (the after-the-fact learning/reporting
-        attribution) so the two can never disagree about which bucket a
-        given decision point belongs to."""
-        return (
-            max(0.0, RuntimeShotMixin._smoothed_flow_g_s(samples, sustain_ms)) >= cutoff_g_s
-        )
-
-    def _stop_latency_for_flow(self, samples: list[ShotSample]) -> float:
-        """Whichever learned latency bucket this sample history's own
-        (sustained) flow falls into (see stop_latency_calibration's own
-        comment in definitions.yaml for why two buckets instead of one
-        shared value) - shared by _effective_stop_margin_g below (which
-        multiplies it into a weight margin) and _predicted_stop_elapsed_ms
-        (which uses it as-is, in seconds, for the chart's "Stop Prediction"
-        marker) - the single place this decision is made, so the two can
-        never quietly drift apart."""
-        calibration = self.definitions.stop_latency_calibration
-        elevated = self._is_sustained_elevated_flow(
-            samples,
-            cutoff_g_s=calibration["bucket_cutoff_g_s"],
-            sustain_ms=calibration["elevated_sustain_ms"],
-        )
-        return self.stop_latency_elevated_s if elevated else self.stop_latency_normal_s
 
     def _preinfusion_actuator_delay_s(self, adapt_pi: bool) -> float:
         """analyze_shot's actuator_delay_s for one shot (see its own
         comment, and stop_latency_calibration.preinfusion_actuator_offset_s's
         in definitions.yaml) - 0.0 for a machine-controlled pre-infusion
-        (no Bot-held step to budget), stop_latency_normal_s plus that offset
+        (no Bot-held step to budget), stop_latency_s plus that offset
         otherwise, clamped to never go negative. Shared by _async_finalize,
         _build_shot_markers, and async_list_shots so the classifier and the
         chart's own grey pre-infusion band can never quietly disagree about
@@ -108,7 +73,7 @@ class RuntimeShotMixin:
         if not adapt_pi:
             return 0.0
         offset_s = self.definitions.stop_latency_calibration["preinfusion_actuator_offset_s"]
-        return max(0.0, self.stop_latency_normal_s + offset_s)
+        return max(0.0, self.stop_latency_s + offset_s)
 
     def _predicted_stop_elapsed_ms(
         self, samples: list[ShotSample], stop_command_elapsed_ms: int | None
@@ -120,33 +85,25 @@ class RuntimeShotMixin:
         the Live Shot/Shot History charts' "Stop Prediction" marker (see
         runtime_entities.py's _shot_markers and this module's
         async_shot_samples) - computed on demand here, not stored anywhere,
-        from the flow rate at the moment the stop command was sent (this
-        shot's own recorded samples, smoothed the same way
-        _effective_stop_margin_g's own flow_now is) looked up against the
-        *current* live latency buckets via _stop_latency_for_flow - the
-        same "current live values, not whatever applied historically"
-        choice as too_fast_factor/too_restrictive_factor (see
+        using the *current* learned stop_latency_s - the same "current live
+        values, not whatever applied historically" choice as
+        too_fast_factor/too_restrictive_factor (see
         _live_duration_ratio_bands). None when stop_command_elapsed_ms
         itself isn't known yet, or there's no sample at or before it."""
         if stop_command_elapsed_ms is None:
             return None
-        samples_up_to_stop = [s for s in samples if s.elapsed_ms <= stop_command_elapsed_ms]
-        if not samples_up_to_stop:
+        if not any(s.elapsed_ms <= stop_command_elapsed_ms for s in samples):
             return None
-        latency_s = self._stop_latency_for_flow(samples_up_to_stop)
-        return stop_command_elapsed_ms + round(latency_s * 1000)
+        return stop_command_elapsed_ms + round(self.stop_latency_s * 1000)
 
     def _effective_stop_margin_g(self, shot: ActiveShot) -> float:
         """Live flow-projected stop margin - early_stop_margin_min_g's floor,
         raised when the shot's current flow rate implies more will land
         during the physical stop latency than that floor alone budgets for.
 
-        Basically flow_now (eg 2 or 4g/s) * whichever learned latency bucket
-        flow_now falls into (stop_latency_normal_s below
-        stop_latency_calibration.bucket_cutoff_g_s, stop_latency_elevated_s
-        at or above it - see that key's own comment in definitions.yaml for
-        why two buckets instead of one shared value), clipped between
-        early_stop_margin_min_g (the
+        Basically flow_now (eg 2 or 4g/s, averaged over
+        stop_latency_calibration.flow_window_ms) * the learned
+        stop_latency_s, clipped between early_stop_margin_min_g (the
         floor) and early_stop_margin_max_g (an explicit, independently-
         tunable cap - not a multiple of the floor, so raising the floor for a
         conservative baseline doesn't also silently raise how early a fast
@@ -169,9 +126,7 @@ class RuntimeShotMixin:
         per-installation estimate that's *learned* from real completed shots
         (see _update_learned_stop_latency) rather than a fixed guess.
         """
-        flow_now = self._smoothed_flow_now(shot.samples)
-        latency_s = self._stop_latency_for_flow(shot.samples)
-        projected_margin_g = flow_now * latency_s
+        projected_margin_g = self._smoothed_flow_now(shot.samples) * self.stop_latency_s
         floor = shot.early_stop_margin_min_g
         ceiling = self.early_stop_margin_max_g
         return min(ceiling, max(floor, projected_margin_g))
@@ -184,26 +139,18 @@ class RuntimeShotMixin:
         *,
         window_ms: int,
         min_flow_g_s: float,
-        sustain_ms: int,
-        cutoff_g_s: float,
-    ) -> tuple[float, float, bool] | None:
-        """(flow_at_decision, observed_latency_s, elevated) for one completed
-        shot with a recorded stop decision - the same computation
-        _update_learned_stop_latency nudges stop_latency_normal_s/elevated_s
-        with, factored out so tests/test_constant_drift.py's stop-latency
-        bucket-drift report can reuse the exact formula rather than
-        duplicating it. window_ms/min_flow_g_s/sustain_ms/cutoff_g_s are
-        definitions.yaml's flow_analysis_constants.smoothing_window_ms/
-        stop_latency_calibration.{min_flow_for_learning_g_s,
-        elevated_sustain_ms,bucket_cutoff_g_s} - passed in explicitly since
-        this is a staticmethod with no `self.definitions` of its own.
-        `elevated` uses _is_sustained_elevated_flow - the same bucket
-        decision the live stop itself used at this exact point (see that
-        method's own docstring for why), so what gets learned/reported here
-        can never attribute a shot to a different bucket than the one its
-        own stop decision actually used. None when there's nothing to learn
-        from: no sample at or before the stop decision, or flow at that
-        decision too slow to divide by meaningfully (below min_flow_g_s)."""
+    ) -> tuple[float, float] | None:
+        """(flow_at_decision, observed_latency_s) for one completed shot with
+        a recorded stop decision - the same computation
+        _update_learned_stop_latency nudges stop_latency_s with, factored
+        out so tests/test_constant_drift.py's StopLatencySplitReport can
+        reuse the exact formula rather than duplicating it. window_ms/
+        min_flow_g_s are definitions.yaml's stop_latency_calibration.
+        {flow_window_ms,min_flow_for_learning_g_s} - passed in explicitly
+        since this is a staticmethod with no `self.definitions` of its own.
+        None when there's nothing to learn from: no sample at or before the
+        stop decision, or flow at that decision too slow to divide by
+        meaningfully (below min_flow_g_s)."""
         decision_index = None
         for i, sample in enumerate(samples):
             if sample.elapsed_ms <= stop_command_elapsed_ms:
@@ -218,36 +165,16 @@ class RuntimeShotMixin:
         if flow_at_decision < min_flow_g_s:
             return None
         observed_latency_s = max(0.0, (final_weight - decision_sample.weight_g) / flow_at_decision)
-        elevated = RuntimeShotMixin._is_sustained_elevated_flow(
-            samples_up_to_decision, cutoff_g_s=cutoff_g_s, sustain_ms=sustain_ms
-        )
-        return (flow_at_decision, observed_latency_s, elevated)
+        return (flow_at_decision, observed_latency_s)
 
     def _update_learned_stop_latency(self, shot: ActiveShot, final_weight: float) -> None:
-        """Nudge whichever latency bucket this shot's own flow rate falls
-        into (stop_latency_normal_s or stop_latency_elevated_s - see
-        stop_latency_calibration.bucket_cutoff_g_s's own comment in
-        definitions.yaml) toward what this shot's own tail actually needed.
-
-        Called (see the call site in _async_finalize) for every completed
-        shot with an analyzable trace, regardless of classification -
-        unlike an earlier version, which only learned from healthy shots
-        because a fast/channeling shot's flow doesn't hold roughly constant
-        through the latency window this model assumes, and mixing its
-        "observed latency" into one shared average risked dragging a single
-        global estimate past the point where early_stop_margin_min_g's floor
-        stops protecting an ordinary shot. Splitting into two buckets by the
-        shot's own flow rate fixes that more directly than excluding shots
-        by classification did: a fast shot's own flow rate is exactly the
-        signal that tells this method which bucket it belongs to, so it
-        becomes a valid, separate data point instead of a risk to filter
-        out.
-
-        Also skipped for a shot with no recorded stop decision (nothing to
-        learn from) or where flow at that decision was too slow to divide by
-        meaningfully - see _observed_stop_latency, which this delegates the
-        actual computation to.
-        """
+        """Nudge stop_latency_s toward what this shot's own tail actually
+        needed. Called (see the call site in _async_finalize) for every
+        completed shot with an analyzable trace, regardless of
+        classification. Skipped for a shot with no recorded stop decision
+        (nothing to learn from) or where flow at that decision was too slow
+        to divide by meaningfully - see _observed_stop_latency, which this
+        delegates the actual computation to."""
         if shot.stop_command_elapsed_ms is None:
             return
         calibration = self.definitions.stop_latency_calibration
@@ -255,36 +182,29 @@ class RuntimeShotMixin:
             shot.samples,
             shot.stop_command_elapsed_ms,
             final_weight,
-            window_ms=self.definitions.flow_analysis_constants["smoothing_window_ms"],
+            window_ms=calibration["flow_window_ms"],
             min_flow_g_s=calibration["min_flow_for_learning_g_s"],
-            sustain_ms=calibration["elevated_sustain_ms"],
-            cutoff_g_s=calibration["bucket_cutoff_g_s"],
         )
         if result is None:
             return
-        flow_at_decision, observed_latency_s, elevated = result
-        previous = self.stop_latency_elevated_s if elevated else self.stop_latency_normal_s
-        updated = min(
+        flow_at_decision, observed_latency_s = result
+        previous = self.stop_latency_s
+        self.stop_latency_s = min(
             calibration["max_s"],
             max(
                 calibration["min_s"],
                 previous + calibration["learning_rate"] * (observed_latency_s - previous),
             ),
         )
-        if elevated:
-            self.stop_latency_elevated_s = updated
-        else:
-            self.stop_latency_normal_s = updated
         _LOGGER.info(
             "Shot %s: observed stop latency %.2fs (tail=%.2fg at flow=%.2fg/s at "
-            "decision) -> stop_latency_%s_s %.2fs -> %.2fs",
+            "decision) -> stop_latency_s %.2fs -> %.2fs",
             shot.id,
             observed_latency_s,
             observed_latency_s * flow_at_decision,  # tail_g = observed_latency_s * flow_at_decision, by definition
             flow_at_decision,
-            "elevated" if elevated else "normal",
             previous,
-            updated,
+            self.stop_latency_s,
         )
 
     def _puck_prep_issue_streak_reached(self, streak: int) -> bool:
@@ -577,12 +497,9 @@ class RuntimeShotMixin:
     def _settle_seconds(self) -> float:
         """How long to keep recording samples after a stop/abort press lands
         before finalizing - see stop_latency_calibration.settle_buffer_s/
-        min_settle_s's own comment in definitions.yaml. Sized off the
-        larger of the two learned latencies, since either bucket could
-        apply to whatever shot just finished."""
+        min_settle_s's own comment in definitions.yaml."""
         calibration = self.definitions.stop_latency_calibration
-        larger_latency = max(self.stop_latency_normal_s, self.stop_latency_elevated_s)
-        return max(calibration["min_settle_s"], larger_latency + calibration["settle_buffer_s"])
+        return max(calibration["min_settle_s"], self.stop_latency_s + calibration["settle_buffer_s"])
 
     async def _settle_then_finalize(self) -> None:
         try:

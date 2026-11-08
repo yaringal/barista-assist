@@ -554,7 +554,7 @@ def expected_shot_seconds(
     scales with target_yield_g, and adds preinfusion_s/actuator_delay_s on
     top rather than folding them into the rate). actuator_delay_s is 0.0 for
     a machine-controlled pre-infusion (nothing to budget - see analyze_shot's
-    own comment on why), the caller's live stop_latency_normal_s otherwise
+    own comment on why), the caller's live stop_latency_s otherwise
     (see _async_finalize). Factored out so healthy_window_ms below - which
     backs the Live Shot/Shot History charts' healthy-window shading (see
     runtime_entities.py's _shot_markers) - shares this exact formula with
@@ -829,7 +829,7 @@ def analyze_shot(
     # live user report ("the PI programmed is 7s but we count 10s with no
     # flow") confirmed this: t_first_flow_ms landing ~3.2s past
     # preinfusion_s, consistently, across real adapt_pi shots regardless of
-    # classification - and 3.2s is stop_latency_normal_s's own seed value,
+    # classification - and 3.2s is stop_latency_s's own seed value,
     # the already-learned estimate for that same Bot/valve transition's
     # latency on the stop side. Reusing it here (rather than learning a
     # second, separate delay from scratch) is what _async_finalize passes

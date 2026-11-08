@@ -14,19 +14,11 @@ sensor:
     token: __STATUS__
     attributes: [scale_connected, selected_slot, early_stop_margin_min_g, early_stop_margin_max_g, shot_plot, shot_markers]
 
-  stop_latency_normal:
+  stop_latency:
     source: controller
-    field: stop_latency_normal_s
-    translation_key: stop_latency_normal
-    token: __STOP_LATENCY_NORMAL__
-    unit: s
-    precision: 2
-
-  stop_latency_elevated:
-    source: controller
-    field: stop_latency_elevated_s
-    translation_key: stop_latency_elevated
-    token: __STOP_LATENCY_ELEVATED__
+    field: stop_latency_s
+    translation_key: stop_latency
+    token: __STOP_LATENCY__
     unit: s
     precision: 2
 

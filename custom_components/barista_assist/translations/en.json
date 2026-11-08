@@ -113,11 +113,8 @@
       "beans_remaining": {
         "name": "Estimated beans remaining"
       },
-      "stop_latency_normal": {
-        "name": "Learned stop latency (normal flow)"
-      },
-      "stop_latency_elevated": {
-        "name": "Learned stop latency (fast flow)"
+      "stop_latency": {
+        "name": "Learned stop latency"
       },
       "grind_band_healthy_delta": {
         "name": "Healthy band: grind delta"

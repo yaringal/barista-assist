@@ -299,10 +299,8 @@ views:
                 name: Minimum early stop margin
               - entity: __EARLY_STOP_MARGIN_MAX__
                 name: Maximum early stop margin
-              - entity: __STOP_LATENCY_NORMAL__
-                name: Learned latency (normal flow ~2g/s)
-              - entity: __STOP_LATENCY_ELEVATED__
-                name: Learned latency (fast flow ~4g/s)
+              - entity: __STOP_LATENCY__
+                name: Learned stop latency
               - type: section
                 label: Flavor correction
               - type: section

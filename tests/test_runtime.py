@@ -125,14 +125,14 @@ class RuntimeTestCase(unittest.IsolatedAsyncioTestCase):
         ramp_seconds is simply the remaining duration after the flat
         lead-in, with no t90-style 0.9 correction.
 
-        expected_s also budgets actuator_delay_s (stop_latency_normal_s,
+        expected_s also budgets actuator_delay_s (stop_latency_s,
         for the default adapt_pi=True) the same way _async_finalize's own
         analyze_shot call does - see analyze_shot's own comment on why a
         Bot-held pre-infusion needs that extra budgeted dead time and a
         machine-controlled one doesn't."""
         expected_flow_g_s = self.runtime.definitions.flow_analysis_constants["expected_flow_g_s"]
         preinfusion_s = self.runtime.selected_bag.preinfusion_s
-        actuator_delay_s = self.runtime.stop_latency_normal_s if self.runtime.adapt_pi else 0.0
+        actuator_delay_s = self.runtime.stop_latency_s if self.runtime.adapt_pi else 0.0
         expected_s = preinfusion_s + actuator_delay_s + target_yield_g / expected_flow_g_s
         duration_s = target_ratio * expected_s
         return duration_s - flat_ms / 1000
@@ -211,10 +211,9 @@ class AutoStopTests(RuntimeTestCase):
         self.scale.push_reading(make_reading(weight_g=35.0, flow_g_s=1.0))
         await self.hass.tasks[-1]
 
-        # flow=1.0 g/s (normal bucket) * stop_latency_normal_s, which
-        # exceeds the 1.5g floor.
+        # flow=1.0 g/s * stop_latency_s, which exceeds the 1.5g floor.
         self.assertAlmostEqual(
-            self.runtime.active_shot.effective_stop_margin_g, 1.0 * self.runtime.stop_latency_normal_s
+            self.runtime.active_shot.effective_stop_margin_g, 1.0 * self.runtime.stop_latency_s
         )
 
     async def test_effective_stop_margin_is_none_before_any_stop_is_scheduled(self):
@@ -620,10 +619,8 @@ class ShotMarkersTests(RuntimeTestCase):
 
     async def test_predicted_stop_elapsed_ms_reflects_the_real_stop_decision(self):
         """predicted_stop_elapsed_ms (see runtime_shot.py's
-        _predicted_stop_elapsed_ms) is stop_command_elapsed_ms plus
-        whichever latency bucket the flow at that instant actually falls
-        into - here a slow-flowing (1.0 g/s, "normal" bucket) shot, so
-        stop_latency_normal_s - computed on demand, not stored."""
+        _predicted_stop_elapsed_ms) is stop_command_elapsed_ms plus the
+        learned stop_latency_s - computed on demand, not stored."""
         await self.start_shot()
         await self.wait_for_extracting()
         await asyncio.sleep(0.05)
@@ -636,7 +633,7 @@ class ShotMarkersTests(RuntimeTestCase):
         self.assertIsNotNone(stop_ms)
         self.assertEqual(
             markers["predicted_stop_elapsed_ms"],
-            stop_ms + round(self.runtime.stop_latency_normal_s * 1000),
+            stop_ms + round(self.runtime.stop_latency_s * 1000),
         )
 
     async def test_pi_band_has_no_actuator_delay_for_a_machine_controlled_shot(self):
@@ -1251,21 +1248,19 @@ class MachinePiSettingTests(RuntimeTestCase):
 
 
 class LearnedLatencySensorTests(RuntimeTestCase):
-    """stop_latency_normal_s/stop_latency_elevated_s are exposed as their own
-    read-only sensors (Yield Prediction dashboard section) rather than only
-    as sensor.status attributes, so they can be shown as plain rows."""
+    """stop_latency_s is exposed as its own read-only sensor (Yield
+    Prediction dashboard section) rather than only as a sensor.status
+    attribute, so it can be shown as a plain row."""
 
     def _sensor(self, key: str):
         return next(d for d in self.runtime.definitions.platform("sensor") if d.key == key)
 
-    def test_reads_the_current_learned_latencies(self):
-        normal = self._sensor("stop_latency_normal")
-        elevated = self._sensor("stop_latency_elevated")
-        self.assertEqual(self.runtime.entity_value(normal), self.runtime.stop_latency_normal_s)
-        self.assertEqual(self.runtime.entity_value(elevated), self.runtime.stop_latency_elevated_s)
+    def test_reads_the_current_learned_latency(self):
+        sensor = self._sensor("stop_latency")
+        self.assertEqual(self.runtime.entity_value(sensor), self.runtime.stop_latency_s)
 
     async def test_updates_after_learning(self):
-        normal = self._sensor("stop_latency_normal")
+        sensor = self._sensor("stop_latency")
         shot = types.SimpleNamespace(
             id="test-shot",
             stop_command_elapsed_ms=100,
@@ -1274,8 +1269,10 @@ class LearnedLatencySensorTests(RuntimeTestCase):
                 ShotSample(1, 100, 100, 20.2, 2.0, 90),
             ],
         )
+        seed = self.runtime.stop_latency_s
         self.runtime._update_learned_stop_latency(shot, final_weight=26.2)
-        self.assertEqual(self.runtime.entity_value(normal), self.runtime.stop_latency_normal_s)
+        self.assertNotEqual(self.runtime.stop_latency_s, seed)
+        self.assertEqual(self.runtime.entity_value(sensor), self.runtime.stop_latency_s)
 
 
 class FinalizeIdempotencyTests(RuntimeTestCase):
@@ -1364,7 +1361,7 @@ class FlowAnalysisWiringTests(RuntimeTestCase):
         pre-infusion-plausibility floor - followed by a linear ramp to
         target_yield_g over ramp_seconds. Built directly (not pushed through
         the scale in real time) for full control over the resulting
-        duration_ratio, matching test_a_completed_shot_updates_its_bucket_
+        duration_ratio, matching test_a_completed_shot_updates_the_latency_
         end_to_end's approach above."""
         samples = [
             ShotSample(0, 0, 0, 0.0, 0.0, 90),
@@ -2658,7 +2655,7 @@ class ShotHistoryTests(RuntimeTestCase):
 
         self.assertEqual(
             result["predicted_stop_elapsed_ms"],
-            stop_ms + round(self.runtime.stop_latency_normal_s * 1000),
+            stop_ms + round(self.runtime.stop_latency_s * 1000),
         )
 
     async def test_delete_shot_refuses_while_it_is_still_brewing(self):
@@ -2701,46 +2698,23 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
     def test_smoothed_flow_g_s_of_no_samples_is_zero(self):
         self.assertEqual(BaristaRuntime._smoothed_flow_g_s([], 500), 0.0)
 
-    def test_a_brief_flow_spike_does_not_trigger_the_elevated_bucket(self):
-        """Regression test for a real production bug (docs/data/
-        DIAL_IN_RULES.md): a short (~300-400ms) channeling-like burst could
-        push the short-window-smoothed flow just over bucket_cutoff_g_s,
-        triggering stop_latency_elevated_s's much larger margin for a flow
-        rate that was never actually sustained - one real shot stopped
-        11.4g short of target this way. elevated_sustain_ms requires the
-        longer trailing window to also clear the cutoff before the elevated
-        bucket applies; a brief 3-sample spike here (flow=6.0, after a long
-        run at flow=0.5) pushes the short (500ms) window to 3.25 g/s -
-        genuinely over the 3.0 cutoff on its own - but the longer
-        elevated_sustain_ms (600ms) window, still mostly covering the
-        pre-spike run, averages only 2.857 - under cutoff, so this must
-        still resolve to stop_latency_normal_s."""
-        samples = [ShotSample(i, i * 100, i * 100, float(i) * 0.05, 0.5, 90) for i in range(20)]
-        spike_start = samples[-1].elapsed_ms
+    def test_live_flow_averages_over_the_stop_flow_window(self):
+        """Regression test for real early stops (10/05, 10/29): a brief
+        ~300ms flow spike right at the decision inflated a 500ms average and
+        with it the stop margin. Averaged over flow_window_ms (2s), a
+        3-sample spike to 6.0 g/s after a steady 2.0 g/s pour barely moves
+        the live flow."""
+        window_ms = self.runtime.definitions.stop_latency_calibration["flow_window_ms"]
+        samples = [ShotSample(i, i * 100, i * 100, i * 0.2, 2.0, 90) for i in range(30)]
         for j in range(3):
-            elapsed_ms = spike_start + (j + 1) * 100
-            samples.append(
-                ShotSample(20 + j, elapsed_ms, elapsed_ms, samples[-1].weight_g + 0.6, 6.0, 90)
-            )
+            elapsed_ms = 3000 + j * 100
+            samples.append(ShotSample(30 + j, elapsed_ms, elapsed_ms, 6.0 + j * 0.6, 6.0, 90))
 
-        cutoff = self.runtime.definitions.stop_latency_calibration["bucket_cutoff_g_s"]
-        self.assertGreaterEqual(self.runtime._smoothed_flow_now(samples), cutoff)
-        self.assertEqual(
-            self.runtime._stop_latency_for_flow(samples), self.runtime.stop_latency_normal_s
+        in_window = [s.flow_g_s for s in samples if s.elapsed_ms >= samples[-1].elapsed_ms - window_ms]
+        self.assertAlmostEqual(
+            self.runtime._smoothed_flow_now(samples), sum(in_window) / len(in_window)
         )
-
-    def test_a_sustained_elevated_flow_does_trigger_the_elevated_bucket(self):
-        """Mirrors the test above - a flow rate that's actually held above
-        bucket_cutoff_g_s for the full elevated_sustain_ms window (not just
-        a brief spike) must still correctly resolve to
-        stop_latency_elevated_s, same as before this fix."""
-        samples = [
-            ShotSample(i, i * 100, i * 100, float(i) * 0.5, 5.0, 90) for i in range(10)
-        ]
-
-        self.assertEqual(
-            self.runtime._stop_latency_for_flow(samples), self.runtime.stop_latency_elevated_s
-        )
+        self.assertLess(self.runtime._smoothed_flow_now(samples), 3.0)
 
     async def test_margin_never_drops_below_the_floor_regardless_of_flow(self):
         """early_stop_margin_min_g is a floor, not a reference point to scale
@@ -2752,7 +2726,7 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
         await self.start_shot(early_stop_margin_min_g=1.5)
         shot = self.runtime.active_shot
 
-        for flow_g_s in (0.0, 0.1, 0.3):  # 0.3 * stop_latency_normal_s stays under the 1.5g floor
+        for flow_g_s in (0.0, 0.1, 0.3):  # 0.3 * stop_latency_s stays under the 1.5g floor
             shot.samples = [ShotSample(0, 0, 0, 0.0, flow_g_s, 90)]
             self.assertAlmostEqual(self.runtime._effective_stop_margin_g(shot), 1.5)
 
@@ -2775,12 +2749,11 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
     async def test_margin_grows_once_flow_times_latency_exceeds_the_floor(self):
         await self.start_shot(early_stop_margin_min_g=1.5)
         shot = self.runtime.active_shot
-        # flow_g_s=1.0 is below the 3.0g/s bucket cutoff, so stop_latency_
-        # normal_s applies: 1.0 g/s * stop_latency_normal_s > the 1.5g floor.
+        # 1.0 g/s * stop_latency_s > the 1.5g floor.
         shot.samples.append(ShotSample(0, 0, 0, 0.0, 1.0, 90))
 
         self.assertAlmostEqual(
-            self.runtime._effective_stop_margin_g(shot), 1.0 * self.runtime.stop_latency_normal_s
+            self.runtime._effective_stop_margin_g(shot), 1.0 * self.runtime.stop_latency_s
         )
 
     async def test_margin_is_clamped_to_the_ceiling(self):
@@ -2788,8 +2761,8 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
         shot = self.runtime.active_shot
         shot.samples.append(ShotSample(0, 0, 0, 0.0, 50.0, 90))  # an extreme spike
 
-        # 50.0 g/s * stop_latency_elevated_s (4.3s) = 215g, far past the
-        # default early_stop_margin_max_g (20.0) - the ceiling wins.
+        # 50.0 g/s * stop_latency_s is far past the default
+        # early_stop_margin_max_g (20.0) - the ceiling wins.
         self.assertAlmostEqual(self.runtime._effective_stop_margin_g(shot), 20.0)
 
     async def test_ceiling_is_independent_of_the_floor(self):
@@ -2822,13 +2795,10 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
 
 
 class StopLatencyCalibrationTests(RuntimeTestCase):
-    """stop_latency_normal_s/stop_latency_elevated_s (see the comment above
-    their definitions in runtime.py for how their seed values were derived -
-    back-solved from real "healthy" shots' own recorded tails, bucketed by
-    each shot's own flow rate, not picked from reasoning alone) are checked
-    here against real shots directly, not just synthetic values - so a
-    future change to the margin formula or either constant gets caught if it
-    stops reproducing these real, already-correct outcomes."""
+    """The live stop margin (flow averaged over flow_window_ms x
+    stop_latency_s's seed) checked against real shots directly, not just
+    synthetic values - so a future change to the margin formula or its
+    constants gets caught if it stops reproducing these real outcomes."""
 
     def _replay_stop_trigger(self, fixture_name: str, early_stop_margin_min_g: float):
         """Feed a real fixture's samples through the live margin formula one
@@ -2852,20 +2822,14 @@ class StopLatencyCalibrationTests(RuntimeTestCase):
         self.assertEqual(trigger, (27789, 28.0))
 
     async def test_reproduces_another_real_good_shot_s_exact_recorded_stop_point(self):
-        """This shot's own flow at the decision point falls into the
-        elevated bucket, so it triggers earlier/lower than a single shared
-        latency would have (see stop_latency_elevated_s's comment) - 24.5g
-        here rather than the flat-threshold-adjacent 28.0g the normal bucket
-        alone would give. (24.5g, not the pre-elevated_sustain_ms 24.2g - a
-        brief flow spike right before this reaches the cutoff needs
-        elevated_sustain_ms's own 600ms to confirm before the elevated
-        bucket kicks in, delaying the trigger by ~200ms/0.3g - see
-        stop_latency_calibration.elevated_sustain_ms's own comment for the
-        real bug this guards against.)"""
+        """Landed 35.2g on a 36g target. The old 0.5s window plus a separate
+        fast-flow latency triggered this replay ~1.6s early (19395ms, 24.5g)
+        on a brief spike; the 2s window reproduces the real recorded stop
+        point exactly."""
         trigger = self._replay_stop_trigger(
             "good_but_flagged_machine_pi", early_stop_margin_min_g=8.0
         )
-        self.assertEqual(trigger, (19395, 24.5))
+        self.assertEqual(trigger, (20984, 28.0))
 
     async def test_still_triggers_meaningfully_earlier_for_the_flagship_overshoot_shot(self):
         """Not an exact-reproduction case (that shot's real recorded stop
@@ -2880,104 +2844,91 @@ class StopLatencyCalibrationTests(RuntimeTestCase):
 
 
 class LearnedStopLatencyTests(RuntimeTestCase):
-    """stop_latency_normal_s/stop_latency_elevated_s are learned from every
-    completed shot's own tail (_update_learned_stop_latency), not fixed
-    constants - see the comment near their definitions for why a single
-    hand-fit value kept failing to generalize, and why splitting into two
-    buckets by the shot's own flow rate at the decision moment fixed that."""
+    """stop_latency_s is learned from every completed shot's own tail
+    (_update_learned_stop_latency), not a fixed constant."""
 
-    async def test_learning_nudges_the_normal_bucket_toward_the_observed_latency(self):
+    async def test_learning_nudges_the_latency_toward_the_observed_one(self):
         await self.start_shot(early_stop_margin_min_g=1.5)
         shot = self.runtime.active_shot
         shot.samples = [
             ShotSample(0, 0, 0, 20.0, 2.0, 90),
             ShotSample(1, 100, 100, 20.2, 2.0, 90),
         ]
-        shot.stop_command_elapsed_ms = 100  # decision at the 2nd sample: weight=20.2, flow=2.0 (normal bucket, <3.0)
-        seed_normal = self.runtime.stop_latency_normal_s
-        seed_elevated = self.runtime.stop_latency_elevated_s
+        shot.stop_command_elapsed_ms = 100  # decision at the 2nd sample: weight=20.2, flow=2.0
+        seed = self.runtime.stop_latency_s
 
         self.runtime._update_learned_stop_latency(shot, final_weight=26.2)
 
         # observed_latency = (26.2 - 20.2) / 2.0 = 3.0s
-        expected = seed_normal + 0.15 * (3.0 - seed_normal)
-        self.assertAlmostEqual(self.runtime.stop_latency_normal_s, expected, places=4)
-        self.assertEqual(self.runtime.stop_latency_elevated_s, seed_elevated)  # other bucket untouched
+        expected = seed + 0.15 * (3.0 - seed)
+        self.assertAlmostEqual(self.runtime.stop_latency_s, expected, places=4)
 
-    async def test_learning_nudges_the_elevated_bucket_toward_the_observed_latency(self):
+    async def test_a_fast_pour_feeds_the_same_single_latency(self):
         await self.start_shot(early_stop_margin_min_g=1.5)
         shot = self.runtime.active_shot
         shot.samples = [
             ShotSample(0, 0, 0, 20.0, 5.0, 90),
             ShotSample(1, 100, 100, 20.5, 5.0, 90),
         ]
-        shot.stop_command_elapsed_ms = 100  # decision at the 2nd sample: weight=20.5, flow=5.0 (elevated bucket, >=3.0)
-        seed_normal = self.runtime.stop_latency_normal_s
-        seed_elevated = self.runtime.stop_latency_elevated_s
+        shot.stop_command_elapsed_ms = 100  # decision at the 2nd sample: weight=20.5, flow=5.0
+        seed = self.runtime.stop_latency_s
 
         self.runtime._update_learned_stop_latency(shot, final_weight=30.5)
 
         # observed_latency = (30.5 - 20.5) / 5.0 = 2.0s
-        expected = seed_elevated + 0.15 * (2.0 - seed_elevated)
-        self.assertAlmostEqual(self.runtime.stop_latency_elevated_s, expected, places=4)
-        self.assertEqual(self.runtime.stop_latency_normal_s, seed_normal)  # other bucket untouched
+        expected = seed + 0.15 * (2.0 - seed)
+        self.assertAlmostEqual(self.runtime.stop_latency_s, expected, places=4)
 
     async def test_learning_is_skipped_without_a_recorded_stop_decision(self):
         await self.start_shot()
         shot = self.runtime.active_shot
         shot.stop_command_elapsed_ms = None
-        seed_normal = self.runtime.stop_latency_normal_s
-        seed_elevated = self.runtime.stop_latency_elevated_s
+        seed = self.runtime.stop_latency_s
 
         self.runtime._update_learned_stop_latency(shot, final_weight=36.0)
 
-        self.assertEqual(self.runtime.stop_latency_normal_s, seed_normal)
-        self.assertEqual(self.runtime.stop_latency_elevated_s, seed_elevated)
+        self.assertEqual(self.runtime.stop_latency_s, seed)
 
     async def test_learning_is_skipped_when_flow_at_decision_is_too_slow(self):
         """Dividing by a near-zero flow rate would produce a wildly unstable
         observed latency from essentially no signal - must be skipped, not
-        fed into either bucket's estimate."""
+        fed into the estimate."""
         await self.start_shot()
         shot = self.runtime.active_shot
         shot.samples = [ShotSample(0, 0, 0, 34.0, 0.1, 90)]
         shot.stop_command_elapsed_ms = 0
-        seed_normal = self.runtime.stop_latency_normal_s
-        seed_elevated = self.runtime.stop_latency_elevated_s
+        seed = self.runtime.stop_latency_s
 
         self.runtime._update_learned_stop_latency(shot, final_weight=36.0)
 
-        self.assertEqual(self.runtime.stop_latency_normal_s, seed_normal)
-        self.assertEqual(self.runtime.stop_latency_elevated_s, seed_elevated)
+        self.assertEqual(self.runtime.stop_latency_s, seed)
 
     async def test_learned_estimate_never_exceeds_the_maximum(self):
         await self.start_shot()
         shot = self.runtime.active_shot
-        shot.samples = [ShotSample(0, 0, 0, 0.0, 1.0, 90)]  # normal bucket
+        shot.samples = [ShotSample(0, 0, 0, 0.0, 1.0, 90)]
         shot.stop_command_elapsed_ms = 0
 
         for _ in range(50):  # enough steps for the EMA to converge near this extreme observation
             self.runtime._update_learned_stop_latency(shot, final_weight=1000.0)
 
-        self.assertLessEqual(self.runtime.stop_latency_normal_s, 8.0)
+        self.assertLessEqual(self.runtime.stop_latency_s, 8.0)
 
     async def test_learned_estimate_never_drops_below_the_minimum(self):
         await self.start_shot()
         shot = self.runtime.active_shot
-        shot.samples = [ShotSample(0, 0, 0, 34.0, 2.0, 90)]  # normal bucket
+        shot.samples = [ShotSample(0, 0, 0, 34.0, 2.0, 90)]
         shot.stop_command_elapsed_ms = 0
 
         for _ in range(50):
             self.runtime._update_learned_stop_latency(shot, final_weight=34.0)  # zero tail
 
-        self.assertGreaterEqual(self.runtime.stop_latency_normal_s, 0.5)
+        self.assertGreaterEqual(self.runtime.stop_latency_s, 0.5)
 
-    async def test_a_completed_shot_updates_its_bucket_end_to_end(self):
-        """_async_finalize's gating no longer depends on flow_analysis's
-        classification at all (an earlier design only learned from healthy
-        shots, gating out anything else including this kind of fast/atypical
-        test shot) - any shot flow_analysis can classify at all now updates
-        whichever bucket its own flow rate at the stop decision falls into.
+    async def test_a_completed_shot_updates_the_latency_end_to_end(self):
+        """_async_finalize's gating doesn't depend on flow_analysis's
+        classification (an earlier design only learned from healthy shots) -
+        any shot flow_analysis can classify at all updates stop_latency_s.
         Builds the shot directly (matching FlowAnalysisWiringTests'
         approach: evenly time-spaced samples spanning more than the 500ms
         smoothing window, then _async_finalize called directly) rather than
@@ -2987,12 +2938,12 @@ class LearnedStopLatencyTests(RuntimeTestCase):
         await self.start_shot(target_yield_g=78.0, early_stop_margin_min_g=1.5)
         await self.wait_for_extracting()
         shot = self.runtime.active_shot
-        seed_normal = self.runtime.stop_latency_normal_s
+        seed = self.runtime.stop_latency_s
 
         for weight in range(2, 38, 2):
             self.scale.push_reading(make_reading(weight_g=float(weight), flow_g_s=2.0))
             await asyncio.sleep(0.09)
-        # Decision at the second-to-last sample: weight=34.0, flow=2.0 (normal bucket, <3.0).
+        # Decision at the second-to-last sample: weight=34.0, flow=2.0.
         shot.stop_command_elapsed_ms = shot.samples[-2].elapsed_ms
         for _ in range(4):
             self.scale.push_reading(make_reading(weight_g=36.0, flow_g_s=0.0))
@@ -3006,7 +2957,7 @@ class LearnedStopLatencyTests(RuntimeTestCase):
         await self.runtime._async_finalize("complete")
 
         self.assertNotEqual(self.runtime.last_shot["classification"], "invalid_measurement")
-        self.assertNotEqual(self.runtime.stop_latency_normal_s, seed_normal)
+        self.assertNotEqual(self.runtime.stop_latency_s, seed)
 
 
 if __name__ == "__main__":

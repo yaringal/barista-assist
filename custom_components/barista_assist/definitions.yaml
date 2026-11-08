@@ -25,8 +25,7 @@ defaults:
     machine_max_shot_s: 50
     machine_pi_s: 8.0
     adapt_pi: true
-    stop_latency_normal_s: 3.2
-    stop_latency_elevated_s: 4.3
+    stop_latency_s: 3.2
     # Delay before sending taste-feedback push notifications - long enough
     # to taste the drink, short enough to stay fresh in memory. Not
     # dashboard-editable; a one-off UX knob, not a live-recalibrated one.
@@ -245,109 +244,62 @@ flow_analysis_constants:
 
 # =============================================================================
 # stop_latency_calibration - runtime_shot.py's online-learning calibration
-# for stop_latency_normal_s/stop_latency_elevated_s (defaults.controller):
-# hardware-timing constants behind the predictive stop, not a video-sourced
-# policy (that's expert_rules below) - grouped with flow_analysis_constants
-# in spirit.
+# for stop_latency_s (defaults.controller): hardware-timing constants behind
+# the predictive stop, not a video-sourced policy (that's expert_rules
+# below) - grouped with flow_analysis_constants in spirit.
 #
-# stop_latency_*_s (BLE press + pump stop + drip settle, times live flow =
-# the adaptive stop margin) are learned, not fixed - see
-# _update_learned_stop_latency. Split into two buckets by flow rate at the
-# stop decision rather than one shared average - not because BLE/pump-stop
-# hardware itself responds slower at high flow (there's no physical reason
-# it would), but because _observed_stop_latency backs out "latency" by
-# assuming flow held constant at flow_at_decision for the whole window, and
-# shots in the elevated regime tend to still be speeding up (channeling)
-# through that window - that constant-flow assumption undercounts their
-# true tail grams, so the fitted "latency" inflates to compensate. 
-# A shot's own flow at decision time predicts its needed latency
-# almost perfectly in practice (0.97 correlation across 5 real shots), so a
-# fast shot isn't an outlier to exclude, just a point needing a bigger
-# estimate - one shared average risked dragging the estimate past where
-# early_stop_margin_min_g's floor still protects a normal shot. Seed values
-# (defaults.controller, 3.2s/4.3s) are the average observed latency on each
-# side of bucket_cutoff_g_s.
+# The stop fires when weight reaches target minus a margin of live flow x
+# stop_latency_s (BLE press + pump stop + drip settle). stop_latency_s is
+# learned from every completed shot's own tail - see
+# _update_learned_stop_latency.
 #
-# normal's seed was 3.4s until too_fast_but_flagged_invalid_adapt_pi (a real
-# fixture, tests/fixtures/real_shots/) showed a genuine 3.5g/9% undershoot
-# (37.5g target, 34.0g actual): at this shot's own flow_at_decision (2.81
-# g/s, near the top of the normal range), the 3.4s seed projected a 9.55g
-# margin, but only 6.1g of tail actually landed - an observed latency of
-# just 2.17s. Averaged across all 4 real normal-bucket shots now on file
-# (flow 0.97-2.81 g/s), that pulls the mean from 3.39s down to 3.17s
-# (rounded to 3.2s here) - see
-# tests/test_constant_drift.py's StopLatencyBucketDriftReport for the full
-# per-shot numbers. Within that same 4-shot set, observed latency actually
-# fell as flow rose (0.97 g/s -> 3.72s, 2.02 -> 3.57s, 2.37 -> 3.21s,
-# 2.81 -> 2.17s) - the opposite of the positive flow/latency relationship
-# the two-bucket split above is premised on - but 4 points (one of them
-# sitting right next to a real end-of-shot scale disturbance that makes its
-# own final-weight reading less certain) isn't enough to conclude the
-# normal bucket needs its own flow-dependent model, only enough to nudge
-# its one shared average. Revisit again as more real shots accumulate,
-# per this section's own opening comment.
+# One learned latency, not two split by flow rate. A normal/fast split
+# (3.2s/4.3s seeds, cutoff 3.0 g/s) used to exist on the theory that fast,
+# still-accelerating pours need a bigger margin. Replaying every
+# auto-stopped real fixture through the live trigger: with flow averaged
+# over flow_window_ms (2s), a single latency lands Bot-held shots closer to
+# target (mean |final - target| 1.71g vs 1.90g with the split, 2.11g for
+# the old 0.5s window + split); the split only helped the 7 very fast
+# (~13s) machine pre-infusion shots from the first days of use, which
+# overshot by ~12g either way. One installation's live learned values had
+# also ended up inverted (fast 3.15s < normal 4.11s).
+# tests/test_constant_drift.py's StopLatencySplitReport re-checks, as
+# fixtures accumulate, whether fast pours' real latency differs enough
+# from normal ones to justify bringing a split back.
 # =============================================================================
 stop_latency_calibration:
   learning_rate: 0.15
 
-  # Bounds on either learned latency, so one anomalous shot can only nudge
-  # its bucket's estimate, never send it somewhere absurd in one step.
+  # Bounds on the learned latency, so one anomalous shot can only nudge the
+  # estimate, never send it somewhere absurd in one step.
   min_s: 0.5
   max_s: 8.0
 
-  # Flow-rate split between the "normal"/"elevated" latency buckets - falls
-  # in the real gap between our normal (~2.0-2.4 g/s) and elevated
-  # (~3.6-5.1 g/s) shots; revisit as more real shots accumulate.
-  bucket_cutoff_g_s: 3.0
-
-  # A real, diagnosed bug: a brief (~300-400ms) flow spike right at the
-  # stop decision - a small channeling-like burst, not a sustained fast
-  # pour - could push the short-window-smoothed flow just over
-  # bucket_cutoff_g_s, triggering the elevated bucket's larger latency for
-  # a flow rate that was never actually sustained. One real shot stopped
-  # 11.4g short of target this way (the projected margin, based on the
-  # spike, was nearly double what the pour's real trailing flow needed),
-  # undershooting badly enough that the resulting trace never reached 90%
-  # of target and the classifier fell back to its crudest duration
-  # measure - a misleading too_restrictive call with nothing to do with
-  # the puck. The bucket decision now requires flow to average at or above
-  # bucket_cutoff_g_s over this longer trailing window (not just the
-  # short smoothing_window_ms one the margin math itself still uses) -
-  # checked directly against every real fixture with a recorded stop
-  # decision: any value from 600ms to 2000ms correctly reclassifies both
-  # real brief-spike shots found so far back to the normal bucket, with
-  # zero effect on every genuinely-elevated shot (all comfortably above
-  # 4 g/s, nowhere near the cutoff). That "zero effect" check is against
-  # the retrospective, already-completed-trace bucket classification
-  # (_observed_stop_latency/StopLatencyBucketDriftReport) only - it does
-  # NOT generalize to the live, mid-shot decision this same sustain check
-  # also gates (_stop_latency_for_flow): good_but_flagged_machine_pi's own
-  # live-replay test (test_runtime.py's
-  # test_reproduces_another_real_good_shot_s_exact_recorded_stop_point)
-  # shows raising this value to match first_flow_sustain_ms's own 900ms
-  # (docs/data/DIAL_IN_RULES.md Part 9) makes that shot's live spike stop
-  # qualifying for the elevated bucket in time, reverting its trigger to
-  # the less accurate normal-bucket timing - a real regression, not a
-  # no-op. Deliberately kept independent of first_flow_sustain_ms despite
-  # addressing an analogous "don't trust a brief blip" problem elsewhere -
-  # 600ms is its own validated value for this specific real-time decision,
-  # not a value that should track the other constant's.
-  elevated_sustain_ms: 600
+  # Trailing window the stop logic averages the scale's own flow readings
+  # over (the margin, the chart's stop prediction, and latency learning).
+  # 500ms let brief flow spikes inflate the margin and stop real shots far
+  # short of target (10/05: 3.06 g/s over 0.5s vs 2.33 over 2s; 10/29: 3.09
+  # vs 1.88). Predicting each real shot's post-stop drip from flow at the
+  # stop: 0.5s -> 1.72g mean error, 1s -> 1.32g, 2s -> 1.24g, 3-5s ~1.2g
+  # (23 auto-stopped Bot-held fixtures). Separate from
+  # flow_analysis_constants.smoothing_window_ms, which only smooths the
+  # finished trace for classification.
+  flow_window_ms: 2000
 
   # Flow at the stop decision must clear this floor for the observed
   # latency ((final_weight - weight_at_decision) / flow) to be numerically
   # meaningful rather than noise from a near-zero denominator.
   min_flow_for_learning_g_s: 0.5
 
-  # How much longer than the larger learned latency to keep recording after
-  # a stop/abort press before finalizing - needs headroom above both, or
-  # the very shots used to learn them get their own tail cut short.
+  # How much longer than the learned latency to keep recording after a
+  # stop/abort press before finalizing - needs headroom above it, or the
+  # very shots used to learn it get their own tail cut short.
   settle_buffer_s: 2.0
   min_settle_s: 4.0
 
   # duration_ratio/the chart's grey pre-infusion band both budget an extra
   # actuator_delay_s for a Bot-held pre-infusion (see flow_analysis.py's
-  # analyze_shot) - reusing stop_latency_normal_s rather than learning a
+  # analyze_shot) - reusing stop_latency_s rather than learning a
   # second value, since the same Bot/valve transition drives both. But a
   # live check of real adapt_pi shots (both t_first_flow_ms and a direct
   # look at the dashboard chart - flow visibly already rising before the

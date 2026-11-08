@@ -24,10 +24,10 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures" / "real_shots"
 
 # Sourced once at import time, same as every module's own CONFIG constant -
 # mirrors runtime_shot.py's _preinfusion_actuator_delay_s exactly
-# (stop_latency_normal_s plus stop_latency_calibration.preinfusion_
+# (stop_latency_s plus stop_latency_calibration.preinfusion_
 # actuator_offset_s, clamped at 0) for every adapt_pi shot, 0.0 for a
 # machine-controlled one (see analyze_shot's own comment on why).
-_STOP_LATENCY_NORMAL_S = definitions.load_definitions().defaults["controller"]["stop_latency_normal_s"]
+_STOP_LATENCY_S = definitions.load_definitions().defaults["controller"]["stop_latency_s"]
 _PREINFUSION_ACTUATOR_OFFSET_S = definitions.load_definitions().stop_latency_calibration[
     "preinfusion_actuator_offset_s"
 ]
@@ -120,7 +120,7 @@ class RealShot:
 
 def actuator_delay_s(shot: RealShot) -> float:
     """The actuator_delay_s analyze_shot should be called with for `shot` -
-    see _STOP_LATENCY_NORMAL_S/_PREINFUSION_ACTUATOR_OFFSET_S above. Any
+    see _STOP_LATENCY_S/_PREINFUSION_ACTUATOR_OFFSET_S above. Any
     caller that classifies a real fixture (a per-fixture regression test, or
     one of test_constant_drift.py's standing reports) must go through this
     rather than passing actuator_delay_s=0.0 (analyze_shot's default) for an
@@ -129,7 +129,7 @@ def actuator_delay_s(shot: RealShot) -> float:
     would not (see docs/data/DIAL_IN_RULES.md Part 9)."""
     if not shot.adapt_pi:
         return 0.0
-    return max(0.0, _STOP_LATENCY_NORMAL_S + _PREINFUSION_ACTUATOR_OFFSET_S)
+    return max(0.0, _STOP_LATENCY_S + _PREINFUSION_ACTUATOR_OFFSET_S)
 
 
 def load_real_shot(name: str) -> RealShot:

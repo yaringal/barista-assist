@@ -13,12 +13,12 @@ constant nudged +/-PERTURBATION_FRACTION and compare the result against the
 unperturbed one - a difference means this fixture sits close enough to the
 threshold that a human should look, not that anything is actually wrong.
 
-§2.6 (StopLatencyBucketDriftReport): does _STOP_LATENCY_BUCKET_CUTOFF_G_S
-still sit in a genuine low-density gap between the two flow-rate
-populations it splits shots into? Built from the same fixture set, using
-runtime.py's own _observed_stop_latency (the exact formula
-_update_learned_stop_latency itself nudges stop_latency_normal_s/elevated_s
-with) so this can never drift out of sync with the real mechanism.
+StopLatencySplitReport: the stop logic learns one stop_latency_s for every
+pour. Does fast pours' real latency differ enough from normal pours' to
+justify a separate fast-flow latency again? Built from the same fixture
+set, using runtime.py's own _observed_stop_latency (the exact formula
+_update_learned_stop_latency itself learns from) so this can never drift
+out of sync with the real mechanism.
 
 docs/todo/ADAPTIVE_LEARNING_PLAN.md §3 (GrindFlavorConsistencyReport): does
 duration_ratio far from 1.0 actually correlate with the taste complaint a
@@ -126,76 +126,100 @@ class ConstantDriftReport(unittest.TestCase):
             )
 
 
-class StopLatencyBucketDriftReport(unittest.TestCase):
+# Report-only thresholds, not runtime settings: a pour counts as "fast" at
+# or above _FAST_FLOW_G_S (flow averaged over flow_window_ms at the stop
+# decision); a split looks worth bringing back once fast pours' mean real
+# latency differs from normal pours' by at least _SPLIT_MIN_DIFFERENCE_S,
+# backed by at least _SPLIT_MIN_FAST_SHOTS fast pours and a Welch t of at
+# least _SPLIT_MIN_T (roughly "unlikely to be noise").
+_FAST_FLOW_G_S = 3.0
+_SPLIT_MIN_DIFFERENCE_S = 0.5
+_SPLIT_MIN_FAST_SHOTS = 5
+_SPLIT_MIN_T = 2.0
+
+
+def _welch_t(a: list[float], b: list[float]) -> float | None:
+    if len(a) < 2 or len(b) < 2:
+        return None
+    se = (statistics.variance(a) / len(a) + statistics.variance(b) / len(b)) ** 0.5
+    return (statistics.mean(a) - statistics.mean(b)) / se if se else None
+
+
+class StopLatencySplitReport(unittest.TestCase):
     """See module docstring - this never fails the suite, it only reports."""
 
-    def test_report_bucket_cutoff_against_real_fixtures(self) -> None:
+    def test_report_whether_fast_pours_need_their_own_latency(self) -> None:
         calibration = definitions.load_definitions().stop_latency_calibration
-        fixture_paths = sorted(FIXTURES_DIR.glob("*.txt"))
-        pairs = []
-        for path in fixture_paths:
+        normal: list[tuple[str, float, float]] = []
+        fast: list[tuple[str, float, float]] = []
+        for path in sorted(FIXTURES_DIR.glob("*.txt")):
             shot = load_real_shot(path.stem)
-            if shot.stop_command_elapsed_ms is None or shot.actual_yield_g is None:
+            if not shot.stopped_by_target or shot.stop_command_elapsed_ms is None:
                 continue
+            if shot.actual_yield_g is None:
+                continue
+            analysis = analyze_shot(
+                shot.samples,
+                target_yield_g=shot.target_yield_g,
+                preinfusion_s=shot.preinfusion_s,
+                baseline=None,
+                expected_flow_g_s=CONFIG.expected_flow_g_s,
+                config=CONFIG,
+                actuator_delay_s=actuator_delay_s(shot),
+                stopped_by_target=shot.stopped_by_target,
+            )
+            if analysis.invalid_reason is not None:
+                continue  # mirrors _async_finalize: invalid shots never feed learning
             result = runtime_module.BaristaRuntime._observed_stop_latency(
                 shot.samples,
                 shot.stop_command_elapsed_ms,
                 shot.actual_yield_g,
-                window_ms=CONFIG.smoothing_window_ms,
+                window_ms=calibration["flow_window_ms"],
                 min_flow_g_s=calibration["min_flow_for_learning_g_s"],
-                sustain_ms=calibration["elevated_sustain_ms"],
-                cutoff_g_s=calibration["bucket_cutoff_g_s"],
             )
-            if result is not None:
-                pairs.append(result)
+            if result is None:
+                continue
+            flow, latency = result
+            (fast if flow >= _FAST_FLOW_G_S else normal).append((path.stem, flow, latency))
 
-        cutoff = calibration["bucket_cutoff_g_s"]
-        # Bucketed by the same `elevated` decision _observed_stop_latency
-        # itself made (sustain-checked), not re-derived from flow_at_decision
-        # vs. cutoff here - a shot whose flow only spiked briefly belongs in
-        # "normal" even though flow_at_decision alone might sit above cutoff.
-        normal = sorted(flow for flow, _latency, elevated in pairs if not elevated)
-        elevated = sorted(flow for flow, _latency, elevated in pairs if elevated)
+        print("\n=== Stop-latency split report (one learned latency vs. normal/fast) ===")
+        for label, rows in (("normal", normal), (f"fast (>= {_FAST_FLOW_G_S:g} g/s)", fast)):
+            if rows:
+                latencies = [lat for _name, _flow, lat in rows]
+                print(
+                    f"  {label}: n={len(rows)} real latency mean={statistics.mean(latencies):.2f}s "
+                    f"median={statistics.median(latencies):.2f}s, flow "
+                    f"{min(f for _n, f, _l in rows):.2f}-{max(f for _n, f, _l in rows):.2f} g/s"
+                )
+            else:
+                print(f"  {label}: n=0")
+        for name, flow, latency in fast:
+            print(f"    fast: {name} flow={flow:.2f} g/s latency={latency:.2f}s")
 
-        print(
-            "\n=== Stop-latency bucket drift report "
-            "(docs/DESIGN.md's Phase 3b) ==="
-        )
-        print(
-            f"  {len(pairs)}/{len(fixture_paths)} fixtures usable "
-            f"(normal={len(normal)}, elevated={len(elevated)}, cutoff={cutoff:g} g/s)"
-        )
-        if pairs:
-            all_flows = sorted(flow for flow, _latency, _elevated in pairs)
-            bin_width = 0.5
-            lo = int(all_flows[0] // bin_width)
-            hi = int(all_flows[-1] // bin_width) + 1
-            print("  flow_at_decision histogram (bin width 0.5 g/s):")
-            for b in range(lo, hi):
-                bin_lo, bin_hi = b * bin_width, (b + 1) * bin_width
-                count = sum(1 for flow in all_flows if bin_lo <= flow < bin_hi)
-                marker = " <-- cutoff" if bin_lo <= cutoff < bin_hi else ""
-                print(f"    [{bin_lo:4.1f}, {bin_hi:4.1f}): {'#' * count} ({count}){marker}")
-            for label, flows, want_elevated in (("normal", normal, False), ("elevated", elevated, True)):
-                if flows:
-                    latencies = [lat for _flow, lat, is_elevated in pairs if is_elevated == want_elevated]
-                    print(
-                        f"  {label}: flow range [{flows[0]:.2f}, {flows[-1]:.2f}] g/s, "
-                        f"observed latency mean={statistics.mean(latencies):.2f}s "
-                        f"median={statistics.median(latencies):.2f}s (n={len(latencies)})"
-                    )
-            defaults = definitions.load_definitions().defaults["controller"]
-            print(
-                f"  current fixed defaults: stop_latency_normal_s="
-                f"{defaults['stop_latency_normal_s']}s, stop_latency_elevated_s="
-                f"{defaults['stop_latency_elevated_s']}s"
+        normal_lat = [lat for _n, _f, lat in normal]
+        fast_lat = [lat for _n, _f, lat in fast]
+        if len(fast) < _SPLIT_MIN_FAST_SHOTS or not normal:
+            verdict = (
+                f"not enough fast pours yet ({len(fast)} of {_SPLIT_MIN_FAST_SHOTS} needed) "
+                "- keep one latency"
             )
-        print(
-            "  Not a pass/fail check - eyeball whether the cutoff still sits "
-            "in a low-density gap, and whether there's enough data yet to "
-            "consider a continuous flow->latency regression instead of the "
-            "two-bucket model (docs/DESIGN.md's Phase 3b).\n"
-        )
+        else:
+            difference = statistics.mean(fast_lat) - statistics.mean(normal_lat)
+            t = _welch_t(fast_lat, normal_lat)
+            t_text = f"{t:.2f}" if t is not None else "n/a"
+            if abs(difference) >= _SPLIT_MIN_DIFFERENCE_S and t is not None and abs(t) >= _SPLIT_MIN_T:
+                verdict = (
+                    f"fast pours differ by {difference:+.2f}s (Welch t={t_text}) - a separate "
+                    "fast-flow latency may be worth bringing back (replay the live trigger "
+                    "before deciding)"
+                )
+            else:
+                verdict = (
+                    f"no meaningful difference ({difference:+.2f}s, Welch t={t_text}) "
+                    "- keep one latency"
+                )
+        print(f"  Verdict: {verdict}")
+        print("  Not a pass/fail check - see definitions.yaml's stop_latency_calibration comment.\n")
 
 
 # A tag's expert_rules.flavor_correction.tags[tag] "lever"/"direction" ->

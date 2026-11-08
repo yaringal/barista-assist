@@ -608,7 +608,7 @@ class RuntimeEntitiesMixin:
         frontend so the healthy-window shading (barista-assist-
         dashboard.js's healthyWindow) can never silently diverge from what
         actually classified the shot if that formula ever changes. adapt_pi
-        decides whether that window also budgets stop_latency_normal_s as
+        decides whether that window also budgets stop_latency_s as
         actuator_delay_s (see analyze_shot's own comment) - it must match
         whatever analyze_shot itself used/will use for this same shot.
         predicted_stop_elapsed_ms (runtime_shot.py's
