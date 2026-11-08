@@ -274,6 +274,8 @@ views:
             title: Connection and control
             show_header_toggle: false
             entities:
+              - entity: __INTEGRATION_VERSION__
+                name: Installed version
               - entity: __STATUS__
                 name: Status
               - entity: __SCALE_BATTERY__

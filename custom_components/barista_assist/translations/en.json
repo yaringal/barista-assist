@@ -116,6 +116,9 @@
       "stop_latency": {
         "name": "Learned stop latency"
       },
+      "integration_version": {
+        "name": "Installed version"
+      },
       "grind_band_healthy_delta": {
         "name": "Healthy band: grind delta"
       }

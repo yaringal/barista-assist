@@ -22,6 +22,15 @@ sensor:
     unit: s
     precision: 2
 
+  integration_version:
+    # The installed Barista Assist version (Home Assistant's own cached copy
+    # of manifest.json - see __init__.py), so the Settings view shows which
+    # release is actually running without digging through HACS.
+    source: runtime
+    field: integration_version
+    translation_key: integration_version
+    token: __INTEGRATION_VERSION__
+
   scale_weight:
     source: scale
     field: weight_g

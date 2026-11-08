@@ -1299,6 +1299,10 @@ class LearnedLatencySensorTests(RuntimeTestCase):
     def _sensor(self, key: str):
         return next(d for d in self.runtime.definitions.platform("sensor") if d.key == key)
 
+    def test_installed_version_sensor_reads_the_integration_version(self):
+        self.runtime.integration_version = "9.9.9"
+        self.assertEqual(self.runtime.entity_value(self._sensor("integration_version")), "9.9.9")
+
     def test_reads_the_current_learned_latency(self):
         sensor = self._sensor("stop_latency")
         self.assertEqual(self.runtime.entity_value(sensor), self.runtime.stop_latency_s)

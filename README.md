@@ -132,6 +132,7 @@ sensor.barista_assist_shot_classification
 sensor.barista_assist_shot_channeling_suspicion
 sensor.barista_assist_beans_remaining
 sensor.barista_assist_stop_latency
+sensor.barista_assist_integration_version
 
 number.barista_assist_dose
 number.barista_assist_grind
