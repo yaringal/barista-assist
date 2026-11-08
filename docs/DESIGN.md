@@ -1488,6 +1488,25 @@ arbitrarily, but they're still a single anchor point, not derived data —
 see Phase 3b. The mechanical-suspicion threshold remains an unvalidated
 guess.
 
+The expected shot time behind `duration_ratio` (and the chart's healthy
+window) is `preinfusion_s + dead time + target_yield_g / expected_flow_g_s`,
+measured from the brew press. For a Bot-held pre-infusion the dead time is
+two fixed values in `definitions.yaml`'s `preinfusion_timing`:
+`band_start_s` (1.3s - press to the Bot actually holding the button, timed
+directly: the hold released at 8.3s on a 7.0s hold; also where the chart's
+grey pre-infusion band starts) plus `flow_start_lag_s` (2.0s - hold released
+to the first real flow, the median across 24 real Bot-held fixtures). A
+machine-controlled pre-infusion has no dead time. Both used to be one value
+derived from the learned stop latency (`stop_latency_s - 2.0s`), so the grey
+band and every classification shifted whenever stop learning moved, and the
+expected time lost the flow-start lag once the band was corrected to the
+Bot's real release. With the fixed values, barista-confirmed good Bot-held
+shots centre on `duration_ratio` ~1.0; two shots tasted "balanced" read
+too_fast (~0.83, and 0.880 right at the edge) - accepted as timing-vs-taste
+disagreements for now. `tests/test_constant_drift.py`'s `FlowStartLagReport`
+re-measures the lag as fixtures accumulate, to decide whether it should be
+learned per installation.
+
 The expected flow rate is also a Bayesian shrinkage estimate, not just a
 fixed constant: it blends the global prior with the median flow rate across
 *other* bags sharing the same `roast_level`, weighted by how many such

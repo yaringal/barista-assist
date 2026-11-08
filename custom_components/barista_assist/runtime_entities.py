@@ -608,9 +608,10 @@ class RuntimeEntitiesMixin:
         frontend so the healthy-window shading (barista-assist-
         dashboard.js's healthyWindow) can never silently diverge from what
         actually classified the shot if that formula ever changes. adapt_pi
-        decides whether that window also budgets stop_latency_s as
-        actuator_delay_s (see analyze_shot's own comment) - it must match
-        whatever analyze_shot itself used/will use for this same shot.
+        decides whether that window also budgets the Bot-held dead time
+        (_preinfusion_dead_time_s, passed as actuator_delay_s - see
+        analyze_shot's own comment) - it must match whatever analyze_shot
+        itself used/will use for this same shot.
         predicted_stop_elapsed_ms (runtime_shot.py's
         _predicted_stop_elapsed_ms) is when that same decision expected the
         shot to actually finish pouring, drawn as a second, distinct
@@ -620,25 +621,24 @@ class RuntimeEntitiesMixin:
         has actually stopped) - the frontend must not treat that as zero.
         pi_band_start_ms/pi_band_end_ms are the Bot-held pre-infusion
         window itself, in ms: the brew Bot's own press event fires at 0,
-        but the actual hold doesn't begin until actuator_delay_s later (the
-        Bot physically engaging the button) and lasts preinfusion_s from
-        there, releasing on its own - so [0, actuator_delay_s] is dead time
-        before any real pre-infusion starts, not pre-infusion itself, and
+        but the actual hold doesn't begin until preinfusion_timing.
+        band_start_s later (the Bot physically engaging the button) and
+        lasts preinfusion_s from there, releasing on its own - so the
+        leading span is dead time before any real pre-infusion starts, and
         the chart's own grey band/label (barista-assist-dashboard.js's
-        piBand) must not shade it as such. For a machine-controlled shot
-        (actuator_delay_s=0.0), pi_band_start_ms is 0 and this collapses to
-        the plain [0, preinfusion_ms] band it's always been."""
+        piBand) must not shade it. For a machine-controlled shot,
+        pi_band_start_ms is 0 and this collapses to the plain
+        [0, preinfusion_ms] band."""
         preinfusion_ms = int(preinfusion_s * 1000)
-        actuator_delay_s = self._preinfusion_actuator_delay_s(adapt_pi)
         healthy_window = healthy_window_ms(
             preinfusion_ms,
             target_yield_g,
             expected_flow_g_s,
             self._live_duration_ratio_bands(),
-            actuator_delay_s,
+            self._preinfusion_dead_time_s(adapt_pi),
         )
         healthy_start_ms, healthy_end_ms = healthy_window if healthy_window else (None, None)
-        pi_band_start_ms = round(actuator_delay_s * 1000)
+        pi_band_start_ms = round(self._preinfusion_band_start_s(adapt_pi) * 1000)
         return {
             "preinfusion_ms": preinfusion_ms,
             "pi_band_start_ms": pi_band_start_ms,

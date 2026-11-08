@@ -297,33 +297,34 @@ stop_latency_calibration:
   settle_buffer_s: 2.0
   min_settle_s: 4.0
 
-  # duration_ratio/the chart's grey pre-infusion band both budget an extra
-  # actuator_delay_s for a Bot-held pre-infusion (see flow_analysis.py's
-  # analyze_shot) - reusing stop_latency_s rather than learning a
-  # second value, since the same Bot/valve transition drives both. But a
-  # live check of real adapt_pi shots (both t_first_flow_ms and a direct
-  # look at the dashboard chart - flow visibly already rising before the
-  # grey band's own right edge, for most shots) showed the two aren't quite
-  # equal: stopping (residual pressure bleeding off across the whole
-  # system, until essentially no more flow) takes longer than starting
-  # (building just enough pressure for the first detectable drops) - a
-  # lower bar to clear.
-  #
-  # First corrected to -1.0s on that evidence. Then directly measured: a
-  # user timed the Bot's own physical button-hold lift (the real release
-  # event, not an inference) at 8.3s into a real shot whose preinfusion_s
-  # was 7.0s, while the dashboard's own grey band (built from the -1.0s
-  # value) showed it ending at 9.3s - a full 1.0s too late. -2.0s matches
-  # that direct measurement (7.0 + max(0, 3.2-2.0) = 8.2s, vs. the observed
-  # 8.3s) and is also the cleaner fit against every real adapt_pi shot in
-  # this installation's fixtures: all but one (an unrelated noise-wobble
-  # case, already documented as an outlier) show real flow starting at or
-  # after the band's own end. It also resolves, with no disagreement left
-  # at all, the one classification that previously still disagreed with
-  # its own barista-confirmed taste call (too_fast_but_healthy_by_taste_
-  # adapt_pi, "healthy... balanced" - now classifies healthy outright
-  # rather than too_fast-but-matching-the-chart).
-  preinfusion_actuator_offset_s: -2.0
+# =============================================================================
+# preinfusion_timing - fixed dead time around a Bot-held pre-infusion
+# (adapt_pi=True). A machine-controlled pre-infusion (a single quick tap
+# starting the machine's own timer) has neither: both are 0 for those shots.
+#
+# Shot time 0 is when the Bot confirmed the brew press. Two separate gaps
+# follow, used for two different things:
+#
+# band_start_s - press to the Bot's arm actually holding the button: where
+#   the chart's grey pre-infusion band starts (it then lasts preinfusion_s).
+#   Directly measured: the Bot's hold released at 8.3s on a 7.0s hold, so the
+#   hold began at 1.3s.
+#
+# flow_start_lag_s - hold released to the first real flow on the scale
+#   (pressure building back up). Budgeted on top of band_start_s +
+#   preinfusion_s in the expected shot time behind duration_ratio and the
+#   chart's healthy window. 2.0s is the median gap across 24 Bot-held real
+#   fixtures (2.10s); tests/test_constant_drift.py's FlowStartLagReport
+#   tracks it as fixtures accumulate, to decide whether it should be learned.
+#
+# Both used to be one value derived from the learned stop latency
+# (stop_latency_s - 2.0s), so the band and every classification moved
+# whenever stop learning moved, and the expected time lost the ~2s of
+# flow-start lag once the band was corrected to match the Bot's release.
+# =============================================================================
+preinfusion_timing:
+  band_start_s: 1.3
+  flow_start_lag_s: 2.0
 
 # =============================================================================
 # expert_rules - correction policy consolidated from James Hoffmann's, Lance

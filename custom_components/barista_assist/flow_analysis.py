@@ -554,8 +554,8 @@ def expected_shot_seconds(
     scales with target_yield_g, and adds preinfusion_s/actuator_delay_s on
     top rather than folding them into the rate). actuator_delay_s is 0.0 for
     a machine-controlled pre-infusion (nothing to budget - see analyze_shot's
-    own comment on why), the caller's live stop_latency_s otherwise
-    (see _async_finalize). Factored out so healthy_window_ms below - which
+    own comment on why), the Bot-held dead time otherwise (runtime_shot.py's
+    _preinfusion_dead_time_s). Factored out so healthy_window_ms below - which
     backs the Live Shot/Shot History charts' healthy-window shading (see
     runtime_entities.py's _shot_markers) - shares this exact formula with
     analyze_shot's own too_fast/too_restrictive classification, rather than
@@ -820,22 +820,17 @@ def analyze_shot(
     # already draws (flat through pre-infusion, then ramping to
     # target_yield_g over expected_s).
     #
-    # actuator_delay_s budgets one specific piece of that dead time: a
-    # Bot-held pre-infusion routes through the Bot's own physical press/
-    # hold/release cycle on the same valve/pump system a stop press acts
-    # on, so real flow can plausibly start only after that release *plus*
-    # however long it takes the machine to build from near-zero to real
-    # pressure - not the instant the programmed hold duration elapses. A
-    # live user report ("the PI programmed is 7s but we count 10s with no
-    # flow") confirmed this: t_first_flow_ms landing ~3.2s past
-    # preinfusion_s, consistently, across real adapt_pi shots regardless of
-    # classification - and 3.2s is stop_latency_s's own seed value,
-    # the already-learned estimate for that same Bot/valve transition's
-    # latency on the stop side. Reusing it here (rather than learning a
-    # second, separate delay from scratch) is what _async_finalize passes
-    # in. A machine-controlled pre-infusion never engages the Bot for the
-    # hold itself (a single quick tap starts the machine's own onboard
-    # timer), so it has no such actuator step to budget - actuator_delay_s
+    # actuator_delay_s budgets the rest of that dead time for a Bot-held
+    # pre-infusion: the Bot's press-to-hold delay before the hold even
+    # starts, plus the time after the hold releases for the machine to
+    # build back up to real flow - not the instant the programmed hold
+    # elapses. A live user report ("the PI programmed is 7s but we count
+    # 10s with no flow") first surfaced it; both pieces are fixed values in
+    # definitions.yaml's preinfusion_timing (the press-to-hold delay timed
+    # directly, the flow-start lag the median across real fixtures), summed
+    # by runtime_shot.py's _preinfusion_dead_time_s. A machine-controlled
+    # pre-infusion never engages the Bot for the hold itself (a single
+    # quick tap starts the machine's own onboard timer), so actuator_delay_s
     # is 0.0 for those shots.
     #
     # Open caveat, still not addressed: flow isn't necessarily constant

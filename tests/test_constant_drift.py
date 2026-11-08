@@ -222,6 +222,68 @@ class StopLatencySplitReport(unittest.TestCase):
         print("  Not a pass/fail check - see definitions.yaml's stop_latency_calibration comment.\n")
 
 
+# Report-only threshold, not a runtime setting: a fixed flow_start_lag_s
+# looks worth revisiting (re-tuning, or learning it per installation) once
+# the fixtures' median real lag drifts this far from it.
+_FLOW_START_LAG_DRIFT_S = 0.5
+
+
+class FlowStartLagReport(unittest.TestCase):
+    """See module docstring - this never fails the suite, it only reports.
+    preinfusion_timing.flow_start_lag_s is a fixed value (the median gap
+    between a Bot-held pre-infusion's end and the first real flow); this
+    re-measures that gap across every valid Bot-held fixture."""
+
+    def test_report_flow_start_lag_against_real_fixtures(self) -> None:
+        timing = definitions.load_definitions().preinfusion_timing
+        band_start_s = float(timing["band_start_s"])
+        configured_s = float(timing["flow_start_lag_s"])
+        gaps: list[tuple[str, float]] = []
+        for path in sorted(FIXTURES_DIR.glob("*.txt")):
+            shot = load_real_shot(path.stem)
+            if not shot.adapt_pi:
+                continue
+            analysis = analyze_shot(
+                shot.samples,
+                target_yield_g=shot.target_yield_g,
+                preinfusion_s=shot.preinfusion_s,
+                baseline=None,
+                expected_flow_g_s=CONFIG.expected_flow_g_s,
+                config=CONFIG,
+                actuator_delay_s=actuator_delay_s(shot),
+                stopped_by_target=shot.stopped_by_target,
+            )
+            if analysis.invalid_reason is not None or analysis.t_first_flow_ms is None:
+                continue
+            gaps.append((path.stem, analysis.t_first_flow_ms / 1000 - (band_start_s + shot.preinfusion_s)))
+
+        print("\n=== Flow-start lag report (preinfusion_timing.flow_start_lag_s) ===")
+        if not gaps:
+            print("  no valid Bot-held fixtures\n")
+            return
+        values = sorted(gap for _name, gap in gaps)
+        median = statistics.median(values)
+        q1, _q2, q3 = statistics.quantiles(values, n=4) if len(values) >= 2 else (median, median, median)
+        print(
+            f"  n={len(values)} median={median:.2f}s IQR=[{q1:.2f}, {q3:.2f}]s "
+            f"range=[{values[0]:.2f}, {values[-1]:.2f}]s; configured {configured_s:g}s"
+        )
+        for name, gap in gaps:
+            print(f"    {name}: {gap:+.2f}s")
+        if abs(median - configured_s) >= _FLOW_START_LAG_DRIFT_S:
+            verdict = (
+                f"median drifted {median - configured_s:+.2f}s from the configured value - "
+                "re-tune it, or consider learning it per installation"
+            )
+        else:
+            verdict = "median still matches the configured value - keep it fixed"
+        print(f"  Verdict: {verdict}")
+        print(
+            "  Not a pass/fail check - long gaps are usually restrictive/choked pucks, which "
+            "is why the median (not the mean) is compared.\n"
+        )
+
+
 # A tag's expert_rules.flavor_correction.tags[tag] "lever"/"direction" ->
 # which extraction direction it signals (see docs/data/DIAL_IN_RULES.md's
 # own reasoning for sour_sharp/bitter_harsh/dry_astringent): a "yield"-lever

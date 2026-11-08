@@ -23,14 +23,12 @@ ShotSample = storage.ShotSample
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "real_shots"
 
 # Sourced once at import time, same as every module's own CONFIG constant -
-# mirrors runtime_shot.py's _preinfusion_actuator_delay_s exactly
-# (stop_latency_s plus stop_latency_calibration.preinfusion_
-# actuator_offset_s, clamped at 0) for every adapt_pi shot, 0.0 for a
-# machine-controlled one (see analyze_shot's own comment on why).
-_STOP_LATENCY_S = definitions.load_definitions().defaults["controller"]["stop_latency_s"]
-_PREINFUSION_ACTUATOR_OFFSET_S = definitions.load_definitions().stop_latency_calibration[
-    "preinfusion_actuator_offset_s"
-]
+# mirrors runtime_shot.py's _preinfusion_band_start_s/_preinfusion_dead_time_s
+# exactly (definitions.yaml's preinfusion_timing) for every adapt_pi shot,
+# 0.0 for a machine-controlled one (see analyze_shot's own comment on why).
+_PREINFUSION_TIMING = definitions.load_definitions().preinfusion_timing
+PREINFUSION_BAND_START_S = float(_PREINFUSION_TIMING["band_start_s"])
+FLOW_START_LAG_S = float(_PREINFUSION_TIMING["flow_start_lag_s"])
 
 
 @dataclass(slots=True)
@@ -120,16 +118,16 @@ class RealShot:
 
 def actuator_delay_s(shot: RealShot) -> float:
     """The actuator_delay_s analyze_shot should be called with for `shot` -
-    see _STOP_LATENCY_S/_PREINFUSION_ACTUATOR_OFFSET_S above. Any
-    caller that classifies a real fixture (a per-fixture regression test, or
-    one of test_constant_drift.py's standing reports) must go through this
-    rather than passing actuator_delay_s=0.0 (analyze_shot's default) for an
-    adapt_pi shot - that default silently reproduces the pre-actuator-delay-
-    fix duration_ratio formula and can misclassify a shot the real runtime
-    would not (see docs/data/DIAL_IN_RULES.md Part 9)."""
+    band start plus flow-start lag (see PREINFUSION_BAND_START_S/
+    FLOW_START_LAG_S above). Any caller that classifies a real fixture (a
+    per-fixture regression test, or one of test_constant_drift.py's
+    standing reports) must go through this rather than passing
+    actuator_delay_s=0.0 (analyze_shot's default) for an adapt_pi shot -
+    that default silently drops the Bot-held dead time and can misclassify
+    a shot the real runtime would not."""
     if not shot.adapt_pi:
         return 0.0
-    return max(0.0, _STOP_LATENCY_S + _PREINFUSION_ACTUATOR_OFFSET_S)
+    return PREINFUSION_BAND_START_S + FLOW_START_LAG_S
 
 
 def load_real_shot(name: str) -> RealShot:

@@ -655,100 +655,68 @@ class DoubleLeadingGarbageAdaptPiTests(unittest.TestCase):
 
 class TooFastButHealthyByTasteAdaptPiTests(unittest.TestCase):
     """The barista's own overall call: "healthy (36g within healthy zone)
-    and tasted balanced". This fixture was the one that started this
-    session's whole duration_ratio investigation: it was recorded/
-    classified too_fast at export time (duration_ratio=0.843) even though
-    the trace crosses target_yield_g (36.0g) at elapsed_ms=26211 - the
-    user's own sharp observation was that this crossing genuinely fell
-    inside the chart's own shaded healthy-time window, a real self-
-    contradiction ("the code is broken if the UI shows healthy but the
-    logic disagrees") worth fixing, not a known limitation to merely
-    document.
+    and tasted balanced". Recorded too_fast at export time; this fixture
+    started the whole duration_ratio investigation (duration_ratio moved
+    from t90 to a real 100%-of-target crossing, and expected_s gained the
+    Bot-held dead time - docs/data/DIAL_IN_RULES.md Parts 6-9), and for a
+    while classified healthy.
 
-    Three real gaps were found and fixed (docs/data/DIAL_IN_RULES.md's
-    Parts 6-9):
-    1. duration_ratio was driven by t90 (reached at elapsed_ms=23755, 1.04s
-       before the too_fast cutoff), not the real 100%-of-target crossing
-       the chart itself visualizes - analyze_shot now prefers a real t100
-       crossing when one exists.
-    2. expected_s didn't budget actuator_delay_s at all - the dead time a
-       Bot-held pre-infusion needs beyond its own programmed hold before
-       flow can plausibly start.
-    3. actuator_delay_s itself (reused from stop_latency_s) was
-       initially over-estimated by a full ~2s: a live measurement of the
-       Bot's own physical button-hold lift (8.3s into a real shot) against
-       what the dashboard's own grey band showed at the time (9.3s)
-       pinned down stop_latency_calibration.preinfusion_actuator_offset_s
-       at -2.0s, not the -1.0s an earlier visual check alone had
-       suggested.
-
-    With all three applied, this shot's duration_ratio settles at ~0.892 -
-    correctly healthy, matching the barista's own "balanced" taste call
-    outright. (Along the way it passed through two different intermediate
-    states - healthy under fix 1 alone, too_fast again once fix 2 added an
-    under-corrected actuator_delay_s on top - before landing here; see this
-    file's own git history/docs/data/DIAL_IN_RULES.md for that full trail,
-    not a sign any single step was wrong on its own.) The chart's own
-    healthy-window shading uses this identical formula, so it was never
-    possible for the two to disagree for long - this fixture's whole
-    throughline is both of them converging on the same, correct answer."""
+    Accepted timing-vs-taste disagreement since preinfusion_timing replaced
+    the stop-latency-derived dead time with a fixed band start plus
+    flow-start lag (3.3s total, from a direct stopwatch measurement and the
+    median lag across real fixtures): the shot reads too_fast by timing
+    (~0.83) while tasting balanced. Barista-confirmed good shots now centre
+    on ~1.0, so the dead time looks right; this shot (and 2026-10-19, also
+    "balanced", right at the 0.88 edge) may mean the band's fast edge is a
+    little tight for Bot-held shots - not enough tagged shots yet to move a
+    boundary also validated against Hoffmann's verdicts. What still has to
+    hold: chart and classifier agree with each other about this shot."""
 
     def setUp(self) -> None:
         self.shot = load_real_shot("too_fast_but_healthy_by_taste_adapt_pi")
 
-    def test_matches_the_barista_s_own_call(self) -> None:
-        self.assertEqual(self.shot.recorded_classification, "too_fast")
-        result = analyze_shot(
+    def _analyze(self):
+        return analyze_shot(
             self.shot.samples,
             target_yield_g=self.shot.target_yield_g,
             preinfusion_s=self.shot.preinfusion_s,
             baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
             actuator_delay_s=_actuator_delay_s(self.shot)
         )
+
+    def test_reads_too_fast_by_timing_despite_tasting_balanced(self) -> None:
+        self.assertEqual(self.shot.recorded_classification, "too_fast")
+        result = self._analyze()
         self.assertIsNone(result.invalid_reason)
-        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+        self.assertEqual(result.classification, ShotClassification.TOO_FAST)
         self.assertLess(result.channeling_suspicion, CONFIG.suspicion_threshold)
 
     def test_duration_ratio_is_based_on_the_real_target_crossing(self) -> None:
-        """Confirms the t100 fix's own mechanism still applies: t100_ms is
-        found (this shot doesn't undershoot), and duration_ratio is derived
-        from it rather than from t90_ms."""
-        result = analyze_shot(
-            self.shot.samples,
-            target_yield_g=self.shot.target_yield_g,
-            preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
-            actuator_delay_s=_actuator_delay_s(self.shot)
-        )
+        """The t100 fix's own mechanism still applies: t100_ms is found
+        (this shot doesn't undershoot), and duration_ratio is derived from
+        it rather than from t90_ms."""
+        result = self._analyze()
         self.assertIsNotNone(result.t100_ms)
         self.assertLess(result.t90_ms, result.t100_ms)
-        self.assertAlmostEqual(result.duration_ratio, 0.892, places=2)
-
-    def test_the_target_crossing_falls_inside_the_chart_s_own_healthy_window(self) -> None:
-        """The barista's own visual read of the graph: the weight trace
-        crosses target_yield_g inside the healthy time window the chart
-        itself shades - and that's also exactly what classification itself
-        uses, so chart and classifier agree with each other, resolving this
-        session's original bug (the two disagreeing)."""
-        result = analyze_shot(
-            self.shot.samples,
-            target_yield_g=self.shot.target_yield_g,
-            preinfusion_s=self.shot.preinfusion_s,
-            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
-            actuator_delay_s=_actuator_delay_s(self.shot)
+        expected_s = flow_analysis.expected_shot_seconds(
+            self.shot.preinfusion_s, self.shot.target_yield_g,
+            CONFIG.expected_flow_g_s, _actuator_delay_s(self.shot)
         )
-        healthy_start_ms, healthy_end_ms = flow_analysis.healthy_window_ms(
+        self.assertAlmostEqual(result.duration_ratio, result.t100_ms / 1000 / expected_s, places=6)
+
+    def test_chart_and_classifier_agree_the_target_crossing_is_early(self) -> None:
+        """The original bug was chart and classifier disagreeing about this
+        shot. They still agree: the target crossing lands before the chart's
+        own healthy window starts, matching the too_fast classification."""
+        result = self._analyze()
+        healthy_start_ms, _healthy_end_ms = flow_analysis.healthy_window_ms(
             int(self.shot.preinfusion_s * 1000),
             self.shot.target_yield_g,
             CONFIG.expected_flow_g_s,
             CONFIG.duration_ratio_bands,
             _actuator_delay_s(self.shot),
         )
-        target_crossing_ms = next(
-            s.elapsed_ms for s in self.shot.samples if s.weight_g >= self.shot.target_yield_g
-        )
-        self.assertTrue(healthy_start_ms <= target_crossing_ms <= healthy_end_ms)
-        self.assertTrue(healthy_start_ms <= result.t100_ms <= healthy_end_ms)
+        self.assertLess(result.t100_ms, healthy_start_ms)
 
     def test_the_fixture_carries_the_balanced_taste_annotation(self) -> None:
         self.assertEqual(self.shot.flavor_mouthfeel_tag, "balanced")

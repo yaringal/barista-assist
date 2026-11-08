@@ -61,19 +61,26 @@ class RuntimeShotMixin:
             ),
         )
 
-    def _preinfusion_actuator_delay_s(self, adapt_pi: bool) -> float:
-        """analyze_shot's actuator_delay_s for one shot (see its own
-        comment, and stop_latency_calibration.preinfusion_actuator_offset_s's
-        in definitions.yaml) - 0.0 for a machine-controlled pre-infusion
-        (no Bot-held step to budget), stop_latency_s plus that offset
-        otherwise, clamped to never go negative. Shared by _async_finalize,
-        _build_shot_markers, and async_list_shots so the classifier and the
-        chart's own grey pre-infusion band can never quietly disagree about
-        this value."""
+    def _preinfusion_band_start_s(self, adapt_pi: bool) -> float:
+        """Where the chart's grey pre-infusion band starts - see
+        definitions.yaml's preinfusion_timing.band_start_s. 0.0 for a
+        machine-controlled pre-infusion."""
         if not adapt_pi:
             return 0.0
-        offset_s = self.definitions.stop_latency_calibration["preinfusion_actuator_offset_s"]
-        return max(0.0, self.stop_latency_s + offset_s)
+        return float(self.definitions.preinfusion_timing["band_start_s"])
+
+    def _preinfusion_dead_time_s(self, adapt_pi: bool) -> float:
+        """analyze_shot's/healthy_window_ms's actuator_delay_s: band start
+        plus preinfusion_timing.flow_start_lag_s, the dead time beyond
+        preinfusion_s before real flow can start. 0.0 for a
+        machine-controlled pre-infusion. Shared by _async_finalize,
+        _build_shot_markers and async_list_shots so the classifier and the
+        chart's healthy window can never quietly disagree."""
+        if not adapt_pi:
+            return 0.0
+        return self._preinfusion_band_start_s(adapt_pi) + float(
+            self.definitions.preinfusion_timing["flow_start_lag_s"]
+        )
 
     def _predicted_stop_elapsed_ms(
         self, samples: list[ShotSample], stop_command_elapsed_ms: int | None
@@ -610,7 +617,7 @@ class RuntimeShotMixin:
             # the user, not silently diverge from it.
             expected_flow_g_s=shot.expected_flow_g_s,
             config=flow_analysis_config,
-            actuator_delay_s=self._preinfusion_actuator_delay_s(shot.adapt_pi),
+            actuator_delay_s=self._preinfusion_dead_time_s(shot.adapt_pi),
             stopped_by_target=status == "complete",
         )
         if analysis.invalid_reason is not None:
@@ -697,24 +704,20 @@ class RuntimeShotMixin:
         duration_ratio_bands = self._live_duration_ratio_bands()
         for shot in shots:
             preinfusion_ms = int(shot["preinfusion_s"] * 1000)
-            actuator_delay_s = self._preinfusion_actuator_delay_s(bool(shot["adapt_pi"]))
+            adapt_pi = bool(shot["adapt_pi"])
             healthy_window = healthy_window_ms(
                 preinfusion_ms,
                 shot["target_yield_g"],
                 shot.get("expected_flow_g_s"),
                 duration_ratio_bands,
-                actuator_delay_s,
+                self._preinfusion_dead_time_s(adapt_pi),
             )
             shot["healthy_start_ms"], shot["healthy_end_ms"] = (
                 healthy_window if healthy_window else (None, None)
             )
-            # The chart's own grey pre-infusion band/label must cover only
-            # the actual Bot-held window - [actuator_delay_s, actuator_delay_s
-            # + preinfusion_s] - not [0, ...]: the Bot's press event fires at
-            # 0, but the hold itself doesn't begin until actuator_delay_s
-            # later (see _build_shot_markers's own comment), so that leading
-            # span is dead time before pre-infusion, not pre-infusion itself.
-            pi_band_start_ms = round(actuator_delay_s * 1000)
+            # The grey band covers only the actual Bot-held window - see
+            # _build_shot_markers's own comment.
+            pi_band_start_ms = round(self._preinfusion_band_start_s(adapt_pi) * 1000)
             shot["pi_band_start_ms"] = pi_band_start_ms
             shot["pi_band_end_ms"] = pi_band_start_ms + preinfusion_ms
         return shots

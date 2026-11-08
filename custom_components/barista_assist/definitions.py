@@ -62,6 +62,7 @@ class Definitions:
     expert_rules: dict[str, Any] = field(default_factory=dict)
     flow_analysis_constants: dict[str, Any] = field(default_factory=dict)
     stop_latency_calibration: dict[str, Any] = field(default_factory=dict)
+    preinfusion_timing: dict[str, Any] = field(default_factory=dict)
 
     def platform(self, platform: str) -> tuple[EntityDefinition, ...]:
         return self.entities.get(platform, ())
@@ -191,6 +192,7 @@ def _parse_definitions(definitions_path: Path, entities_path: Path) -> Definitio
         expert_rules=raw.get("expert_rules", {}),
         flow_analysis_constants=raw.get("flow_analysis_constants", {}),
         stop_latency_calibration=raw.get("stop_latency_calibration", {}),
+        preinfusion_timing=raw.get("preinfusion_timing", {}),
     )
 
 
