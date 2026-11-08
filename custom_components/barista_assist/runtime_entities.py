@@ -16,7 +16,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .definitions import EntityDefinition
 from .flavor_correction import resolve_flavor_state
-from .flow_analysis import healthy_window_ms
+from .flow_analysis import FlowAnalysisConfig, healthy_window_ms, leading_garbage_count
 from .storage import ShotSample
 from .runtime_shared import (
     _FLAVOR_AXES,
@@ -538,6 +538,17 @@ class RuntimeEntitiesMixin:
             return None
         return getattr(self, field) * self._reference_expected_s()
 
+    def _chart_samples(self, samples: list[ShotSample]) -> list[ShotSample]:
+        """samples without the leading pre-tare/pre-connect garbage
+        analyze_shot already ignores (flow_analysis.leading_garbage_count) -
+        a stray 149.6g first reading otherwise sets the chart's weight axis
+        range and draws a spike at 0s. Elapsed times are left as they are.
+        Returned unchanged if every sample is garbage, so the chart is
+        never blank."""
+        config = FlowAnalysisConfig(**self.definitions.flow_analysis_constants)
+        trimmed = samples[leading_garbage_count(samples, config):]
+        return trimmed or samples
+
     def _shot_plot_points(self) -> list[list[float]]:
         """[elapsed_ms, weight_g, flow_g_s] points for the dashboard's Live
         Shot card: the active shot's own samples while one is running
@@ -559,6 +570,7 @@ class RuntimeEntitiesMixin:
         samples = shot.samples if shot is not None and shot.press_monotonic is not None else self._last_shot_samples
         if not samples:
             return []
+        samples = self._chart_samples(samples)
         step = max(1, math.ceil(len(samples) / _SHOT_PLOT_MAX_POINTS))
         downsampled = samples[::step]
         # samples[::step] always keeps index 0, but only keeps the true

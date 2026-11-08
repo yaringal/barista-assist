@@ -523,6 +523,18 @@ class ShotPlotPointsTests(RuntimeTestCase):
         self.assertEqual(last[2], 1.5)
         self.assertGreaterEqual(last[0], 0)  # elapsed_ms since press, not epoch time
 
+    async def test_leading_scale_garbage_is_not_plotted(self):
+        """A stale reading before the scale settles (real shots: 145.2g,
+        then 0.0g) used to set the chart's weight axis range and draw a
+        spike at 0s - analyze_shot already ignored it."""
+        await self.start_shot(preinfusion_s=1.0)
+        await self.wait_for_extracting()
+        for weight in (145.2, 0.0, 0.3, 1.0):
+            self.scale.push_reading(make_reading(weight_g=weight))
+
+        weights = [point[1] for point in self.runtime._shot_plot_points()]
+        self.assertEqual(weights, [0.0, 0.3, 1.0])
+
     async def test_downsampling_never_drops_the_true_final_sample(self):
         """A shot longer than _SHOT_PLOT_MAX_POINTS (300) samples gets
         downsampled via samples[::step], which only happens to keep the
@@ -2691,6 +2703,24 @@ class ShotHistoryTests(RuntimeTestCase):
         self.assertEqual(result["samples"][-1]["weight_g"], 36.0)
         # No stop_command_elapsed_ms passed in - nothing to predict from.
         self.assertIsNone(result["predicted_stop_elapsed_ms"])
+
+    async def test_shot_samples_drop_leading_scale_garbage_but_the_export_keeps_it(self):
+        """The shot-history chart gets the same junk-free samples as the
+        Live Shot card; the raw export (the source for real-shot fixtures)
+        still has every reading."""
+        shot_id = await self.start_shot()
+        await self.wait_for_extracting()
+        for weight in (145.2, 0.0, 0.3, 36.0):
+            self.scale.push_reading(make_reading(weight_g=weight))
+        await self.runtime._async_finalize("complete")
+
+        result = await self.runtime.async_shot_samples(shot_id)
+
+        self.assertEqual([s["weight_g"] for s in result["samples"]], [0.0, 0.3, 36.0])
+        export = await self.runtime.hass.async_add_executor_job(
+            self.runtime.db.export_shots_text, shot_id
+        )
+        self.assertIn("\t145.200\t", export)
 
     async def test_shot_samples_computes_predicted_stop_elapsed_ms_when_asked(self):
         """The shot-history view's per-shot detail chart passes the shot's

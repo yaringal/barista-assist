@@ -736,7 +736,7 @@ class RuntimeShotMixin:
         for that case."""
         samples = await self.hass.async_add_executor_job(self.db.full_shot_samples, shot_id)
         return {
-            "samples": [asdict(sample) for sample in samples],
+            "samples": [asdict(sample) for sample in self._chart_samples(samples)],
             "predicted_stop_elapsed_ms": self._predicted_stop_elapsed_ms(
                 samples, stop_command_elapsed_ms
             ),

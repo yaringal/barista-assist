@@ -181,7 +181,7 @@ const CHART_STYLES = `
     pointer-events: none;
     box-shadow: 0 1px 3px rgba(0,0,0,0.2);
   }
-  .legend { display: flex; gap: 16px; font-size: 0.8rem; opacity: 0.8; margin-top: 4px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.8rem; opacity: 0.8; margin-top: 4px; }
   .legend-weight::before, .legend-flow::before { content: "—"; margin-right: 4px; font-weight: 700; }
   .legend-weight::before { color: #2196f3; }
   .legend-flow::before { color: #00bcd4; }
@@ -439,6 +439,7 @@ function renderShotChart(samples, markers = {}) {
       <span class="legend-weight">Weight (max ${maxWeight.toFixed(1)}g)</span>
       <span class="legend-flow">Flow (max ${maxFlow.toFixed(1)} g/s)</span>
       ${healthy ? `<span class="legend-target">Target yield</span>` : ""}
+      <span class="legend-time">Time: seconds since brew press</span>
     </div>`;
 }
 

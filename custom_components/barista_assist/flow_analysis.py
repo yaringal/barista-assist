@@ -296,6 +296,22 @@ def _first_synced_clock_index(
     return len(times_ms)
 
 
+def leading_garbage_count(samples: list[ShotSample], config: FlowAnalysisConfig) -> int:
+    """How many leading samples are pre-tare/pre-connect scale garbage (see
+    _first_plausible_index/_first_synced_clock_index) - dropped by
+    analyze_shot before any analysis, and by the charts before drawing (a
+    stray 149.6g first reading otherwise sets the weight axis's range).
+    len(samples) if every sample is garbage."""
+    return max(
+        _first_plausible_index([sample.weight_g for sample in samples], config),
+        _first_synced_clock_index(
+            [sample.elapsed_ms for sample in samples],
+            [sample.scale_ms for sample in samples],
+            config,
+        ),
+    )
+
+
 # --- Mid-shot disturbance detection: cup/scale bumped, lifted, or moved ----
 
 
@@ -684,10 +700,7 @@ def analyze_shot(
     # before the scale's clock was reset) before it can poison the
     # smoothing/derivative computation below - see _first_plausible_index,
     # _first_synced_clock_index, and their respective config fields.
-    leading_garbage = max(
-        _first_plausible_index(raw_weights, config),
-        _first_synced_clock_index(times_ms, [sample.scale_ms for sample in samples], config),
-    )
+    leading_garbage = leading_garbage_count(samples, config)
     if leading_garbage:
         samples = samples[leading_garbage:]
         times_ms = times_ms[leading_garbage:]
