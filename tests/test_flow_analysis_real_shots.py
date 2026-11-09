@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ha_stubs  # noqa: E402
-from real_shot_fixtures import actuator_delay_s as _actuator_delay_s, load_real_shot  # noqa: E402
+from real_shot_fixtures import actuator_delay_s as _actuator_delay_s, has_real_shot, load_real_shot  # noqa: E402
 
 flow_analysis = ha_stubs.import_barista_module("flow_analysis")
 definitions = ha_stubs.import_barista_module("definitions")
@@ -428,6 +428,7 @@ class TooFastButFlaggedInvalidAdaptPiTests(unittest.TestCase):
         self.assertGreater(max(s.weight_g for s in early_samples), -0.2)
 
 
+@unittest.skipUnless(has_real_shot("2026_10_05_0840_adapt_pi"), "local-only fixture")
 class EarlyNoiseWobbleJustOverOldSustainAdaptPiTests(unittest.TestCase):
     """A held pre-infusion shot (preinfusion_s=7.0) that undershot badly
     (33.2g against a 40g target). The same class of bug
@@ -500,6 +501,8 @@ class StoppedShortOfTargetAdaptPiTests(unittest.TestCase):
     def test_shots_the_auto_stop_ended_early_are_invalid_not_restrictive(self) -> None:
         for name in self.STOPPED_SHORT:
             with self.subTest(name=name):
+                if not has_real_shot(name):
+                    self.skipTest(f"{name}: local-only fixture")
                 shot = load_real_shot(name)
                 self.assertTrue(shot.stopped_by_target)
                 result = self._analyze(shot)
@@ -509,6 +512,8 @@ class StoppedShortOfTargetAdaptPiTests(unittest.TestCase):
     def test_shots_that_timed_out_short_of_target_are_still_too_restrictive(self) -> None:
         for name in self.TIMED_OUT:
             with self.subTest(name=name):
+                if not has_real_shot(name):
+                    self.skipTest(f"{name}: local-only fixture")
                 shot = load_real_shot(name)
                 self.assertFalse(shot.stopped_by_target)
                 result = self._analyze(shot)

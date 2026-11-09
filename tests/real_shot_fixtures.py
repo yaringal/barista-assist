@@ -130,6 +130,13 @@ def actuator_delay_s(shot: RealShot) -> float:
     return PREINFUSION_BAND_START_S + FLOW_START_LAG_S
 
 
+def has_real_shot(name: str) -> bool:
+    """Whether tests/fixtures/real_shots/{name}.txt is present. Newer real
+    shots are kept local-only (tests/fixtures is gitignored), so a test that
+    needs one skips where it's absent (e.g. CI) instead of erroring."""
+    return (FIXTURES_DIR / f"{name}.txt").exists()
+
+
 def load_real_shot(name: str) -> RealShot:
     """Parse tests/fixtures/real_shots/{name}.txt."""
     text = (FIXTURES_DIR / f"{name}.txt").read_text(encoding="utf-8")
