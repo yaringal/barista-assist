@@ -20,6 +20,11 @@ set, using runtime.py's own _observed_stop_latency (the exact formula
 _update_learned_stop_latency itself learns from) so this can never drift
 out of sync with the real mechanism.
 
+StopPressDelayReport: how long the brew Bot takes from the stop command to
+confirming the press, and how much that varies. A steady delay is simply
+absorbed by the learned stop latency; a variable one is stop error no
+single learned value can remove (14/11: 1.7s, ~4.5g at full flow).
+
 docs/todo/ADAPTIVE_LEARNING_PLAN.md §3 (GrindFlavorConsistencyReport): does
 duration_ratio far from 1.0 actually correlate with the taste complaint a
 real recorded shot's own flavor tag would predict - or not? Ground-truth
@@ -176,6 +181,7 @@ class StopLatencySplitReport(unittest.TestCase):
                 shot.actual_yield_g,
                 window_ms=calibration["flow_window_ms"],
                 min_flow_g_s=calibration["min_flow_for_learning_g_s"],
+                flow_config=CONFIG,
             )
             if result is None:
                 continue
@@ -220,6 +226,75 @@ class StopLatencySplitReport(unittest.TestCase):
                 )
         print(f"  Verdict: {verdict}")
         print("  Not a pass/fail check - see definitions.yaml's stop_latency_calibration comment.\n")
+
+
+# Report-only thresholds, not runtime settings: the press delay's spread is
+# only worth acting on once at least _PRESS_MIN_SHOTS shots carry it, and
+# counts as a major source of stop error once its standard deviation is at
+# least _PRESS_MAJOR_SHARE of the learned latency's own.
+_PRESS_MIN_SHOTS = 5
+_PRESS_MAJOR_SHARE = 0.5
+
+
+class StopPressDelayReport(unittest.TestCase):
+    """See module docstring - this never fails the suite, it only reports."""
+
+    def test_report_how_much_the_stop_press_delay_varies(self) -> None:
+        calibration = definitions.load_definitions().stop_latency_calibration
+        rows: list[tuple[str, float, float]] = []
+        for path in sorted(FIXTURES_DIR.glob("*.txt")):
+            shot = load_real_shot(path.stem)
+            command_ms = shot.stop_command_elapsed_ms
+            confirmed_ms = shot.stop_press_confirmed_elapsed_ms
+            if not shot.stopped_by_target or command_ms is None or confirmed_ms is None:
+                continue
+            if shot.actual_yield_g is None:
+                continue
+            result = runtime_module.BaristaRuntime._observed_stop_latency(
+                shot.samples,
+                command_ms,
+                shot.actual_yield_g,
+                window_ms=calibration["flow_window_ms"],
+                min_flow_g_s=calibration["min_flow_for_learning_g_s"],
+                flow_config=CONFIG,
+            )
+            if result is None:
+                continue
+            _flow, latency = result
+            rows.append((path.stem, (confirmed_ms - command_ms) / 1000.0, latency))
+
+        print("\n=== Stop-press delay report (stop sent -> Bot confirmed the press) ===")
+        for name, press_s, latency in rows:
+            print(
+                f"  {name}: press {press_s:.2f}s, learned-style latency {latency:.2f}s "
+                f"(of which after the press {latency - press_s:.2f}s)"
+            )
+        if len(rows) < _PRESS_MIN_SHOTS:
+            verdict = (
+                f"not enough shots with a recorded press time yet ({len(rows)} of "
+                f"{_PRESS_MIN_SHOTS} needed)"
+            )
+        else:
+            press = [press_s for _n, press_s, _l in rows]
+            latency = [lat for _n, _p, lat in rows]
+            after = [lat - press_s for _n, press_s, lat in rows]
+            print(
+                f"  press delay: median {statistics.median(press):.2f}s, "
+                f"range {min(press):.2f}-{max(press):.2f}s, sd {statistics.stdev(press):.2f}s"
+            )
+            print(
+                f"  latency sd {statistics.stdev(latency):.2f}s from the stop command, "
+                f"{statistics.stdev(after):.2f}s from the confirmed press"
+            )
+            if statistics.stdev(press) >= _PRESS_MAJOR_SHARE * statistics.stdev(latency):
+                verdict = (
+                    "the press delay is a major source of stop error - worth making the "
+                    "press faster/steadier before tuning the learned latency further"
+                )
+            else:
+                verdict = "the press delay is steady enough - the learned latency absorbs it"
+        print(f"  Verdict: {verdict}")
+        print("  Not a pass/fail check.\n")
 
 
 # Report-only threshold, not a runtime setting: a fixed flow_start_lag_s

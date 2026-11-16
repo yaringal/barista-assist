@@ -1,36 +1,16 @@
-# Barista Assist v0.3.13
+# Barista Assist v0.3.14
 
-Steadier auto-stop, more trustworthy shot diagnoses, and fixes from live use - checked against 37 real recorded shots.
+More accurate shot timing when the scale's Bluetooth hiccups, and clearer Shot History details.
 
 ## Fixed
 
-- **Shots stopping far too early.** A brief burst of flow right before the stop could make the auto-stop fire several grams early. Flow is now averaged over the last 2 seconds before deciding when to stop.
-- **Early-stopped shots blamed on the grind.** A shot the auto-stop ended well short of target used to be called "too restrictive". It's now marked as an invalid measurement instead, with no grind change suggested. Shots that really choke (run to the time limit) are still "too restrictive".
-- **The grey pre-infusion band drifting.** It used to move whenever the learned stop latency changed, and shot diagnoses moved with it. Both now use fixed timings measured on the real machine, and good shots now sit in the middle of the healthy range.
-- **Taste feedback after a big overshoot.** If a shot lands more than 10% off its target yield, its taste answers are still saved but no longer change the recipe - a "thin" shot at 43g out of 18g is about the yield, not the dose. The recommendation card says when this happens.
-- **Chart spike at the start.** Stray scale readings from before it settled are no longer drawn, so the weight axis isn't squashed.
-- **Taste notifications not clearing on Android 16.** Notifications are now grouped, the known workaround.
-- A scale wobble during pre-infusion could wrongly mark a good shot as an invalid measurement.
-
-## Changed
-
-- **One "Learned stop latency"** replaces the separate normal-flow and fast-flow values. Your current normal-flow value carries over automatically.
-- **"Send test notification"** now sends the same two taste questions a real shot does (marked "[Test]"), so you can check both arrive and clear. Answering them doesn't record anything.
+- **Bluetooth hiccups distorting shots.** When the scale's Bluetooth stalls and then delivers a burst of readings at once, those readings used to look like a huge flow spike and drew a step in the chart. Readings are now timed by the scale's own clock, so the stop decision, the shot diagnosis and the charts all see the pour as it really happened.
+- **"Total duration" in Shot History** now runs to when the brew Bot actually pressed stop, not to when the stop was sent (up to ~2s earlier).
 
 ## Added
 
-- **Installed version** shown on the Settings tab.
-- Each shot now records how long the brew Bot took to confirm the stop press (in the shot export), to help track down overshoots.
-- The chart legend explains the time axis: seconds since the brew press.
+- **"Yield vs target"** in each shot's details in Shot History, e.g. "+2.9g (8% over)". The Result column only judges how long the shot took, so this is where an overshoot shows.
 
 ## Upgrade
 
-Update via HACS, then **restart Home Assistant** (the update doesn't take effect until you do - the new "Installed version" row shows which release is running).
-
-- The database is updated automatically on first start.
-- The two old sensors **"Learned stop latency (normal flow)"** and **"Learned stop latency (fast flow)"** are replaced by one **"Learned stop latency"**. The old ones will show as unavailable - you can delete them under Settings → Devices & services → Entities. The packaged dashboard already uses the new one.
-- Shot diagnoses for Bot-held shots will shift slightly (toward healthy for shots that used to read a little restrictive).
-
-## Testing
-
-- Full suite: 367 tests, all passing (up from 349).
+Update via HACS, then **restart Home Assistant**. No database changes. Past shots keep their recorded diagnosis; their charts are redrawn with the new timing.

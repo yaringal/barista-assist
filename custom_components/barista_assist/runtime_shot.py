@@ -21,6 +21,7 @@ from .flow_analysis import (
     analyze_shot,
     blended_expected_flow_g_s,
     healthy_window_ms,
+    sample_times_ms,
 )
 from .grind_correction import recommend_grind_delta
 from .runtime_shared import ActiveShot, ShotPhase, _recipe_snapshot
@@ -33,19 +34,26 @@ class RuntimeShotMixin:
     """Mixed into BaristaRuntime - see that class for the shared __init__/state."""
 
     @staticmethod
-    def _smoothed_flow_g_s(samples: list[ShotSample], window_ms: int) -> float:
+    def _smoothed_flow_g_s(
+        samples: list[ShotSample], times_ms: list[int], window_ms: int
+    ) -> float:
         """Average flow_g_s (as reported by the scale itself) over the
         trailing window_ms of samples - smooths out single-reading noise
-        without needing to numerically differentiate weight ourselves."""
+        without needing to numerically differentiate weight ourselves.
+        times_ms is flow_analysis.sample_times_ms for these samples, so a
+        BLE burst can't squeeze extra readings into the window."""
         if not samples:
             return 0.0
-        cutoff = samples[-1].elapsed_ms - window_ms
+        cutoff = times_ms[-1] - window_ms
         recent: list[float] = []
-        for sample in reversed(samples):
-            if sample.elapsed_ms < cutoff:
+        for sample, t in zip(reversed(samples), reversed(times_ms)):
+            if t < cutoff:
                 break
             recent.append(sample.flow_g_s)  # always >= 1 entry: the last sample itself
         return sum(recent) / len(recent)
+
+    def _flow_analysis_config(self) -> FlowAnalysisConfig:
+        return FlowAnalysisConfig(**self.definitions.flow_analysis_constants)
 
     def _smoothed_flow_now(self, samples: list[ShotSample]) -> float:
         """_smoothed_flow_g_s over stop_latency_calibration.flow_window_ms
@@ -57,7 +65,9 @@ class RuntimeShotMixin:
         return max(
             0.0,
             self._smoothed_flow_g_s(
-                samples, self.definitions.stop_latency_calibration["flow_window_ms"]
+                samples,
+                sample_times_ms(samples, self._flow_analysis_config()),
+                self.definitions.stop_latency_calibration["flow_window_ms"],
             ),
         )
 
@@ -146,6 +156,7 @@ class RuntimeShotMixin:
         *,
         window_ms: int,
         min_flow_g_s: float,
+        flow_config: FlowAnalysisConfig,
     ) -> tuple[float, float] | None:
         """(flow_at_decision, observed_latency_s) for one completed shot with
         a recorded stop decision - the same computation
@@ -153,8 +164,11 @@ class RuntimeShotMixin:
         out so tests/test_constant_drift.py's StopLatencySplitReport can
         reuse the exact formula rather than duplicating it. window_ms/
         min_flow_g_s are definitions.yaml's stop_latency_calibration.
-        {flow_window_ms,min_flow_for_learning_g_s} - passed in explicitly
+        {flow_window_ms,min_flow_for_learning_g_s} and flow_config its
+        flow_analysis_constants (for sample_times_ms) - passed in explicitly
         since this is a staticmethod with no `self.definitions` of its own.
+        The decision sample is the last one that had *arrived* by the stop
+        command (elapsed_ms), since that's what the live decision saw.
         None when there's nothing to learn from: no sample at or before the
         stop decision, or flow at that decision too slow to divide by
         meaningfully (below min_flow_g_s)."""
@@ -168,7 +182,11 @@ class RuntimeShotMixin:
             return None
         decision_sample = samples[decision_index]
         samples_up_to_decision = samples[: decision_index + 1]
-        flow_at_decision = RuntimeShotMixin._smoothed_flow_g_s(samples_up_to_decision, window_ms)
+        flow_at_decision = RuntimeShotMixin._smoothed_flow_g_s(
+            samples_up_to_decision,
+            sample_times_ms(samples_up_to_decision, flow_config),
+            window_ms,
+        )
         if flow_at_decision < min_flow_g_s:
             return None
         observed_latency_s = max(0.0, (final_weight - decision_sample.weight_g) / flow_at_decision)
@@ -191,6 +209,7 @@ class RuntimeShotMixin:
             final_weight,
             window_ms=calibration["flow_window_ms"],
             min_flow_g_s=calibration["min_flow_for_learning_g_s"],
+            flow_config=self._flow_analysis_config(),
         )
         if result is None:
             return

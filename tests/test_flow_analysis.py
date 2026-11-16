@@ -656,6 +656,73 @@ class FirstSyncedClockIndexTests(unittest.TestCase):
         )
 
 
+def _timed_samples(arrival_ms: list[int], scale_ms: list[int]) -> list:
+    return [
+        ShotSample(i, arrival, clock, 0.0, 0.0, 90)
+        for i, (arrival, clock) in enumerate(zip(arrival_ms, scale_ms))
+    ]
+
+
+class SampleTimesTests(unittest.TestCase):
+    """Direct tests for sample_times_ms: readings timed by the scale's own
+    clock, mapped onto the brew-press timeline (see
+    test_flow_analysis_real_shots.py's BleBurstAdaptPiTests for the real
+    shot that prompted it)."""
+
+    def test_a_ble_burst_is_spread_back_out_by_the_scale_clock(self) -> None:
+        clock = [100 * (i + 1) for i in range(30)]
+        arrival = [c + 300 for c in clock]
+        for i in range(10, 20):
+            arrival[i] = arrival[19]  # stalled, then delivered all at once
+        times = flow_analysis.sample_times_ms(_timed_samples(arrival, clock), CONFIG)
+        self.assertEqual(times, [c + 300 for c in clock])
+
+    def test_no_reading_is_timed_after_it_arrived(self) -> None:
+        clock = [100 * (i + 1) for i in range(40)]
+        arrival = [c + 300 + (37 * i) % 90 for i, c in enumerate(clock)]  # BLE jitter
+        times = flow_analysis.sample_times_ms(_timed_samples(arrival, clock), CONFIG)
+        self.assertTrue(all(t <= a for t, a in zip(times, arrival)))
+        self.assertTrue(all(99 <= b - a <= 101 for a, b in zip(times, times[1:])))
+
+    def test_a_slow_scale_clock_is_fitted_not_left_to_drift(self) -> None:
+        clock = [100 * (i + 1) for i in range(400)]
+        arrival = [round(c * 1.007) + 300 for c in clock]  # the real ~0.7% drift
+        times = flow_analysis.sample_times_ms(_timed_samples(arrival, clock), CONFIG)
+        # Unfitted, the last reading would sit ~280ms before its arrival.
+        self.assertLessEqual(max(a - t for a, t in zip(arrival, times)), 2)
+
+    def test_an_implausible_fitted_rate_falls_back_to_the_raw_clock_rate(self) -> None:
+        # Two readings with heavy jitter: a fitted rate of 1.5 isn't real drift.
+        times = flow_analysis.sample_times_ms(_timed_samples([300, 450], [100, 200]), CONFIG)
+        self.assertEqual(times[1] - times[0], 100)
+
+    def test_readings_before_the_timer_starts_stay_before_the_first_running_one(self) -> None:
+        clock = [0, 0, 0] + [100 * (i + 1) for i in range(20)]
+        arrival = [100, 210, 320] + [400 + 100 * i for i in range(20)]
+        times = flow_analysis.sample_times_ms(_timed_samples(arrival, clock), CONFIG)
+        self.assertEqual(times[3:], arrival[3:])
+        self.assertEqual(times[:3], [100, 200, 300])
+        self.assertEqual(times, sorted(times))
+
+    def test_stale_readings_from_before_the_clock_restart_are_not_fitted(self) -> None:
+        clock = [19200, 19200, 0, 0] + [100 * (i + 1) for i in range(20)]
+        arrival = [26, 116, 235, 330] + [420 + 100 * i for i in range(20)]
+        times = flow_analysis.sample_times_ms(_timed_samples(arrival, clock), CONFIG)
+        self.assertEqual(times[4:], arrival[4:])
+        self.assertEqual(times, sorted(times))
+
+    def test_a_clock_that_never_started_falls_back_to_arrival_time(self) -> None:
+        arrival = [100 * i for i in range(10)]
+        times = flow_analysis.sample_times_ms(_timed_samples(arrival, [0] * 10), CONFIG)
+        self.assertEqual(times, arrival)
+
+    def test_a_clock_that_stalls_mid_shot_falls_back_to_arrival_time(self) -> None:
+        clock = [100, 200, 300, 300, 400, 500]
+        arrival = [400, 500, 600, 700, 800, 900]
+        times = flow_analysis.sample_times_ms(_timed_samples(arrival, clock), CONFIG)
+        self.assertEqual(times, arrival)
+
+
 class FirstDisturbanceIndexTests(unittest.TestCase):
     """Direct tests for _first_disturbance_index, which now requires a drop
     below the running peak to hold for _DISTURBANCE_SUSTAIN_MS before

@@ -89,6 +89,14 @@ class RealShot:
         return int(raw) if raw else None
 
     @property
+    def stop_press_confirmed_elapsed_ms(self) -> int | None:
+        """When the brew Bot confirmed the automatic stop press. None when
+        blank or absent - only exported since 0.3.13 (see
+        tests/test_constant_drift.py's StopPressDelayReport)."""
+        raw = self.fields.get("stop_press_confirmed_elapsed_ms", "")
+        return int(raw) if raw else None
+
+    @property
     def stopped_by_target(self) -> bool:
         """Mirrors runtime_shot.py's _async_finalize: only the automatic
         stop-at-target finalizes a shot with status=complete (a timeout,

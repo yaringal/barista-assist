@@ -8,6 +8,7 @@ standalone."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 import math
 from typing import Any
@@ -16,7 +17,12 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .definitions import EntityDefinition
 from .flavor_correction import resolve_flavor_state
-from .flow_analysis import FlowAnalysisConfig, healthy_window_ms, leading_garbage_count
+from .flow_analysis import (
+    FlowAnalysisConfig,
+    healthy_window_ms,
+    leading_garbage_count,
+    sample_times_ms,
+)
 from .storage import ShotSample
 from .runtime_shared import (
     _FLAVOR_AXES,
@@ -539,15 +545,20 @@ class RuntimeEntitiesMixin:
         return getattr(self, field) * self._reference_expected_s()
 
     def _chart_samples(self, samples: list[ShotSample]) -> list[ShotSample]:
-        """samples without the leading pre-tare/pre-connect garbage
+        """samples as the charts draw them: each elapsed_ms replaced by its
+        scale-clock time (flow_analysis.sample_times_ms, the same timing
+        analyze_shot uses - a BLE burst otherwise draws as a step in the
+        weight line), without the leading pre-tare/pre-connect garbage
         analyze_shot already ignores (flow_analysis.leading_garbage_count) -
         a stray 149.6g first reading otherwise sets the chart's weight axis
-        range and draws a spike at 0s. Elapsed times are left as they are.
-        Returned unchanged if every sample is garbage, so the chart is
-        never blank."""
+        range and draws a spike at 0s. Every sample is kept if every sample
+        is garbage, so the chart is never blank."""
         config = FlowAnalysisConfig(**self.definitions.flow_analysis_constants)
-        trimmed = samples[leading_garbage_count(samples, config):]
-        return trimmed or samples
+        timed = [
+            replace(sample, elapsed_ms=t)
+            for sample, t in zip(samples, sample_times_ms(samples, config))
+        ]
+        return timed[leading_garbage_count(samples, config):] or timed
 
     def _shot_plot_points(self) -> list[list[float]]:
         """[elapsed_ms, weight_g, flow_g_s] points for the dashboard's Live

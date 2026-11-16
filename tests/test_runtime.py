@@ -2803,11 +2803,33 @@ class AdaptiveStopMarginTests(RuntimeTestCase):
             ShotSample(2, 600, 600, 1.0, 4.0, 90),
             ShotSample(3, 700, 700, 1.2, 6.0, 90),
         ]
-        result = BaristaRuntime._smoothed_flow_g_s(samples, 500)
+        result = BaristaRuntime._smoothed_flow_g_s(samples, [0, 100, 600, 700], 500)
         self.assertAlmostEqual(result, 5.0)  # only 600ms/700ms fall in the trailing 500ms
 
     def test_smoothed_flow_g_s_of_no_samples_is_zero(self):
-        self.assertEqual(BaristaRuntime._smoothed_flow_g_s([], 500), 0.0)
+        self.assertEqual(BaristaRuntime._smoothed_flow_g_s([], [], 500), 0.0)
+
+    def test_live_flow_window_uses_the_scale_clock_not_a_ble_burst(self):
+        """Regression test for 14/11: BLE stalled, then delivered a burst of
+        readings at once. Timed by arrival, the burst's older readings all
+        land inside the trailing window and drag the live flow toward their
+        stale rate; timed by the scale's own clock they fall outside it."""
+        window_ms = self.runtime.definitions.stop_latency_calibration["flow_window_ms"]
+        steps = window_ms // 100
+        samples = []
+        for i in range(2 * steps):
+            clock_ms = (i + 1) * 100
+            flow = 1.0 if i < steps else 3.0
+            # Readings taken during the stall all arrive together, just
+            # before the stall clears.
+            stalled = steps - 5 <= i < steps + 15
+            arrival_ms = (steps + 15) * 100 if stalled else clock_ms
+            samples.append(ShotSample(i, arrival_ms, clock_ms, i * 0.2, flow, 90))
+
+        by_clock = [s.flow_g_s for s in samples if s.scale_ms >= samples[-1].scale_ms - window_ms]
+        by_arrival = [s.flow_g_s for s in samples if s.elapsed_ms >= samples[-1].elapsed_ms - window_ms]
+        self.assertAlmostEqual(self.runtime._smoothed_flow_now(samples), sum(by_clock) / len(by_clock))
+        self.assertLess(sum(by_arrival) / len(by_arrival), sum(by_clock) / len(by_clock))
 
     def test_live_flow_averages_over_the_stop_flow_window(self):
         """Regression test for real early stops (10/05, 10/29): a brief

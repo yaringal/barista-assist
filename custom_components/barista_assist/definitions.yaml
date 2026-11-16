@@ -58,6 +58,19 @@ flow_analysis_constants:
   # while elapsed_ms<200, carrying a stale unrelated 12g reading).
   stale_scale_clock_threshold_ms: 2000
 
+  # --- Sample timing (flow_analysis.sample_times_ms) --------------------------
+
+  # Readings are timed by the scale's own clock (scale_ms), mapped onto
+  # seconds-since-brew-press, not by when Home Assistant happened to receive
+  # them - BLE can stall and then deliver a burst of readings at once (seen
+  # live: 10 readings arriving in the same millisecond after a 1.1s stall,
+  # which read as a 15 g/s flow spike and a step in the chart's weight line).
+  # The scale's clock runs ~0.7% slow against Home Assistant's across every
+  # real fixture, so the mapping fits that rate per shot; a fitted rate
+  # further than this from 1.0 isn't a real clock drift (too few readings to
+  # fit, e.g. the first second of a live shot), so 1.0 is used instead.
+  max_scale_clock_rate_deviation: 0.05
+
   # --- Mid-shot disturbance detection (cup/scale bumped, lifted, moved) ------
 
   # A raw weight this many grams below its own running peak is a cup/scale

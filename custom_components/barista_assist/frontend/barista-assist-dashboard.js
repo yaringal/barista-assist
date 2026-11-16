@@ -715,6 +715,17 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
     return typeof ms === "number" ? `${(ms / 1000).toFixed(1)}s` : "—";
   }
 
+  // How far the cup landed from target, e.g. "+2.9g (8% over)". The Result
+  // column only judges how long the shot took to reach target, so this is
+  // where an overshoot shows.
+  _formatYieldMiss(actual, target) {
+    if (typeof actual !== "number" || typeof target !== "number" || target <= 0) return "—";
+    const miss = actual - target;
+    if (Math.abs(miss) < 0.05) return "On target";
+    const percent = Math.round((Math.abs(miss) / target) * 100);
+    return `${miss > 0 ? "+" : ""}${miss.toFixed(1)}g (${percent}% ${miss > 0 ? "over" : "under"})`;
+  }
+
   // renderShotChart/attachChartTooltip's markers shape (see runtime.py's
   // _shot_markers) built from a stored shot row - list_shots/recent_shots
   // already carries every field needed, no extra fetch required.
@@ -753,7 +764,9 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
           <div><b>Pre-infusion</b> ${this._formatNumber(shot.preinfusion_s)}s (${
             shot.adapt_pi ? "Adapt" : "Machine"
           })</div>
-          <div><b>Total duration</b> ${this._formatDuration(shot.stop_command_elapsed_ms)}</div>
+          <div><b>Total duration</b> ${this._formatDuration(
+            shot.stop_press_confirmed_elapsed_ms ?? shot.stop_command_elapsed_ms
+          )}</div>
           <div><b>Effective stop margin</b> ${this._formatNumber(shot.effective_stop_margin_g)}g</div>
           <div><b>Channeling suspicion</b> ${
             shot.channeling_suspicion != null ? this._formatNumber(shot.channeling_suspicion, 2) : "—"
@@ -765,6 +778,7 @@ class BaristaAssistShotHistoryCard extends HTMLElement {
           <div><b>Mouthfeel tag</b> ${this._escape(
             FLAVOR_TAG_LABELS[shot.flavor_mouthfeel_tag] || "—"
           )}</div>
+          <div><b>Yield vs target</b> ${this._formatYieldMiss(shot.actual_yield_g, shot.target_yield_g)}</div>
         </div>
         ${renderShotChart(samples, markers)}
       </div>`;

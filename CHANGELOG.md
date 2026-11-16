@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.14
+
+### Fixed
+
+- **Scale readings were timed by when they arrived, not when they were taken.** A Bluetooth stall followed by a burst (14/11: 1.1s, then 10 readings in the same millisecond) read as a 15 g/s flow peak, inflated the flow-variance/curvature stats, and drew a step in the chart's weight line. Every timing computation - shot analysis, the live 2s stop-flow window, stop-latency learning, and both charts - now uses the scale's own clock (`flow_analysis.sample_times_ms`), mapped onto seconds-since-brew-press and fitted for the scale clock's real ~0.7% drift (`flow_analysis_constants.max_scale_clock_rate_deviation`). Falls back to arrival time if the scale's timer never started or stalls mid-shot. Across the real fixtures this changes one diagnosis: 09/22 (stopped just short of target) moves from too_restrictive (1.12) to healthy (1.09).
+- **Shot History's "Total duration" showed when the stop was sent**, not when the shot actually stopped. It now runs to when the Bot confirmed the stop press (14/11: 31.8s instead of 30.1s), falling back to the stop/abort command for aborted shots and shots recorded before 0.3.13.
+
+### Added
+
+- **"Yield vs target"** in each Shot History row's details, e.g. "+2.9g (8% over)" - the Result column only judges how long the shot took to reach target, so an overshoot didn't show anywhere.
+
+### Testing
+
+- New standing report `StopPressDelayReport`: how long the Bot takes from the stop command to confirming the press, and how much that varies (14/11: 1.7s - waiting for 5 shots before giving a verdict).
+- Real-shot fixture 2026_11_14 (local-only) with a regression test for the BLE burst, plus synthetic tests for the scale-clock timing.
+- The GitHub workflow no longer runs the unit tests (newer real-shot fixtures are local-only); only the HACS validation runs there.
+- Full suite: 380 tests, all passing (up from 367).
+
 ## 0.3.13
 
 ### Fixed

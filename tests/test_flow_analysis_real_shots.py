@@ -850,5 +850,44 @@ class SourSharpThinWeakAdaptPiTests(unittest.TestCase):
         self.assertEqual(self.shot.flavor_mouthfeel_tag, "thin_weak")
 
 
+@unittest.skipUnless(has_real_shot("2026_11_14_1022_adapt_pi"), "local-only fixture")
+class BleBurstAdaptPiTests(unittest.TestCase):
+    """A healthy Bot-held shot (tasted balanced) where BLE stalled for 1.1s
+    mid-pour, then delivered 10 readings in the same millisecond. Timed by
+    arrival, those readings read as a 15 g/s flow peak (and a step in the
+    chart's weight line); timed by the scale's own clock
+    (flow_analysis.sample_times_ms) they're 100ms apart like every other
+    reading."""
+
+    def setUp(self) -> None:
+        self.shot = load_real_shot("2026_11_14_1022_adapt_pi")
+
+    def _analyze(self):
+        return analyze_shot(
+            self.shot.samples,
+            target_yield_g=self.shot.target_yield_g,
+            preinfusion_s=self.shot.preinfusion_s,
+            baseline=None, expected_flow_g_s=CONFIG.expected_flow_g_s, config=CONFIG,
+            actuator_delay_s=_actuator_delay_s(self.shot),
+            stopped_by_target=self.shot.stopped_by_target,
+        )
+
+    def test_matches_the_barista_s_own_call(self) -> None:
+        self.assertEqual(self.shot.flavor_extraction_tag, "balanced")
+        result = self._analyze()
+        self.assertIsNone(result.invalid_reason)
+        self.assertEqual(result.classification, ShotClassification.HEALTHY)
+
+    def test_the_burst_no_longer_reads_as_a_flow_spike(self) -> None:
+        scale_peak_flow = max(sample.flow_g_s for sample in self.shot.samples)
+        self.assertLessEqual(self._analyze().max_flow_g_s, scale_peak_flow)
+
+    def test_the_fixture_still_has_its_ble_burst(self) -> None:
+        """Confirms the test above is exercising a real burst of readings
+        arriving together, rather than a fixture that never had one."""
+        arrivals = [sample.elapsed_ms for sample in self.shot.samples]
+        self.assertGreaterEqual(max(arrivals.count(t) for t in set(arrivals)), 5)
+
+
 if __name__ == "__main__":
     unittest.main()

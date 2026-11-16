@@ -118,6 +118,7 @@ class FlowAnalysisConfig:
     disturbance_sustain_ms: int
     leading_garbage_threshold_g: float
     stale_scale_clock_threshold_ms: int
+    max_scale_clock_rate_deviation: float
     baseline_deviation_floor_g_s2: float
     baseline_deviation_scale: float
     near_zero_final_weight_threshold_g: float
@@ -310,6 +311,55 @@ def leading_garbage_count(samples: list[ShotSample], config: FlowAnalysisConfig)
             config,
         ),
     )
+
+
+def sample_times_ms(samples: list[ShotSample], config: FlowAnalysisConfig) -> list[int]:
+    """Each sample's time in ms since the brew press, taken from the scale's
+    own clock (scale_ms) rather than when the reading arrived (elapsed_ms).
+    BLE can stall and then deliver a burst of readings at once, so arrival
+    time bunches readings that the scale took 100ms apart - see
+    definitions.yaml's max_scale_clock_rate_deviation.
+
+    The scale's clock is mapped onto the brew-press timeline with a line
+    fitted along the readings that arrived fastest (the smallest arrival
+    minus scale-clock gap in each half of the shot), then shifted so no
+    reading is timed after it arrived - the same timeline the stop marker
+    and pre-infusion band use, minus the BLE delays.
+
+    Only the scale clock's last run counts: it restarts when our
+    start-timer command lands (anything before that is a stale reading),
+    and is stamped 0 for a few readings until the timer actually starts.
+    Readings before that run keep their arrival time, held at least one
+    clock step before the next reading. Falls back to arrival time outright
+    when the clock never ran, or stalls/goes backwards mid-shot.
+    """
+    arrival = [sample.elapsed_ms for sample in samples]
+    clock = [sample.scale_ms for sample in samples]
+    n = len(samples)
+    start = 0
+    for i in range(1, n):
+        if clock[i] < clock[i - 1]:
+            start = i
+    while start < n and clock[start] == 0:
+        start += 1
+    if n - start < 2 or any(clock[i] <= clock[i - 1] for i in range(start + 1, n)):
+        return arrival
+
+    half = start + (n - start) // 2
+    first = min(range(start, half), key=lambda i: arrival[i] - clock[i])
+    second = min(range(half, n), key=lambda i: arrival[i] - clock[i])
+    rate = (arrival[second] - arrival[first]) / (clock[second] - clock[first])
+    if abs(rate - 1.0) > config.max_scale_clock_rate_deviation:
+        rate = 1.0
+    offset = min(arrival[i] - rate * clock[i] for i in range(start, n))
+
+    times = [0] * n
+    for i in range(start, n):
+        times[i] = int(offset + rate * clock[i])
+    step = round(rate * statistics.median(clock[i] - clock[i - 1] for i in range(start + 1, n)))
+    for i in range(start - 1, -1, -1):
+        times[i] = max(0, min(arrival[i], times[i + 1] - step))
+    return times
 
 
 # --- Mid-shot disturbance detection: cup/scale bumped, lifted, or moved ----
@@ -692,7 +742,7 @@ def analyze_shot(
     if len(samples) < config.min_samples:
         return _invalid(InvalidReason.TOO_FEW_SAMPLES)
 
-    times_ms = [sample.elapsed_ms for sample in samples]
+    times_ms = sample_times_ms(samples, config)
     raw_weights = [sample.weight_g for sample in samples]
 
     # Drop leading pre-tare/pre-connect scale noise (e.g. a stray -48g first
